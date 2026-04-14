@@ -4,6 +4,8 @@
 
 ZenCrop is an independent reimplementation of [PowerToys Crop And Lock](https://github.com/microsoft/PowerToys/tree/main/src/modules/cropandlock/).
 
+temp_powertoys 有源码,需要时可仓库对比
+
 ## Build Commands
 
 - **MSVC build script**: `build.bat` (requires Visual Studio 2022 with vcvars64)
@@ -31,3 +33,7 @@ ZenCrop is an independent reimplementation of [PowerToys Crop And Lock](https://
 
 - `build/` contains compiled objects and executables
 - Output: `ZenCrop.exe`
+
+## 经验记录
+
+> AI 在完成重大修改或解决复杂报错后，可以追加经验记录,更新AGENTS.md。
