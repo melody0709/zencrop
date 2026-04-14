@@ -58,8 +58,10 @@ zencrop/
 ├── ReparentWindow.h/cpp  # Reparent 模式窗口
 ├── ThumbnailWindow.h/cpp # Thumbnail 模式窗口
 ├── app.ico               # 应用图标
+├── resources.rc          # 图标资源定义
 ├── build.bat             # MSVC 构建脚本
-└── CMakeLists.txt        # CMake 配置
+├── CMakeLists.txt        # CMake 配置
+└── README.md
 ```
 
 ## 许可证
