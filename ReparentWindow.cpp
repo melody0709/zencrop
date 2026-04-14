@@ -20,8 +20,8 @@ void ReparentWindow::RegisterWindowClass() {
     RegisterClassExW(&wcex);
 }
 
-ReparentWindow::ReparentWindow(HWND targetWindow, RECT cropRect)
-    : m_targetWindow(targetWindow) {
+ReparentWindow::ReparentWindow(HWND targetWindow, RECT cropRect, bool showTitlebar)
+    : m_targetWindow(targetWindow), m_showTitlebar(showTitlebar) {
 
     std::call_once(s_reparentClassReg, []() { RegisterWindowClass(); });
 
@@ -30,8 +30,11 @@ ReparentWindow::ReparentWindow(HWND targetWindow, RECT cropRect)
     int width = cropRect.right - cropRect.left;
     int height = cropRect.bottom - cropRect.top;
 
-    DWORD style = WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN;
-    style &= ~(WS_MAXIMIZEBOX | WS_THICKFRAME); // Disable resize and maximize
+    DWORD style = WS_POPUP | WS_CLIPCHILDREN;
+    if (showTitlebar) {
+        style |= WS_CAPTION | WS_SYSMENU;
+    }
+
     DWORD exStyle = 0;
 
     RECT adjustedRect = { 0, 0, width, height };
@@ -124,11 +127,9 @@ LRESULT ReparentWindow::MessageHandler(HWND hwnd, UINT msg, WPARAM wParam, LPARA
     case WM_DESTROY:
         RestoreOriginalState();
         return 0;
-    case WM_ACTIVATE:
-        if (LOWORD(wParam) != WA_INACTIVE && m_targetWindow) {
-            SetForegroundWindow(m_targetWindow);
-        }
-        break;
+    case WM_CLOSE:
+        DestroyWindow(hwnd);
+        return 0;
     }
     return DefWindowProcW(hwnd, msg, wParam, lParam);
 }

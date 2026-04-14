@@ -3,13 +3,14 @@
 
 class ThumbnailWindow {
 public:
-    ThumbnailWindow(HWND targetWindow, RECT cropRect);
+    ThumbnailWindow(HWND targetWindow, RECT cropRect, bool showTitlebar);
     ~ThumbnailWindow();
 
 private:
     HWND m_hostWindow = nullptr;
     HWND m_targetWindow = nullptr;
     HTHUMBNAIL m_thumbnail = nullptr;
+    bool m_showTitlebar = false;
 
     RECT m_sourceRect = { 0, 0, 0, 0 };
 

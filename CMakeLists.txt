@@ -15,6 +15,16 @@ add_executable(ZenCrop WIN32
     ThumbnailWindow.h ThumbnailWindow.cpp
 )
 
+set_target_properties(ZenCrop PROPERTIES
+    WIN32_EXECUTABLE YES
+)
+
+if(WIN32)
+    set_target_properties(ZenCrop PROPERTIES
+        RESOURCE "${CMAKE_CURRENT_SOURCE_DIR}/app.ico"
+    )
+endif()
+
 target_link_libraries(ZenCrop
     user32
     gdi32

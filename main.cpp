@@ -3,9 +3,13 @@
 #include "ReparentWindow.h"
 #include "ThumbnailWindow.h"
 #include <shellapi.h>
+#include <windowsx.h>
 
 #define WM_TRAYICON (WM_USER + 1)
 #define ID_TRAY_EXIT 1001
+#define ID_TRAY_TITLEBAR 1002
+
+bool g_showTitlebar = false;
 
 enum class CropMode { Reparent, Thumbnail };
 
@@ -24,9 +28,9 @@ void StartCrop(CropMode mode) {
     g_overlay = std::make_shared<OverlayWindow>(target, [mode](HWND t, RECT r) {
         if (r.right - r.left > 10 && r.bottom - r.top > 10) {
             if (mode == CropMode::Reparent) {
-                g_reparents.push_back(std::make_shared<ReparentWindow>(t, r));
+                g_reparents.push_back(std::make_shared<ReparentWindow>(t, r, g_showTitlebar));
             } else {
-                g_thumbnails.push_back(std::make_shared<ThumbnailWindow>(t, r));
+                g_thumbnails.push_back(std::make_shared<ThumbnailWindow>(t, r, g_showTitlebar));
             }
         }
         g_overlay.reset();
@@ -43,13 +47,13 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         nid.uID = 1;
         nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
         nid.uCallbackMessage = WM_TRAYICON;
-        nid.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
+        nid.hIcon = (HICON)LoadImageW(nullptr, L"app.ico", IMAGE_ICON, 0, 0, LR_LOADFROMFILE);
         wcscpy_s(nid.szTip, L"ZenCrop (Right click to exit)");
         Shell_NotifyIconW(NIM_ADD, &nid);
 
         // Register Hotkeys
-        RegisterHotKey(hwnd, 1, MOD_WIN | MOD_CONTROL | MOD_SHIFT, 'R');
-        RegisterHotKey(hwnd, 2, MOD_WIN | MOD_CONTROL | MOD_SHIFT, 'T');
+        RegisterHotKey(hwnd, 1, MOD_CONTROL | MOD_ALT, 'X');
+        RegisterHotKey(hwnd, 2, MOD_CONTROL | MOD_ALT, 'T');
         return 0;
     }
     case WM_HOTKEY: {
@@ -65,7 +69,10 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
             POINT pt;
             GetCursorPos(&pt);
             HMENU hMenu = CreatePopupMenu();
-            InsertMenuW(hMenu, 0, MF_BYPOSITION | MF_STRING, ID_TRAY_EXIT, L"Exit ZenCrop");
+            UINT titlebarFlag = g_showTitlebar ? MF_CHECKED : MF_UNCHECKED;
+            AppendMenuW(hMenu, MF_STRING | titlebarFlag, ID_TRAY_TITLEBAR, L"Show Titlebar");
+            AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
+            AppendMenuW(hMenu, MF_STRING, ID_TRAY_EXIT, L"Exit ZenCrop");
             SetForegroundWindow(hwnd);
             TrackPopupMenu(hMenu, TPM_BOTTOMALIGN | TPM_LEFTALIGN, pt.x, pt.y, 0, hwnd, nullptr);
             DestroyMenu(hMenu);
@@ -75,6 +82,8 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
     case WM_COMMAND: {
         if (LOWORD(wParam) == ID_TRAY_EXIT) {
             PostMessage(hwnd, WM_CLOSE, 0, 0);
+        } else if (LOWORD(wParam) == ID_TRAY_TITLEBAR) {
+            g_showTitlebar = !g_showTitlebar;
         }
         return 0;
     }

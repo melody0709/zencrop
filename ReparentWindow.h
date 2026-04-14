@@ -3,13 +3,14 @@
 
 class ReparentWindow {
 public:
-    ReparentWindow(HWND targetWindow, RECT cropRect);
+    ReparentWindow(HWND targetWindow, RECT cropRect, bool showTitlebar);
     ~ReparentWindow();
 
 private:
     HWND m_hostWindow = nullptr;
     HWND m_childWindow = nullptr;
     HWND m_targetWindow = nullptr;
+    bool m_showTitlebar = false;
 
     // Original state of target window
     HWND m_originalParent = nullptr;

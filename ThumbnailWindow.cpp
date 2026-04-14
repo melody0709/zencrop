@@ -15,16 +15,19 @@ void ThumbnailWindow::RegisterWindowClass() {
     RegisterClassExW(&wcex);
 }
 
-ThumbnailWindow::ThumbnailWindow(HWND targetWindow, RECT cropRect)
-    : m_targetWindow(targetWindow) {
+ThumbnailWindow::ThumbnailWindow(HWND targetWindow, RECT cropRect, bool showTitlebar)
+    : m_targetWindow(targetWindow), m_showTitlebar(showTitlebar) {
 
     std::call_once(s_thumbnailClassReg, []() { RegisterWindowClass(); });
 
     int width = cropRect.right - cropRect.left;
     int height = cropRect.bottom - cropRect.top;
 
-    DWORD style = WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN;
-    DWORD exStyle = 0;
+    DWORD style = WS_POPUP | WS_CLIPCHILDREN;
+    if (showTitlebar) {
+        style |= WS_CAPTION | WS_SYSMENU;
+    }
+    DWORD exStyle = WS_EX_TOOLWINDOW;
 
     RECT adjustedRect = { 0, 0, width, height };
     AdjustWindowRectEx(&adjustedRect, style, FALSE, exStyle);
@@ -126,6 +129,9 @@ LRESULT ThumbnailWindow::MessageHandler(HWND hwnd, UINT msg, WPARAM wParam, LPAR
     case WM_SIZING:
         UpdateThumbnail();
         break;
+    case WM_CLOSE:
+        DestroyWindow(hwnd);
+        return 0;
     case WM_DESTROY:
         PostQuitMessage(0);
         return 0;
