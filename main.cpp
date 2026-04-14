@@ -47,7 +47,15 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         nid.uID = 1;
         nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
         nid.uCallbackMessage = WM_TRAYICON;
-        nid.hIcon = (HICON)LoadImageW(nullptr, L"app.ico", IMAGE_ICON, 0, 0, LR_LOADFROMFILE);
+        wchar_t exePath[MAX_PATH];
+        GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+        wchar_t* backslash = wcsrchr(exePath, L'\\');
+        if (backslash) {
+            wcscpy(backslash + 1, L"app.ico");
+            nid.hIcon = (HICON)LoadImageW(nullptr, exePath, IMAGE_ICON, 0, 0, LR_LOADFROMFILE);
+        } else {
+            nid.hIcon = (HICON)LoadImageW(nullptr, L"app.ico", IMAGE_ICON, 0, 0, LR_LOADFROMFILE);
+        }
         wcscpy_s(nid.szTip, L"ZenCrop (Right click to exit)");
         Shell_NotifyIconW(NIM_ADD, &nid);
 
