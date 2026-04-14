@@ -22,5 +22,3 @@
 
 - `build/` contains compiled objects and executables
 - `temp_powertoys/` is gitignored (local testing artifacts)
-- Icon: Resource ID 1 (`MAKEINTRESOURCEW(1)`) for custom icon, fallback to IDI_APPLICATION
-- No tests, linter, or formatter configured

@@ -15,11 +15,11 @@ std::shared_ptr<OverlayWindow> g_overlay;
 
 HWND g_mainHwnd = nullptr;
 
-HICON g_appIcon = nullptr;
-
 void StartCrop(CropMode mode) {
     HWND target = GetForegroundWindow();
     if (!target || target == g_mainHwnd) return;
+
+    // Optional: check if target is one of our own windows to avoid cropping our own tools
 
     g_overlay = std::make_shared<OverlayWindow>(target, [mode](HWND t, RECT r) {
         if (r.right - r.left > 10 && r.bottom - r.top > 10) {
@@ -38,31 +38,18 @@ void StartCrop(CropMode mode) {
 LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
     case WM_CREATE: {
-        g_appIcon = (HICON)LoadImageW(
-            GetModuleHandleW(nullptr),
-            MAKEINTRESOURCEW(1),
-            IMAGE_ICON,
-            0, 0,
-            LR_DEFAULTSIZE | LR_SHARED
-        );
-        if (!g_appIcon) {
-            g_appIcon = LoadIconW(nullptr, IDI_APPLICATION);
-        }
-
-        SendMessageW(HWND_BROADCAST, WM_SETICON, ICON_BIG, (LPARAM)g_appIcon);
-        SendMessageW(HWND_BROADCAST, WM_SETICON, ICON_SMALL, (LPARAM)g_appIcon);
-
         NOTIFYICONDATAW nid = { sizeof(nid) };
         nid.hWnd = hwnd;
         nid.uID = 1;
         nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
         nid.uCallbackMessage = WM_TRAYICON;
-        nid.hIcon = g_appIcon;
-        wcscpy_s(nid.szTip, L"ZenCrop (Ctrl+Alt+X/T)");
+        nid.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
+        wcscpy_s(nid.szTip, L"ZenCrop (Right click to exit)");
         Shell_NotifyIconW(NIM_ADD, &nid);
 
-        RegisterHotKey(hwnd, 1, MOD_CONTROL | MOD_ALT, 'X');
-        RegisterHotKey(hwnd, 2, MOD_CONTROL | MOD_ALT, 'T');
+        // Register Hotkeys
+        RegisterHotKey(hwnd, 1, MOD_WIN | MOD_CONTROL | MOD_SHIFT, 'R');
+        RegisterHotKey(hwnd, 2, MOD_WIN | MOD_CONTROL | MOD_SHIFT, 'T');
         return 0;
     }
     case WM_HOTKEY: {
@@ -108,6 +95,7 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
 }
 
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
+    // Process DPI awareness
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
 
     const wchar_t* className = L"ZenCrop.Main";
