@@ -147,6 +147,8 @@ void ReparentWindow::RestoreOriginalState() {
     m_originalStyle &= ~WS_CHILD;
     SetWindowLongPtrW(m_targetWindow, GWL_EXSTYLE, m_originalExStyle);
     SetWindowLongPtrW(m_targetWindow, GWL_STYLE, m_originalStyle);
+
+    m_targetWindow = nullptr;
 }
 
 LRESULT CALLBACK ReparentWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
