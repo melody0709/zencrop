@@ -12,11 +12,12 @@ void ReparentWindow::RegisterWindowClass() {
     wcex.hCursor = LoadCursorW(nullptr, IDC_ARROW);
     wcex.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
     wcex.lpszClassName = ClassName;
-    wcex.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
+    wcex.hIcon = LoadIconW(GetModuleHandleW(nullptr), MAKEINTRESOURCE(1));
     RegisterClassExW(&wcex);
 
     wcex.lpfnWndProc = DefWindowProcW;
     wcex.lpszClassName = ChildClassName;
+    wcex.hIcon = nullptr;
     RegisterClassExW(&wcex);
 }
 
@@ -71,6 +72,9 @@ ReparentWindow::ReparentWindow(HWND targetWindow, RECT cropRect, bool showTitleb
 }
 
 ReparentWindow::~ReparentWindow() {
+    if (m_hostWindow) {
+        ShowWindow(m_hostWindow, SW_HIDE);
+    }
     RestoreOriginalState();
     if (m_hostWindow) {
         DestroyWindow(m_hostWindow);
@@ -103,6 +107,8 @@ void ReparentWindow::RestoreOriginalState() {
     if (m_wasMaximized) {
         ShowWindow(m_targetWindow, SW_MAXIMIZE);
     }
+
+    m_targetWindow = nullptr;
 }
 
 LRESULT CALLBACK ReparentWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {

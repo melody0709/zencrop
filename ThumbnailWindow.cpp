@@ -11,7 +11,7 @@ void ThumbnailWindow::RegisterWindowClass() {
     wcex.hCursor = LoadCursorW(nullptr, IDC_ARROW);
     wcex.hbrBackground = (HBRUSH)GetStockObject(BLACK_BRUSH);
     wcex.lpszClassName = ClassName;
-    wcex.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
+    wcex.hIcon = LoadIconW(GetModuleHandleW(nullptr), MAKEINTRESOURCE(1));
     RegisterClassExW(&wcex);
 }
 
@@ -66,6 +66,7 @@ ThumbnailWindow::~ThumbnailWindow() {
         m_thumbnail = nullptr;
     }
     if (m_hostWindow) {
+        ShowWindow(m_hostWindow, SW_HIDE);
         DestroyWindow(m_hostWindow);
     }
 }

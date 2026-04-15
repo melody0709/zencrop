@@ -3,11 +3,8 @@
 
 const wchar_t* OverlayWindow::ClassName = L"ZenCrop.OverlayWindow";
 const int OverlayWindow::BorderThickness = 5;
+const DWORD OverlayWindow::HoverUpdateIntervalMs = 30;
 static std::once_flag s_overlayClassReg;
-
-bool IsPointWithinRect(POINT const& point, RECT const& rect) {
-    return point.x >= rect.left && point.x <= rect.right && point.y >= rect.top && point.y <= rect.bottom;
-}
 
 void OverlayWindow::RegisterWindowClass() {
     WNDCLASSEXW wcex = { sizeof(wcex) };
@@ -26,6 +23,8 @@ OverlayWindow::OverlayWindow(HWND targetWindow, std::function<void(HWND, RECT)> 
 
     m_screenRect = GetVirtualScreenRect();
     m_targetRect = GetClientRectInScreenSpace(targetWindow);
+    m_hoveredWindow = targetWindow;
+    m_hoveredRect = m_targetRect;
 
     m_window = CreateWindowExW(
         WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
@@ -57,10 +56,51 @@ void OverlayWindow::Show() {
     }
 }
 
-RECT OverlayWindow::GetCropRect() const {
-    if (!m_isDragging) {
-        return m_targetRect;
+HWND OverlayWindow::WindowFromPointExcludingSelf(POINT pt) {
+    LONG_PTR exStyle = GetWindowLongPtrW(m_window, GWL_EXSTYLE);
+    SetWindowLongPtrW(m_window, GWL_EXSTYLE, exStyle | WS_EX_TRANSPARENT);
+    HWND hwndBelow = ::WindowFromPoint(pt);
+    SetWindowLongPtrW(m_window, GWL_EXSTYLE, exStyle);
+
+    if (hwndBelow) {
+        hwndBelow = GetAncestor(hwndBelow, GA_ROOT);
     }
+
+    if (!hwndBelow || hwndBelow == GetDesktopWindow()) {
+        return nullptr;
+    }
+
+    wchar_t className[64] = {};
+    GetClassNameW(hwndBelow, className, 64);
+    if (wcscmp(className, L"Progman") == 0 || wcscmp(className, L"WorkerW") == 0) {
+        return nullptr;
+    }
+
+    return hwndBelow;
+}
+
+void OverlayWindow::UpdateHoveredWindow(POINT pt) {
+    DWORD now = GetTickCount();
+    if (now - m_lastHoverUpdateTick < HoverUpdateIntervalMs) {
+        return;
+    }
+    m_lastHoverUpdateTick = now;
+
+    HWND hwnd = WindowFromPointExcludingSelf(pt);
+    if (hwnd != m_hoveredWindow) {
+        m_hoveredWindow = hwnd;
+        if (hwnd) {
+            m_hoveredRect = GetClientRectInScreenSpace(hwnd);
+            SetWindowPos(m_hoveredWindow, HWND_TOP, 0, 0, 0, 0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        } else {
+            m_hoveredRect = { 0, 0, 0, 0 };
+        }
+        UpdateOverlay();
+    }
+}
+
+RECT OverlayWindow::GetCropRect() const {
     RECT r;
     r.left = std::min(m_startPoint.x, m_currentPoint.x);
     r.right = std::max(m_startPoint.x, m_currentPoint.x);
@@ -98,24 +138,25 @@ void OverlayWindow::UpdateOverlay() {
 
     DWORD* pixels = (DWORD*)pBits;
 
-    int targetLeft = m_targetRect.left - m_screenRect.left;
-    int targetTop = m_targetRect.top - m_screenRect.top;
-    int targetRight = m_targetRect.right - m_screenRect.left;
-    int targetBottom = m_targetRect.bottom - m_screenRect.top;
+    RECT activeRect = m_hoveredRect;
+    int activeLeft = activeRect.left - m_screenRect.left;
+    int activeTop = activeRect.top - m_screenRect.top;
+    int activeRight = activeRect.right - m_screenRect.left;
+    int activeBottom = activeRect.bottom - m_screenRect.top;
 
-    if (targetLeft < 0) targetLeft = 0;
-    if (targetTop < 0) targetTop = 0;
-    if (targetRight > width) targetRight = width;
-    if (targetBottom > height) targetBottom = height;
+    if (activeLeft < 0) activeLeft = 0;
+    if (activeTop < 0) activeTop = 0;
+    if (activeRight > width) activeRight = width;
+    if (activeBottom > height) activeBottom = height;
 
     const DWORD shadePixel = 0x99000000;
     const DWORD clearPixel = 0x01000000;
     const DWORD redPixel = 0xFFFF0000;
 
     for (int y = 0; y < height; y++) {
-        bool inTargetY = (y >= targetTop && y < targetBottom);
+        bool inActiveY = (y >= activeTop && y < activeBottom);
         for (int x = 0; x < width; x++) {
-            if (inTargetY && x >= targetLeft && x < targetRight) {
+            if (inActiveY && x >= activeLeft && x < activeRight) {
                 pixels[y * width + x] = clearPixel;
             } else {
                 pixels[y * width + x] = shadePixel;
@@ -153,21 +194,23 @@ void OverlayWindow::UpdateOverlay() {
         }
     };
 
-    drawBorder(targetLeft, targetTop, targetRight, targetBottom);
+    drawBorder(activeLeft, activeTop, activeRight, activeBottom);
 
-    RECT cropRect = GetCropRect();
-    if (m_isDragging && !IsRectEmpty(&cropRect)) {
-        int cropLeft = cropRect.left - m_screenRect.left;
-        int cropTop = cropRect.top - m_screenRect.top;
-        int cropRight = cropRect.right - m_screenRect.left;
-        int cropBottom = cropRect.bottom - m_screenRect.top;
+    if (m_isDragging) {
+        RECT cropRect = GetCropRect();
+        if (!IsRectEmpty(&cropRect)) {
+            int cropLeft = cropRect.left - m_screenRect.left;
+            int cropTop = cropRect.top - m_screenRect.top;
+            int cropRight = cropRect.right - m_screenRect.left;
+            int cropBottom = cropRect.bottom - m_screenRect.top;
 
-        if (cropLeft < 0) cropLeft = 0;
-        if (cropTop < 0) cropTop = 0;
-        if (cropRight > width) cropRight = width;
-        if (cropBottom > height) cropBottom = height;
+            if (cropLeft < 0) cropLeft = 0;
+            if (cropTop < 0) cropTop = 0;
+            if (cropRight > width) cropRight = width;
+            if (cropBottom > height) cropBottom = height;
 
-        drawBorder(cropLeft, cropTop, cropRight, cropBottom);
+            drawBorder(cropLeft, cropTop, cropRight, cropBottom);
+        }
     }
 
     POINT ptSrc = { 0, 0 };
@@ -206,13 +249,16 @@ LRESULT OverlayWindow::MessageHandler(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
         POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
         ClientToScreen(hwnd, &pt);
 
-        if (!IsPointWithinRect(pt, m_targetRect)) {
+        if (!m_hoveredWindow) {
             ShowWindow(hwnd, SW_HIDE);
             if (m_onCropped) {
                 m_onCropped(m_targetWindow, RECT{0,0,0,0});
             }
             return 0;
         }
+
+        m_targetWindow = m_hoveredWindow;
+        m_targetRect = m_hoveredRect;
 
         m_isDragging = true;
         m_startPoint = pt;
@@ -221,17 +267,19 @@ LRESULT OverlayWindow::MessageHandler(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
         return 0;
     }
     case WM_MOUSEMOVE: {
-        if (m_isDragging) {
-            POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
-            ClientToScreen(hwnd, &pt);
+        POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+        ClientToScreen(hwnd, &pt);
 
-            if (pt.x < m_targetRect.left) pt.x = m_targetRect.left;
-            if (pt.x > m_targetRect.right) pt.x = m_targetRect.right;
-            if (pt.y < m_targetRect.top) pt.y = m_targetRect.top;
-            if (pt.y > m_targetRect.bottom) pt.y = m_targetRect.bottom;
+        if (m_isDragging) {
+            if (pt.x < m_hoveredRect.left) pt.x = m_hoveredRect.left;
+            if (pt.x > m_hoveredRect.right) pt.x = m_hoveredRect.right;
+            if (pt.y < m_hoveredRect.top) pt.y = m_hoveredRect.top;
+            if (pt.y > m_hoveredRect.bottom) pt.y = m_hoveredRect.bottom;
 
             m_currentPoint = pt;
             UpdateOverlay();
+        } else {
+            UpdateHoveredWindow(pt);
         }
         return 0;
     }

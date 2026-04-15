@@ -19,13 +19,20 @@ private:
     RECT m_targetRect = { 0, 0, 0, 0 };
     RECT m_screenRect = { 0, 0, 0, 0 };
 
+    HWND m_hoveredWindow = nullptr;
+    RECT m_hoveredRect = { 0, 0, 0, 0 };
+    DWORD m_lastHoverUpdateTick = 0;
+
     RECT GetCropRect() const;
     void UpdateOverlay();
+    HWND WindowFromPointExcludingSelf(POINT pt);
+    void UpdateHoveredWindow(POINT pt);
 
     static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
     LRESULT MessageHandler(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
     static const wchar_t* ClassName;
     static const int BorderThickness;
+    static const DWORD HoverUpdateIntervalMs;
     static void RegisterWindowClass();
 };
