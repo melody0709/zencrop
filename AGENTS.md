@@ -13,7 +13,9 @@ temp_powertoys 有源码,需要时可仓库对比
 ## Runtime Controls
 
 - **Ctrl+Alt+X**: Reparent mode (captures window by reparenting it)
-- **Ctrl+Alt+T**: Thumbnail mode (captures window as thumbnail)
+- **Ctrl+Alt+C**: Thumbnail mode (captures window as thumbnail)
+- **Ctrl+Alt+Z**: Close all Reparent windows
+- **ESC**: Close focused Thumbnail window / cancel crop
 - **Right-click tray icon**: Show menu (toggle titlebar / exit)
 
 ## Architecture
@@ -44,3 +46,4 @@ temp_powertoys 有源码,需要时可仓库对比
 - **nullptr 条件**: `if (hwnd && hwnd != old)` 在 hwnd 为 nullptr 时不更新，应改为 `if (hwnd != old)` 让 nullptr 也触发更新
 - **图标加载**: 不要用 `IDI_APPLICATION` 或 `LR_LOADFROMFILE`，统一用 `LoadIconW(GetModuleHandleW(nullptr), MAKEINTRESOURCE(1))` 从嵌入资源加载
 - **窗口销毁防闪烁**: 析构时先 `ShowWindow(SW_HIDE)` 再销毁；`RestoreOriginalState` 末尾置 `m_targetWindow = nullptr` 防止 `WM_DESTROY` 重复调用
+- **Thumbnail 窗口销毁**: `WM_DESTROY` 中不要调 `PostQuitMessage`，只做自身清理（注销 thumbnail、置空 `m_hostWindow`）；通过 `IsValid()` 让消息循环清理 `shared_ptr`

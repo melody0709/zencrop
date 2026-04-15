@@ -1,4 +1,5 @@
 #include "ThumbnailWindow.h"
+#include <windowsx.h>
 
 const wchar_t* ThumbnailWindow::ClassName = L"ZenCrop.ThumbnailHost";
 static std::once_flag s_thumbnailClassReg;
@@ -29,24 +30,26 @@ ThumbnailWindow::ThumbnailWindow(HWND targetWindow, RECT cropRect, bool showTitl
     }
     DWORD exStyle = WS_EX_TOOLWINDOW;
 
-    RECT adjustedRect = { 0, 0, width, height };
+    int totalWidth = width + BorderWidth * 2;
+    int totalHeight = height + BorderWidth * 2;
+
+    RECT adjustedRect = { 0, 0, totalWidth, totalHeight };
     AdjustWindowRectEx(&adjustedRect, style, FALSE, exStyle);
     int windowWidth = adjustedRect.right - adjustedRect.left;
     int windowHeight = adjustedRect.bottom - adjustedRect.top;
 
     m_hostWindow = CreateWindowExW(
         exStyle, ClassName, L"ZenCrop - Thumbnail", style,
-        cropRect.left, cropRect.top, windowWidth, windowHeight,
+        cropRect.left - BorderWidth, cropRect.top - BorderWidth,
+        windowWidth, windowHeight,
         nullptr, nullptr, GetModuleHandleW(nullptr), this
     );
 
-    // Calculate source rect relative to target window
     RECT windowRect = { 0 };
-    // Try to get extended frame bounds, fallback to window rect
     if (FAILED(DwmGetWindowAttribute(m_targetWindow, DWMWA_EXTENDED_FRAME_BOUNDS, &windowRect, sizeof(windowRect)))) {
         GetWindowRect(m_targetWindow, &windowRect);
     }
-    
+
     m_sourceRect.left = cropRect.left - windowRect.left;
     m_sourceRect.top = cropRect.top - windowRect.top;
     m_sourceRect.right = cropRect.right - windowRect.left;
@@ -66,8 +69,8 @@ ThumbnailWindow::~ThumbnailWindow() {
         m_thumbnail = nullptr;
     }
     if (m_hostWindow) {
-        ShowWindow(m_hostWindow, SW_HIDE);
         DestroyWindow(m_hostWindow);
+        m_hostWindow = nullptr;
     }
 }
 
@@ -77,20 +80,22 @@ void ThumbnailWindow::UpdateThumbnail() {
     RECT clientRect;
     GetClientRect(m_hostWindow, &clientRect);
 
-    // Maintain aspect ratio
-    float windowWidth = (float)(clientRect.right - clientRect.left);
-    float windowHeight = (float)(clientRect.bottom - clientRect.top);
+    int innerLeft = clientRect.left + BorderWidth;
+    int innerTop = clientRect.top + BorderWidth;
+    int innerWidth = (clientRect.right - clientRect.left) - BorderWidth * 2;
+    int innerHeight = (clientRect.bottom - clientRect.top) - BorderWidth * 2;
+
     float sourceWidth = (float)(m_sourceRect.right - m_sourceRect.left);
     float sourceHeight = (float)(m_sourceRect.bottom - m_sourceRect.top);
 
-    float scaleX = windowWidth / sourceWidth;
-    float scaleY = windowHeight / sourceHeight;
+    float scaleX = (float)innerWidth / sourceWidth;
+    float scaleY = (float)innerHeight / sourceHeight;
     float scale = std::min(scaleX, scaleY);
 
     float destWidth = sourceWidth * scale;
     float destHeight = sourceHeight * scale;
-    float left = (windowWidth - destWidth) / 2.0f;
-    float top = (windowHeight - destHeight) / 2.0f;
+    float left = innerLeft + (innerWidth - destWidth) / 2.0f;
+    float top = innerTop + (innerHeight - destHeight) / 2.0f;
 
     RECT destRect;
     destRect.left = (LONG)left;
@@ -105,6 +110,30 @@ void ThumbnailWindow::UpdateThumbnail() {
     props.rcSource = m_sourceRect;
 
     DwmUpdateThumbnailProperties(m_thumbnail, &props);
+}
+
+void ThumbnailWindow::PaintBorder(HWND hwnd) {
+    PAINTSTRUCT ps;
+    HDC hdc = BeginPaint(hwnd, &ps);
+
+    RECT clientRect;
+    GetClientRect(hwnd, &clientRect);
+
+    HBRUSH brush = CreateSolidBrush(BorderColor);
+
+    RECT topRect = { clientRect.left, clientRect.top, clientRect.right, clientRect.top + BorderWidth };
+    RECT bottomRect = { clientRect.left, clientRect.bottom - BorderWidth, clientRect.right, clientRect.bottom };
+    RECT leftRect = { clientRect.left, clientRect.top + BorderWidth, clientRect.left + BorderWidth, clientRect.bottom - BorderWidth };
+    RECT rightRect = { clientRect.right - BorderWidth, clientRect.top + BorderWidth, clientRect.right, clientRect.bottom - BorderWidth };
+
+    FillRect(hdc, &topRect, brush);
+    FillRect(hdc, &bottomRect, brush);
+    FillRect(hdc, &leftRect, brush);
+    FillRect(hdc, &rightRect, brush);
+
+    DeleteObject(brush);
+
+    EndPaint(hwnd, &ps);
 }
 
 LRESULT CALLBACK ThumbnailWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
@@ -126,16 +155,39 @@ LRESULT CALLBACK ThumbnailWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LP
 
 LRESULT ThumbnailWindow::MessageHandler(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
+    case WM_PAINT:
+        PaintBorder(hwnd);
+        return 0;
+    case WM_ERASEBKGND:
+        return 1;
+    case WM_LBUTTONDOWN: {
+        POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+        ClientToScreen(hwnd, &pt);
+        SendMessageW(hwnd, WM_NCLBUTTONDOWN, HTCAPTION, MAKELPARAM(pt.x, pt.y));
+        return 0;
+    }
+    case WM_KEYDOWN:
+        if (wParam == VK_ESCAPE) {
+            DestroyWindow(hwnd);
+            return 0;
+        }
+        break;
     case WM_SIZE:
     case WM_SIZING:
         UpdateThumbnail();
+        InvalidateRect(hwnd, nullptr, FALSE);
         break;
     case WM_CLOSE:
         DestroyWindow(hwnd);
         return 0;
-    case WM_DESTROY:
-        PostQuitMessage(0);
+    case WM_DESTROY: {
+        if (m_thumbnail) {
+            DwmUnregisterThumbnail(m_thumbnail);
+            m_thumbnail = nullptr;
+        }
+        m_hostWindow = nullptr;
         return 0;
+    }
     }
     return DefWindowProcW(hwnd, msg, wParam, lParam);
 }

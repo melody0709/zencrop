@@ -4,6 +4,7 @@
 #include "ThumbnailWindow.h"
 #include <shellapi.h>
 #include <windowsx.h>
+#include <algorithm>
 
 #define WM_TRAYICON (WM_USER + 1)
 #define ID_TRAY_EXIT 1001
@@ -53,7 +54,8 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
 
         // Register Hotkeys
         RegisterHotKey(hwnd, 1, MOD_CONTROL | MOD_ALT, 'X');
-        RegisterHotKey(hwnd, 2, MOD_CONTROL | MOD_ALT, 'T');
+        RegisterHotKey(hwnd, 2, MOD_CONTROL | MOD_ALT, 'C');
+        RegisterHotKey(hwnd, 3, MOD_CONTROL | MOD_ALT, 'Z');
         return 0;
     }
     case WM_HOTKEY: {
@@ -61,6 +63,8 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
             StartCrop(CropMode::Reparent);
         } else if (wParam == 2) {
             StartCrop(CropMode::Thumbnail);
+        } else if (wParam == 3) {
+            g_reparents.clear();
         }
         return 0;
     }
@@ -120,6 +124,11 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
     while (GetMessageW(&msg, nullptr, 0, 0)) {
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
+
+        g_thumbnails.erase(
+            std::remove_if(g_thumbnails.begin(), g_thumbnails.end(),
+                [](const std::shared_ptr<ThumbnailWindow>& tw) { return !tw->IsValid(); }),
+            g_thumbnails.end());
     }
 
     return 0;

@@ -1,5 +1,20 @@
 # Changelog
 
+## V1.11 (2026-04-15)
+
+### 新增
+
+- **Thumbnail 窗口浅蓝色边框**: Thumbnail 模式裁剪窗口四周显示 3px 玉米蓝边框 (`RGB(100,149,237)`),便于区分裁剪窗口与原窗口
+- **Thumbnail 窗口鼠标拖拽**: 左键点击 Thumbnail 窗口可拖拽移动
+- **Thumbnail 窗口 ESC 关闭**: 按 ESC 键关闭当前聚焦的 Thumbnail 窗口 (仅关闭该窗口,不退出程序)
+- **快捷键 Ctrl+Alt+Z**: 关闭所有 Reparent 模式窗口,恢复原始窗口状态
+
+### 修改
+
+- **快捷键变更**: Thumbnail 模式快捷键从 `Ctrl+Alt+T` 改为 `Ctrl+Alt+C`
+
+---
+
 ## V1.1 (2026-04-15)
 
 ### 新增
