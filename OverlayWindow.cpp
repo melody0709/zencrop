@@ -1,14 +1,17 @@
 #include "OverlayWindow.h"
 #include <windowsx.h>
+#include <cmath>
 
 const wchar_t* OverlayWindow::ClassName = L"ZenCrop.OverlayWindow";
 const int OverlayWindow::BorderThickness = 5;
+const int OverlayWindow::HandleSize = 8;
+const int OverlayWindow::MinCropSize = 10;
 const DWORD OverlayWindow::HoverUpdateIntervalMs = 30;
 static std::once_flag s_overlayClassReg;
 
 void OverlayWindow::RegisterWindowClass() {
     WNDCLASSEXW wcex = { sizeof(wcex) };
-    wcex.style = CS_HREDRAW | CS_VREDRAW;
+    wcex.style = CS_HREDRAW | CS_VREDRAW | CS_DBLCLKS;
     wcex.lpfnWndProc = WndProc;
     wcex.hInstance = GetModuleHandleW(nullptr);
     wcex.hCursor = LoadCursorW(nullptr, IDC_CROSS);
@@ -110,6 +113,80 @@ RECT OverlayWindow::GetCropRect() const {
     return r;
 }
 
+AdjustAction OverlayWindow::HitTestCropRect(POINT pt) const {
+    if (m_cropRect.right - m_cropRect.left <= 0 || m_cropRect.bottom - m_cropRect.top <= 0) {
+        return AdjustAction::None;
+    }
+
+    int hs = HandleSize;
+    int left = m_cropRect.left, right = m_cropRect.right;
+    int top = m_cropRect.top, bottom = m_cropRect.bottom;
+
+    bool inLeftZone = pt.x >= left - hs && pt.x <= left + hs;
+    bool inRightZone = pt.x >= right - hs && pt.x <= right + hs;
+    bool inTopZone = pt.y >= top - hs && pt.y <= top + hs;
+    bool inBottomZone = pt.y >= bottom - hs && pt.y <= bottom + hs;
+    bool inInnerX = pt.x > left + hs && pt.x < right - hs;
+    bool inInnerY = pt.y > top + hs && pt.y < bottom - hs;
+
+    if (inLeftZone && inTopZone) return AdjustAction::ResizeTL;
+    if (inRightZone && inTopZone) return AdjustAction::ResizeTR;
+    if (inLeftZone && inBottomZone) return AdjustAction::ResizeBL;
+    if (inRightZone && inBottomZone) return AdjustAction::ResizeBR;
+    if (inTopZone && inInnerX) return AdjustAction::ResizeT;
+    if (inBottomZone && inInnerX) return AdjustAction::ResizeB;
+    if (inLeftZone && inInnerY) return AdjustAction::ResizeL;
+    if (inRightZone && inInnerY) return AdjustAction::ResizeR;
+
+    if (pt.x > left + hs && pt.x < right - hs && pt.y > top + hs && pt.y < bottom - hs) {
+        return AdjustAction::Move;
+    }
+
+    return AdjustAction::None;
+}
+
+void OverlayWindow::ClampCropRect() {
+    if (m_cropRect.left < m_hoveredRect.left) m_cropRect.left = m_hoveredRect.left;
+    if (m_cropRect.top < m_hoveredRect.top) m_cropRect.top = m_hoveredRect.top;
+    if (m_cropRect.right > m_hoveredRect.right) m_cropRect.right = m_hoveredRect.right;
+    if (m_cropRect.bottom > m_hoveredRect.bottom) m_cropRect.bottom = m_hoveredRect.bottom;
+
+    if (m_cropRect.right - m_cropRect.left < MinCropSize) {
+        int cx = (m_cropRect.left + m_cropRect.right) / 2;
+        m_cropRect.left = cx - MinCropSize / 2;
+        m_cropRect.right = cx + MinCropSize / 2;
+    }
+    if (m_cropRect.bottom - m_cropRect.top < MinCropSize) {
+        int cy = (m_cropRect.top + m_cropRect.bottom) / 2;
+        m_cropRect.top = cy - MinCropSize / 2;
+        m_cropRect.bottom = cy + MinCropSize / 2;
+    }
+}
+
+void OverlayWindow::UpdateCursorForPoint(POINT pt) {
+    AdjustAction action = HitTestCropRect(pt);
+    LPCWSTR cursor = nullptr;
+    switch (action) {
+    case AdjustAction::ResizeTL:
+    case AdjustAction::ResizeBR:
+        cursor = IDC_SIZENWSE; break;
+    case AdjustAction::ResizeTR:
+    case AdjustAction::ResizeBL:
+        cursor = IDC_SIZENESW; break;
+    case AdjustAction::ResizeT:
+    case AdjustAction::ResizeB:
+        cursor = IDC_SIZENS; break;
+    case AdjustAction::ResizeL:
+    case AdjustAction::ResizeR:
+        cursor = IDC_SIZEWE; break;
+    case AdjustAction::Move:
+        cursor = IDC_SIZEALL; break;
+    default:
+        cursor = IDC_ARROW; break;
+    }
+    SetCursor(LoadCursorW(nullptr, cursor));
+}
+
 void OverlayWindow::EnsureBitmap(int width, int height) {
     if (m_memDc && m_bitmap && m_bitmapWidth == width && m_bitmapHeight == height) return;
 
@@ -174,21 +251,16 @@ void OverlayWindow::UpdateOverlay() {
 
     std::fill(m_pixels, m_pixels + (size_t)width * height, shadePixel);
 
-    RECT activeRect = m_hoveredRect;
-    int activeLeft = activeRect.left - m_screenRect.left;
-    int activeTop = activeRect.top - m_screenRect.top;
-    int activeRight = activeRect.right - m_screenRect.left;
-    int activeBottom = activeRect.bottom - m_screenRect.top;
-
-    if (activeLeft < 0) activeLeft = 0;
-    if (activeTop < 0) activeTop = 0;
-    if (activeRight > width) activeRight = width;
-    if (activeBottom > height) activeBottom = height;
-
-    for (int y = activeTop; y < activeBottom; y++) {
-        DWORD* row = m_pixels + (size_t)y * width;
-        std::fill(row + activeLeft, row + activeRight, clearPixel);
-    }
+    auto clearRect = [&](int left, int top, int right, int bottom) {
+        if (left < 0) left = 0;
+        if (top < 0) top = 0;
+        if (right > width) right = width;
+        if (bottom > height) bottom = height;
+        for (int y = top; y < bottom; y++) {
+            DWORD* row = m_pixels + (size_t)y * width;
+            std::fill(row + left, row + right, clearPixel);
+        }
+    };
 
     auto drawBorder = [&](int left, int top, int right, int bottom) {
         for (int t = 0; t < BorderThickness; t++) {
@@ -220,22 +292,69 @@ void OverlayWindow::UpdateOverlay() {
         }
     };
 
-    drawBorder(activeLeft, activeTop, activeRight, activeBottom);
+    auto drawCircle = [&](int cx, int cy, int radius) {
+        for (int dy = -radius; dy <= radius; dy++) {
+            for (int dx = -radius; dx <= radius; dx++) {
+                if (dx * dx + dy * dy <= radius * radius) {
+                    int px = cx + dx;
+                    int py = cy + dy;
+                    if (px >= 0 && px < width && py >= 0 && py < height) {
+                        m_pixels[(size_t)py * width + px] = redPixel;
+                    }
+                }
+            }
+        }
+    };
 
-    if (m_isDragging) {
-        RECT cropRect = GetCropRect();
-        if (!IsRectEmpty(&cropRect)) {
-            int cropLeft = cropRect.left - m_screenRect.left;
-            int cropTop = cropRect.top - m_screenRect.top;
-            int cropRight = cropRect.right - m_screenRect.left;
-            int cropBottom = cropRect.bottom - m_screenRect.top;
+    if (m_state == OverlayState::Adjust) {
+        int cropLeft = m_cropRect.left - m_screenRect.left;
+        int cropTop = m_cropRect.top - m_screenRect.top;
+        int cropRight = m_cropRect.right - m_screenRect.left;
+        int cropBottom = m_cropRect.bottom - m_screenRect.top;
 
-            if (cropLeft < 0) cropLeft = 0;
-            if (cropTop < 0) cropTop = 0;
-            if (cropRight > width) cropRight = width;
-            if (cropBottom > height) cropBottom = height;
+        clearRect(cropLeft, cropTop, cropRight, cropBottom);
+        drawBorder(cropLeft, cropTop, cropRight, cropBottom);
 
-            drawBorder(cropLeft, cropTop, cropRight, cropBottom);
+        int midX = (cropLeft + cropRight) / 2;
+        int midY = (cropTop + cropBottom) / 2;
+        drawCircle(cropLeft, cropTop, HandleSize);
+        drawCircle(cropRight, cropTop, HandleSize);
+        drawCircle(cropLeft, cropBottom, HandleSize);
+        drawCircle(cropRight, cropBottom, HandleSize);
+        drawCircle(midX, cropTop, HandleSize);
+        drawCircle(midX, cropBottom, HandleSize);
+        drawCircle(cropLeft, midY, HandleSize);
+        drawCircle(cropRight, midY, HandleSize);
+    } else {
+        RECT activeRect = m_hoveredRect;
+        int activeLeft = activeRect.left - m_screenRect.left;
+        int activeTop = activeRect.top - m_screenRect.top;
+        int activeRight = activeRect.right - m_screenRect.left;
+        int activeBottom = activeRect.bottom - m_screenRect.top;
+
+        if (activeLeft < 0) activeLeft = 0;
+        if (activeTop < 0) activeTop = 0;
+        if (activeRight > width) activeRight = width;
+        if (activeBottom > height) activeBottom = height;
+
+        clearRect(activeLeft, activeTop, activeRight, activeBottom);
+        drawBorder(activeLeft, activeTop, activeRight, activeBottom);
+
+        if (m_isDragging) {
+            RECT cropRect = GetCropRect();
+            if (!IsRectEmpty(&cropRect)) {
+                int cropLeft = cropRect.left - m_screenRect.left;
+                int cropTop = cropRect.top - m_screenRect.top;
+                int cropRight = cropRect.right - m_screenRect.left;
+                int cropBottom = cropRect.bottom - m_screenRect.top;
+
+                if (cropLeft < 0) cropLeft = 0;
+                if (cropTop < 0) cropTop = 0;
+                if (cropRight > width) cropRight = width;
+                if (cropBottom > height) cropBottom = height;
+
+                drawBorder(cropLeft, cropTop, cropRight, cropBottom);
+            }
         }
     }
 
@@ -268,67 +387,179 @@ LRESULT OverlayWindow::MessageHandler(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
     switch (msg) {
     case WM_ERASEBKGND:
         return 1;
+
     case WM_LBUTTONDOWN: {
         POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
         ClientToScreen(hwnd, &pt);
 
-        if (!m_hoveredWindow) {
-            m_pendingCropRect = {0, 0, 0, 0};
-            ShowWindow(hwnd, SW_HIDE);
-            PostMessage(hwnd, WM_APP, 0, 0);
-            return 0;
+        if (m_state == OverlayState::Hover) {
+            if (!m_hoveredWindow) {
+                m_pendingCropRect = {0, 0, 0, 0};
+                ShowWindow(hwnd, SW_HIDE);
+                PostMessage(hwnd, WM_APP, 0, 0);
+                return 0;
+            }
+
+            m_targetWindow = m_hoveredWindow;
+            m_targetRect = m_hoveredRect;
+
+            m_state = OverlayState::DragCreate;
+            m_isDragging = true;
+            m_startPoint = pt;
+            m_currentPoint = pt;
+            UpdateOverlay();
+        } else if (m_state == OverlayState::Adjust) {
+            AdjustAction action = HitTestCropRect(pt);
+            if (action == AdjustAction::None) {
+                m_state = OverlayState::Hover;
+                m_cropRect = {0, 0, 0, 0};
+                SetCursor(LoadCursorW(nullptr, IDC_CROSS));
+                UpdateOverlay();
+                return 0;
+            }
+
+            m_adjustAction = action;
+            m_adjustAnchor = pt;
+            m_adjustStartRect = m_cropRect;
+            SetCapture(hwnd);
         }
-
-        m_targetWindow = m_hoveredWindow;
-        m_targetRect = m_hoveredRect;
-
-        m_isDragging = true;
-        m_startPoint = pt;
-        m_currentPoint = pt;
-        UpdateOverlay();
         return 0;
     }
+
     case WM_MOUSEMOVE: {
         POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
         ClientToScreen(hwnd, &pt);
 
-        if (m_isDragging) {
-            if (pt.x < m_hoveredRect.left) pt.x = m_hoveredRect.left;
-            if (pt.x > m_hoveredRect.right) pt.x = m_hoveredRect.right;
-            if (pt.y < m_hoveredRect.top) pt.y = m_hoveredRect.top;
-            if (pt.y > m_hoveredRect.bottom) pt.y = m_hoveredRect.bottom;
-
-            m_currentPoint = pt;
-            UpdateOverlay();
-        } else {
+        if (m_state == OverlayState::Hover) {
             UpdateHoveredWindow(pt);
-        }
-        return 0;
-    }
-    case WM_LBUTTONUP: {
-        if (m_isDragging) {
-            m_pendingCropRect = GetCropRect();
-            m_isDragging = false;
-            ReleaseCapture();
-            ShowWindow(hwnd, SW_HIDE);
-            PostMessage(hwnd, WM_APP, 0, 0);
-        }
-        return 0;
-    }
-    case WM_KEYDOWN: {
-        if (wParam == VK_ESCAPE) {
+        } else if (m_state == OverlayState::DragCreate) {
             if (m_isDragging) {
-                m_isDragging = false;
-                ReleaseCapture();
+                if (pt.x < m_hoveredRect.left) pt.x = m_hoveredRect.left;
+                if (pt.x > m_hoveredRect.right) pt.x = m_hoveredRect.right;
+                if (pt.y < m_hoveredRect.top) pt.y = m_hoveredRect.top;
+                if (pt.y > m_hoveredRect.bottom) pt.y = m_hoveredRect.bottom;
+
+                m_currentPoint = pt;
+                UpdateOverlay();
+            }
+        } else if (m_state == OverlayState::Adjust) {
+            if (m_adjustAction != AdjustAction::None) {
+                int dx = pt.x - m_adjustAnchor.x;
+                int dy = pt.y - m_adjustAnchor.y;
+                RECT r = m_adjustStartRect;
+
+                switch (m_adjustAction) {
+                case AdjustAction::Move:
+                    r.left += dx; r.right += dx;
+                    r.top += dy; r.bottom += dy;
+                    break;
+                case AdjustAction::ResizeTL:
+                    r.left += dx; r.top += dy; break;
+                case AdjustAction::ResizeTR:
+                    r.right += dx; r.top += dy; break;
+                case AdjustAction::ResizeBL:
+                    r.left += dx; r.bottom += dy; break;
+                case AdjustAction::ResizeBR:
+                    r.right += dx; r.bottom += dy; break;
+                case AdjustAction::ResizeT:
+                    r.top += dy; break;
+                case AdjustAction::ResizeB:
+                    r.bottom += dy; break;
+                case AdjustAction::ResizeL:
+                    r.left += dx; break;
+                case AdjustAction::ResizeR:
+                    r.right += dx; break;
+                default: break;
+                }
+
+                if (r.right - r.left < MinCropSize) {
+                    if (m_adjustAction == AdjustAction::ResizeL || m_adjustAction == AdjustAction::ResizeTL || m_adjustAction == AdjustAction::ResizeBL) {
+                        r.left = r.right - MinCropSize;
+                    } else {
+                        r.right = r.left + MinCropSize;
+                    }
+                }
+                if (r.bottom - r.top < MinCropSize) {
+                    if (m_adjustAction == AdjustAction::ResizeT || m_adjustAction == AdjustAction::ResizeTL || m_adjustAction == AdjustAction::ResizeTR) {
+                        r.top = r.bottom - MinCropSize;
+                    } else {
+                        r.bottom = r.top + MinCropSize;
+                    }
+                }
+
+                m_cropRect = r;
+                ClampCropRect();
                 UpdateOverlay();
             } else {
-                m_pendingCropRect = {0, 0, 0, 0};
+                UpdateCursorForPoint(pt);
+            }
+        }
+        return 0;
+    }
+
+    case WM_LBUTTONUP: {
+        if (m_state == OverlayState::DragCreate && m_isDragging) {
+            m_isDragging = false;
+            m_cropRect = GetCropRect();
+
+            if (m_cropRect.right - m_cropRect.left < MinCropSize ||
+                m_cropRect.bottom - m_cropRect.top < MinCropSize) {
+                m_state = OverlayState::Hover;
+                SetCursor(LoadCursorW(nullptr, IDC_CROSS));
+                UpdateOverlay();
+            } else {
+                m_state = OverlayState::Adjust;
+                ClampCropRect();
+                UpdateCursorForPoint(m_currentPoint);
+                UpdateOverlay();
+            }
+        } else if (m_state == OverlayState::Adjust && m_adjustAction != AdjustAction::None) {
+            m_adjustAction = AdjustAction::None;
+            ReleaseCapture();
+            SetCapture(hwnd);
+        }
+        return 0;
+    }
+
+    case WM_LBUTTONDBLCLK: {
+        if (m_state == OverlayState::Adjust) {
+            POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+            ClientToScreen(hwnd, &pt);
+
+            AdjustAction action = HitTestCropRect(pt);
+            if (action != AdjustAction::None) {
+                m_pendingCropRect = m_cropRect;
+                ReleaseCapture();
                 ShowWindow(hwnd, SW_HIDE);
                 PostMessage(hwnd, WM_APP, 0, 0);
             }
         }
         return 0;
     }
+
+    case WM_KEYDOWN: {
+        if (wParam == VK_ESCAPE) {
+            if (m_state == OverlayState::DragCreate && m_isDragging) {
+                m_isDragging = false;
+                m_state = OverlayState::Hover;
+                SetCursor(LoadCursorW(nullptr, IDC_CROSS));
+                UpdateOverlay();
+            } else if (m_state == OverlayState::Adjust) {
+                m_state = OverlayState::Hover;
+                m_cropRect = {0, 0, 0, 0};
+                m_adjustAction = AdjustAction::None;
+                SetCursor(LoadCursorW(nullptr, IDC_CROSS));
+                UpdateOverlay();
+            } else if (m_state == OverlayState::Hover) {
+                m_pendingCropRect = {0, 0, 0, 0};
+                ReleaseCapture();
+                ShowWindow(hwnd, SW_HIDE);
+                PostMessage(hwnd, WM_APP, 0, 0);
+            }
+        }
+        return 0;
+    }
+
     case WM_APP: {
         if (m_onCropped) {
             m_onCropped(m_targetWindow, m_pendingCropRect);

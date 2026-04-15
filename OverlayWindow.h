@@ -1,6 +1,9 @@
 #pragma once
 #include "Utils.h"
 
+enum class OverlayState { Hover, DragCreate, Adjust };
+enum class AdjustAction { None, Move, ResizeTL, ResizeTR, ResizeBL, ResizeBR, ResizeT, ResizeB, ResizeL, ResizeR };
+
 class OverlayWindow {
 public:
     OverlayWindow(HWND targetWindow, std::function<void(HWND, RECT)> onCropped);
@@ -13,6 +16,8 @@ private:
     HWND m_targetWindow = nullptr;
     std::function<void(HWND, RECT)> m_onCropped;
 
+    OverlayState m_state = OverlayState::Hover;
+
     bool m_isDragging = false;
     POINT m_startPoint = { 0, 0 };
     POINT m_currentPoint = { 0, 0 };
@@ -24,6 +29,11 @@ private:
     DWORD m_lastHoverUpdateTick = 0;
 
     RECT m_pendingCropRect = { 0, 0, 0, 0 };
+
+    RECT m_cropRect = { 0, 0, 0, 0 };
+    AdjustAction m_adjustAction = AdjustAction::None;
+    POINT m_adjustAnchor = { 0, 0 };
+    RECT m_adjustStartRect = { 0, 0, 0, 0 };
 
     HDC m_memDc = nullptr;
     HBITMAP m_bitmap = nullptr;
@@ -40,11 +50,17 @@ private:
     HWND WindowFromPointExcludingSelf(POINT pt);
     void UpdateHoveredWindow(POINT pt);
 
+    AdjustAction HitTestCropRect(POINT pt) const;
+    void ClampCropRect();
+    void UpdateCursorForPoint(POINT pt);
+
     static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
     LRESULT MessageHandler(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
     static const wchar_t* ClassName;
     static const int BorderThickness;
+    static const int HandleSize;
+    static const int MinCropSize;
     static const DWORD HoverUpdateIntervalMs;
     static void RegisterWindowClass();
 };

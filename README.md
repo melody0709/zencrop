@@ -1,4 +1,4 @@
-# ZenCrop v1.3
+# ZenCrop v1.3.1
 
 [中文文档](README_zh.md)
 
@@ -18,7 +18,8 @@ ZenCrop is rebuilt from scratch, runs completely standalone without PowerToys, a
 - **Overlapping Window Handling**: Hovered windows are automatically raised to the top of the Z-order, ensuring real content is displayed in overlapping areas
 - **Desktop Filtering**: The desktop background cannot be selected as a crop target, avoiding empty output
 - **Borderless / Titlebar Toggle**: Windows are borderless by default; toggle titlebar visibility via the tray menu
-- **Self-Window Filtering**: Prevents cropping ZenCrop's own windows to avoid recursion
+- **Crop Area Adjustment**: After drawing the crop rectangle, you can resize it by dragging edges/corners, move it by dragging inside, and double-click to confirm — no more accidental crops
+- **Smart Cursor**: Cursor automatically changes to indicate resize/move actions when hovering over handles or inside the crop rectangle
 - **Stale Window Cleanup**: Automatically removes Reparent/Thumbnail windows whose target has been closed externally
 - **System Tray**: Runs in the background; right-click the tray icon for the menu
 
@@ -29,17 +30,21 @@ ZenCrop is rebuilt from scratch, runs completely standalone without PowerToys, a
 | `Ctrl+Alt+X` | Start Reparent crop mode |
 | `Ctrl+Alt+C` | Start Thumbnail crop mode |
 | `Ctrl+Alt+Z` | Close all Reparent windows |
-| `ESC` | Close focused Thumbnail window / cancel crop |
+| `ESC` | Cancel current crop rectangle / cancel entire crop mode / close focused Thumbnail window |
 | Right-click tray icon | Open menu (toggle titlebar / exit) |
 
 ## Usage
 
 1. Press `Ctrl+Alt+X` or `Ctrl+Alt+C` to enter crop mode
 2. Move the mouse — the overlay automatically highlights the window under the cursor
-3. Click and drag on the target window to select the crop area
-4. Release the mouse to complete the crop
-5. Press `ESC` to cancel cropping or close a Thumbnail window
-6. Press `Ctrl+Alt+Z` to close all Reparent windows
+3. Click and drag on the target window to draw the crop rectangle
+4. Release the mouse — the rectangle enters **adjust mode**:
+   - Drag edges/corners to resize
+   - Drag inside the rectangle to move
+   - Double-click inside the rectangle to confirm the crop
+   - Press `ESC` to cancel the rectangle and redraw, press `ESC` again to exit
+   - Click outside the rectangle to cancel and redraw
+5. Press `Ctrl+Alt+Z` to close all Reparent windows
 
 > **Note**: The desktop background cannot be selected as a crop target. Clicking on the desktop will automatically exit crop mode.
 

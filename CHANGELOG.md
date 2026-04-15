@@ -1,5 +1,26 @@
 # Changelog
 
+## V1.3.1 (2026-04-15)
+
+### 新增
+
+- **裁剪矩形调整模式**: 拖拽绘制矩形后不再立即确认，进入调整模式，支持以下操作：
+  - 拖拽边/角 → 拉伸矩形
+  - 拖拽矩形内部 → 移动矩形
+  - 双击矩形内部 → 确认裁剪，生成窗口
+  - ESC → 取消当前矩形，回到悬停模式（可重新绘制，鼠标移到其他窗口也能自动激活）
+  - 再次 ESC → 取消整个操作
+  - 点击矩形外部 → 取消当前矩形，回到悬停模式
+- **8 个调整手柄**: 调整模式下矩形四角和四边中点显示红色实心圆点手柄，直观提示可调整区域
+- **智能光标切换**: 鼠标悬停在手柄/矩形内部/矩形外部时自动切换对应光标样式（对角↔↔↕↔✋→）
+
+### 修改
+
+- `OverlayWindow.h`: 新增 `OverlayState`、`AdjustAction` 枚举，新增 `m_cropRect`、`m_adjustAction`、`m_adjustAnchor`、`m_adjustStartRect` 成员，新增 `HitTestCropRect`、`ClampCropRect`、`UpdateCursorForPoint` 方法
+- `OverlayWindow.cpp`: 注册窗口类添加 `CS_DBLCLKS`；重写 `MessageHandler` 为三阶段状态机 (Hover → DragCreate → Adjust)；`UpdateOverlay` 新增调整模式渲染（裁剪矩形 + 圆点手柄）；`WM_LBUTTONUP` 不再立即发送回调
+
+---
+
 ## V1.3 (2026-04-15)
 
 ### 修复
