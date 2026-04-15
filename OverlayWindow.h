@@ -20,10 +20,12 @@ private:
     RECT m_screenRect = { 0, 0, 0, 0 };
 
     RECT GetCropRect() const;
+    void UpdateOverlay();
 
     static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
     LRESULT MessageHandler(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
     static const wchar_t* ClassName;
+    static const int BorderThickness;
     static void RegisterWindowClass();
 };

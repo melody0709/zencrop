@@ -9,7 +9,6 @@ temp_powertoys 有源码,需要时可仓库对比
 ## Build Commands
 
 - **MSVC build script**: `build.bat` (requires Visual Studio 2022 with vcvars64)
-- **CMake build**: `cmake -B build && cmake --build build`
 
 ## Runtime Controls
 
@@ -38,20 +37,26 @@ temp_powertoys 有源码,需要时可仓库对比
 
 > AI 在完成重大修改或解决复杂报错后，可以追加经验记录,更新AGENTS.md。
 
-### 图标编译问题 (2025-04-15)
 
-**问题**: exe 和 tray 图标不显示
+### 激活区域遮罩优化 (2026-04-15)
 
-**根因**: 
-- `rc /fo build\app.res app.ico` 只编译了ico文件,没有生成正确的PE资源结构
-- CMake 原来用 `RESOURCE` 属性直接添加 ico 也不生效
+**问题**:
+1. 激活区域有白色透明遮罩，影响视觉效果
+2. 框选时会出现闪烁现象
+
+**根因**:
+1. `SetLayeredWindowAttributes` + `LWA_ALPHA` 对整个窗口应用统一透明度，无法区分激活/非激活区域
+2. 窗口类注册了 `hbrBackground`，导致未绘制区域显示默认背景色（白色半透明）
+3. `WM_PAINT` + `InvalidateRect` 方式导致闪烁
 
 **解决**:
-1. 创建 `resources.rc` 显式声明图标资源: `1 ICON "app.ico"`
-2. build.bat 改为 `rc /fo build\app.res resources.rc`
-3. CMakeLists.txt 将 `resources.rc` 加入源列表
-4. tray 图标从 exe 同目录下加载 `app.ico`
+1. 改用 `UpdateLayeredWindow` + 32位 ARGB DIB Section 实现逐像素 alpha 通道控制
+2. 非激活区域: alpha=153 (60%透明度黑色遮罩)
+3. 激活区域: alpha=1 (近乎全透明，但保留点击响应)
+4. 红色边框: alpha=255 (完全不透明)
+5. 移除 `SetLayeredWindowAttributes` 和 `WM_PAINT`，改用 `UpdateOverlay()` 直接更新
+6. 使用 `WM_ERASEBKGND` 返回1阻止背景擦除，消除闪烁
 
-**输出文件**:
-- `build/ZenCrop.exe` (bat编译)
-- `build/Release/ZenCrop.exe` (cmake编译)
+**修改文件**:
+- `OverlayWindow.h` - 添加 `UpdateOverlay()` 和 `BorderThickness` 成员
+- `OverlayWindow.cpp` - 完全重写绘制逻辑
