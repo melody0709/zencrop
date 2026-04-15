@@ -30,26 +30,12 @@ ReparentWindow::ReparentWindow(HWND targetWindow, RECT cropRect, bool showTitleb
 
     SaveOriginalState();
 
-    if (m_wasMaximized) {
-        LONG_PTR style = GetWindowLongPtrW(m_targetWindow, GWL_STYLE);
-        style &= ~WS_MAXIMIZE;
-        SetWindowLongPtrW(m_targetWindow, GWL_STYLE, style);
-
-        MONITORINFO mi = { sizeof(mi) };
-        GetMonitorInfo(MonitorFromWindow(m_targetWindow, MONITOR_DEFAULTTONEAREST), &mi);
-        SetWindowPos(m_targetWindow, nullptr,
-            mi.rcWork.left, mi.rcWork.top,
-            mi.rcWork.right - mi.rcWork.left,
-            mi.rcWork.bottom - mi.rcWork.top,
-            SWP_NOZORDER | SWP_FRAMECHANGED | SWP_NOACTIVATE);
-    }
-
     int width = cropRect.right - cropRect.left;
     int height = cropRect.bottom - cropRect.top;
 
     DWORD style;
     DWORD exStyle = WS_EX_TOOLWINDOW;
-    if (showTitlebar) {
+    if (m_showTitlebar) {
         style = WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN;
         style &= ~(WS_MAXIMIZEBOX | WS_THICKFRAME);
     } else {
@@ -76,40 +62,26 @@ ReparentWindow::ReparentWindow(HWND targetWindow, RECT cropRect, bool showTitleb
         0, 0, width, height, m_hostWindow, nullptr, GetModuleHandleW(nullptr), nullptr
     );
 
-    RECT targetRect;
-    GetWindowRect(m_targetWindow, &targetRect);
+    int offsetX = cropRect.left - m_originalRect.left;
+    int offsetY = cropRect.top - m_originalRect.top;
 
-    int diffX = 0, diffY = 0;
-    if (m_wasMaximized) {
-        MONITORINFO mi = { sizeof(mi) };
-        GetMonitorInfo(MonitorFromWindow(m_targetWindow, MONITOR_DEFAULTTONEAREST), &mi);
-        diffX = mi.rcWork.left - targetRect.left;
-        diffY = mi.rcWork.top - targetRect.top;
-    }
-
-    RECT adjustedCropRect = cropRect;
-    adjustedCropRect.left += diffX;
-    adjustedCropRect.top += diffY;
-    adjustedCropRect.right += diffX;
-    adjustedCropRect.bottom += diffY;
-
-    int offsetX = adjustedCropRect.left - targetRect.left;
-    int offsetY = adjustedCropRect.top - targetRect.top;
+    // Show and position host and child before reparenting
+    // This is critical for DComp/XAML windows to not disconnect their visual tree
+    SetWindowPos(m_hostWindow, HWND_TOPMOST, 0, 0, 0, 0,
+        SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW | SWP_NOACTIVATE);
+    SetWindowPos(m_childWindow, nullptr, 0, 0, width, height,
+        SWP_NOMOVE | SWP_NOZORDER | SWP_SHOWWINDOW | SWP_NOACTIVATE);
 
     SetParent(m_targetWindow, m_childWindow);
     LONG_PTR targetStyle = GetWindowLongPtrW(m_targetWindow, GWL_STYLE);
     targetStyle |= WS_CHILD;
     SetWindowLongPtrW(m_targetWindow, GWL_STYLE, targetStyle);
 
-    SetWindowPos(m_targetWindow, nullptr, -offsetX, -offsetY, 0, 0,
-        SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED | SWP_NOACTIVATE);
+    if (0 == SetWindowPos(m_targetWindow, nullptr, -offsetX, -offsetY, 0, 0,
+        SWP_NOSIZE | SWP_FRAMECHANGED | SWP_NOZORDER)) {
+        // Log or handle error if needed
+    }
 
-    SetWindowPos(m_hostWindow, HWND_TOPMOST, 0, 0, 0, 0,
-        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-    SetWindowPos(m_hostWindow, nullptr, 0, 0, 0, 0,
-        SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW | SWP_NOACTIVATE);
-
-    ShowWindow(m_childWindow, SW_SHOW);
     UpdateWindow(m_childWindow);
 }
 
@@ -200,13 +172,8 @@ LRESULT ReparentWindow::MessageHandler(HWND hwnd, UINT msg, WPARAM wParam, LPARA
         }
         return MA_NOACTIVATE;
     case WM_ACTIVATE:
-        if (!m_showTitlebar) {
-            // Extend DWM frame into client area for borderless mode
-            MARGINS margins = { -1, -1, -1, -1 };
-            DwmExtendFrameIntoClientArea(hwnd, &margins);
-        }
         if (LOWORD(wParam) == WA_ACTIVE) {
-            if (m_targetWindow) {
+            if (m_targetWindow && IsWindow(m_targetWindow)) {
                 SetForegroundWindow(m_targetWindow);
             }
         }
