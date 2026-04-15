@@ -2,9 +2,11 @@
 #include "OverlayWindow.h"
 #include "ReparentWindow.h"
 #include "ThumbnailWindow.h"
+#include "SmartDetector.h"
 #include <shellapi.h>
 #include <windowsx.h>
 #include <algorithm>
+#include <objbase.h>
 
 #define WM_TRAYICON (WM_USER + 1)
 #define ID_TRAY_EXIT 1001
@@ -110,8 +112,9 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
 }
 
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
-    // Process DPI awareness
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+    CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    SmartDetector::Instance().Initialize();
 
     const wchar_t* className = L"ZenCrop.Main";
     WNDCLASSEXW wcex = { sizeof(wcex) };
@@ -138,5 +141,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
             g_thumbnails.end());
     }
 
+    SmartDetector::Instance().Shutdown();
+    CoUninitialize();
     return 0;
 }

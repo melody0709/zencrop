@@ -1,5 +1,32 @@
 # Changelog
 
+## V1.3.5 (2026-04-15)
+
+### 新增
+
+- **智能内容区域检测**: 基于 UI Automation (`IUIAutomation::ElementFromPoint`) 实现鼠标下方 UI 元素自动识别，无需维护白名单
+  - 浏览器：鼠标在标题栏/地址栏/内容区域时自动框选对应区域
+  - 模拟器（MuMu、LDPlayer 等）：自动框选渲染区域，排除标题栏
+  - 终端（PowerShell、Windows Terminal）：自动框选内容区域
+  - 传统 Win32 应用（Notepad 等）：自动框选编辑区域
+- **单击接受建议**: 单击（无拖拽）即可接受智能建议框进入调整模式，拖拽仍可手动绘制矩形
+- **红色虚线建议框**: 悬停时显示红色虚线建议框（8px 绘制 + 4px 间隔），替代原来的整个窗口红色实线框
+- **三层检测回退**: UIA ElementFromPoint → RealChildWindowFromPoint → 全客户区
+
+### 修改
+
+- 新增 `SmartDetector.h/cpp`：封装 UIA 检测逻辑，单例模式，`GetElementRectAtPoint` + `GetChildWindowRectAtPoint`
+- `main.cpp`：添加 `CoInitializeEx` / `CoUninitialize`，启动/关闭 SmartDetector
+- `OverlayWindow.h`：新增 `m_smartRect`、`m_hasSmartRect`、`m_clickStartPoint`、`ClickThreshold`
+- `OverlayWindow.cpp`：
+  - `UpdateHoveredWindow` 每次鼠标移动都调用 SmartDetector 更新建议框
+  - `UpdateOverlay` 有建议框时渲染红色虚线 + 清除建议区域，无建议框时回退到整个窗口红色实线框
+  - `WM_LBUTTONUP` 区分单击（< 5px 位移）和拖拽，单击接受建议框或整个窗口客户区
+- `build.bat` / `CMakeLists.txt`：添加 `SmartDetector.cpp`、`ole32.lib`、`oleaut32.lib`
+- 所有边框粗细从 5px 改为 3px
+
+---
+
 ## V1.3.1 (2026-04-15)
 
 ### 新增

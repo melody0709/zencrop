@@ -1,11 +1,13 @@
 #include "OverlayWindow.h"
+#include "SmartDetector.h"
 #include <windowsx.h>
 #include <cmath>
 
 const wchar_t* OverlayWindow::ClassName = L"ZenCrop.OverlayWindow";
-const int OverlayWindow::BorderThickness = 5;
+const int OverlayWindow::BorderThickness = 3;
 const int OverlayWindow::HandleSize = 8;
 const int OverlayWindow::MinCropSize = 10;
+const int OverlayWindow::ClickThreshold = 5;
 const DWORD OverlayWindow::HoverUpdateIntervalMs = 30;
 static std::once_flag s_overlayClassReg;
 
@@ -91,7 +93,9 @@ void OverlayWindow::UpdateHoveredWindow(POINT pt) {
     m_lastHoverUpdateTick = now;
 
     HWND hwnd = WindowFromPointExcludingSelf(pt);
-    if (hwnd != m_hoveredWindow) {
+    bool windowChanged = (hwnd != m_hoveredWindow);
+
+    if (windowChanged) {
         m_hoveredWindow = hwnd;
         if (hwnd) {
             m_hoveredRect = GetClientRectInScreenSpace(hwnd);
@@ -100,8 +104,38 @@ void OverlayWindow::UpdateHoveredWindow(POINT pt) {
         } else {
             m_hoveredRect = { 0, 0, 0, 0 };
         }
-        UpdateOverlay();
     }
+
+    m_hasSmartRect = false;
+    if (m_hoveredWindow && m_state == OverlayState::Hover) {
+        RECT elemRect = {};
+        if (SmartDetector::Instance().GetElementRectAtPoint(pt, elemRect, m_window)) {
+            RECT clamped = elemRect;
+            if (clamped.left < m_hoveredRect.left) clamped.left = m_hoveredRect.left;
+            if (clamped.top < m_hoveredRect.top) clamped.top = m_hoveredRect.top;
+            if (clamped.right > m_hoveredRect.right) clamped.right = m_hoveredRect.right;
+            if (clamped.bottom > m_hoveredRect.bottom) clamped.bottom = m_hoveredRect.bottom;
+
+            if (clamped.right - clamped.left > 5 && clamped.bottom - clamped.top > 5 &&
+                !EqualRect(&clamped, &m_hoveredRect)) {
+                m_smartRect = clamped;
+                m_hasSmartRect = true;
+            }
+        }
+
+        if (!m_hasSmartRect) {
+            RECT childRect = {};
+            if (SmartDetector::Instance().GetChildWindowRectAtPoint(m_hoveredWindow, pt, childRect)) {
+                if (childRect.right - childRect.left > 5 && childRect.bottom - childRect.top > 5 &&
+                    !EqualRect(&childRect, &m_hoveredRect)) {
+                    m_smartRect = childRect;
+                    m_hasSmartRect = true;
+                }
+            }
+        }
+    }
+
+    UpdateOverlay();
 }
 
 RECT OverlayWindow::GetCropRect() const {
@@ -306,6 +340,44 @@ void OverlayWindow::UpdateOverlay() {
         }
     };
 
+    auto drawDashedBorder = [&](int left, int top, int right, int bottom, DWORD color) {
+        int dashLen = 8;
+        int gapLen = 4;
+        int period = dashLen + gapLen;
+
+        for (int y : {top, bottom - 1}) {
+            if (y >= 0 && y < height) {
+                int x = std::max(left, 0);
+                int end = std::min(right, width);
+                int pos = x - left;
+                while (x < end) {
+                    int inDash = pos % period;
+                    if (inDash < dashLen) {
+                        m_pixels[(size_t)y * width + x] = color;
+                    }
+                    x++;
+                    pos++;
+                }
+            }
+        }
+
+        for (int x : {left, right - 1}) {
+            if (x >= 0 && x < width) {
+                int y = std::max(top, 0);
+                int end = std::min(bottom, height);
+                int pos = y - top;
+                while (y < end) {
+                    int inDash = pos % period;
+                    if (inDash < dashLen) {
+                        m_pixels[(size_t)y * width + x] = color;
+                    }
+                    y++;
+                    pos++;
+                }
+            }
+        }
+    };
+
     if (m_state == OverlayState::Adjust) {
         int cropLeft = m_cropRect.left - m_screenRect.left;
         int cropTop = m_cropRect.top - m_screenRect.top;
@@ -326,19 +398,34 @@ void OverlayWindow::UpdateOverlay() {
         drawCircle(cropLeft, midY, HandleSize);
         drawCircle(cropRight, midY, HandleSize);
     } else {
-        RECT activeRect = m_hoveredRect;
-        int activeLeft = activeRect.left - m_screenRect.left;
-        int activeTop = activeRect.top - m_screenRect.top;
-        int activeRight = activeRect.right - m_screenRect.left;
-        int activeBottom = activeRect.bottom - m_screenRect.top;
+        if (m_hasSmartRect) {
+            int smartLeft = m_smartRect.left - m_screenRect.left;
+            int smartTop = m_smartRect.top - m_screenRect.top;
+            int smartRight = m_smartRect.right - m_screenRect.left;
+            int smartBottom = m_smartRect.bottom - m_screenRect.top;
 
-        if (activeLeft < 0) activeLeft = 0;
-        if (activeTop < 0) activeTop = 0;
-        if (activeRight > width) activeRight = width;
-        if (activeBottom > height) activeBottom = height;
+            if (smartLeft < 0) smartLeft = 0;
+            if (smartTop < 0) smartTop = 0;
+            if (smartRight > width) smartRight = width;
+            if (smartBottom > height) smartBottom = height;
 
-        clearRect(activeLeft, activeTop, activeRight, activeBottom);
-        drawBorder(activeLeft, activeTop, activeRight, activeBottom);
+            clearRect(smartLeft, smartTop, smartRight, smartBottom);
+            drawDashedBorder(smartLeft, smartTop, smartRight, smartBottom, redPixel);
+        } else if (m_hoveredWindow) {
+            RECT activeRect = m_hoveredRect;
+            int activeLeft = activeRect.left - m_screenRect.left;
+            int activeTop = activeRect.top - m_screenRect.top;
+            int activeRight = activeRect.right - m_screenRect.left;
+            int activeBottom = activeRect.bottom - m_screenRect.top;
+
+            if (activeLeft < 0) activeLeft = 0;
+            if (activeTop < 0) activeTop = 0;
+            if (activeRight > width) activeRight = width;
+            if (activeBottom > height) activeBottom = height;
+
+            clearRect(activeLeft, activeTop, activeRight, activeBottom);
+            drawBorder(activeLeft, activeTop, activeRight, activeBottom);
+        }
 
         if (m_isDragging) {
             RECT cropRect = GetCropRect();
@@ -405,6 +492,7 @@ LRESULT OverlayWindow::MessageHandler(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
 
             m_state = OverlayState::DragCreate;
             m_isDragging = true;
+            m_clickStartPoint = pt;
             m_startPoint = pt;
             m_currentPoint = pt;
             UpdateOverlay();
@@ -500,18 +588,37 @@ LRESULT OverlayWindow::MessageHandler(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
     case WM_LBUTTONUP: {
         if (m_state == OverlayState::DragCreate && m_isDragging) {
             m_isDragging = false;
-            m_cropRect = GetCropRect();
 
-            if (m_cropRect.right - m_cropRect.left < MinCropSize ||
-                m_cropRect.bottom - m_cropRect.top < MinCropSize) {
-                m_state = OverlayState::Hover;
-                SetCursor(LoadCursorW(nullptr, IDC_CROSS));
-                UpdateOverlay();
-            } else {
+            int dx = m_currentPoint.x - m_clickStartPoint.x;
+            int dy = m_currentPoint.y - m_clickStartPoint.y;
+            bool isClick = (dx * dx + dy * dy) < (ClickThreshold * ClickThreshold);
+
+            if (isClick && m_hasSmartRect) {
+                m_cropRect = m_smartRect;
                 m_state = OverlayState::Adjust;
                 ClampCropRect();
                 UpdateCursorForPoint(m_currentPoint);
                 UpdateOverlay();
+            } else if (isClick) {
+                m_cropRect = m_hoveredRect;
+                m_state = OverlayState::Adjust;
+                ClampCropRect();
+                UpdateCursorForPoint(m_currentPoint);
+                UpdateOverlay();
+            } else {
+                m_cropRect = GetCropRect();
+
+                if (m_cropRect.right - m_cropRect.left < MinCropSize ||
+                    m_cropRect.bottom - m_cropRect.top < MinCropSize) {
+                    m_state = OverlayState::Hover;
+                    SetCursor(LoadCursorW(nullptr, IDC_CROSS));
+                    UpdateOverlay();
+                } else {
+                    m_state = OverlayState::Adjust;
+                    ClampCropRect();
+                    UpdateCursorForPoint(m_currentPoint);
+                    UpdateOverlay();
+                }
             }
         } else if (m_state == OverlayState::Adjust && m_adjustAction != AdjustAction::None) {
             m_adjustAction = AdjustAction::None;

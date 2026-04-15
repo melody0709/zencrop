@@ -12,6 +12,7 @@ add_executable(ZenCrop WIN32
     OverlayWindow.h OverlayWindow.cpp
     ReparentWindow.h ReparentWindow.cpp
     ThumbnailWindow.h ThumbnailWindow.cpp
+    SmartDetector.h SmartDetector.cpp
     resources.rc
 )
 
@@ -26,4 +27,7 @@ target_link_libraries(ZenCrop
     gdi32
     dwmapi
     shcore
+    shell32
+    ole32
+    oleaut32
 )

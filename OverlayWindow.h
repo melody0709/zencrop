@@ -35,6 +35,10 @@ private:
     POINT m_adjustAnchor = { 0, 0 };
     RECT m_adjustStartRect = { 0, 0, 0, 0 };
 
+    RECT m_smartRect = { 0, 0, 0, 0 };
+    bool m_hasSmartRect = false;
+    POINT m_clickStartPoint = { 0, 0 };
+
     HDC m_memDc = nullptr;
     HBITMAP m_bitmap = nullptr;
     HBITMAP m_oldBitmap = nullptr;
@@ -61,6 +65,7 @@ private:
     static const int BorderThickness;
     static const int HandleSize;
     static const int MinCropSize;
+    static const int ClickThreshold;
     static const DWORD HoverUpdateIntervalMs;
     static void RegisterWindowClass();
 };
