@@ -49,3 +49,7 @@ temp_powertoys 有源码,需要时可仓库对比
 - **Thumbnail 窗口销毁**: `WM_DESTROY` 中不要调 `PostQuitMessage`，只做自身清理（注销 thumbnail、置空 `m_hostWindow`）；通过 `IsValid()` 让消息循环清理 `shared_ptr`
 - **最大化窗口 Reparent**: reparent 前必须移除 `WS_MAXIMIZE` 样式并用 `SetWindowPos` 设为工作区大小，否则 `WS_MAXIMIZE + WS_CHILD` 组合导致窗口尺寸和布局异常；偏移量用 `GetMonitorInfo` → `mi.rcWork` 计算而非 `GetWindowRect` 的负坐标
 - **窗口状态还原**: 用 `SetWindowPlacement` 一次性恢复位置和最大化状态，不要用 `SetWindowPos` + `ShowWindow(SW_MAXIMIZE)` 组合；操作顺序：`SetWindowPos` → `SetParent` → `SetWindowPlacement` → 恢复样式；必须保存完整 `WINDOWPLACEMENT` 和 `GWL_EXSTYLE`
+- **OverlayWindow 回调安全**: 不要在 `m_onCropped` 回调中直接销毁 OverlayWindow（`g_overlay.reset()`），回调仍在成员函数调用栈中，销毁 this 是 UB；用 `PostMessage(WM_APP)` 延迟触发回调
+- **WM_DESTROY 置空句柄**: `WM_DESTROY` 中必须同时置空 `m_hostWindow`（ReparentWindow）或 `m_hostWindow`（ThumbnailWindow），防止析构函数对已销毁句柄调用 `ShowWindow`/`DestroyWindow`
+- **DWM 注册失败处理**: `DwmRegisterThumbnail` 可能失败，失败时必须销毁 host 窗口并置空 `m_hostWindow`，否则 `IsValid()` 返回 true 但窗口显示空白
+- **GDI 对象缓存**: OverlayWindow 的 `UpdateOverlay` 频繁调用（鼠标移动），不要每次都 `CreateCompatibleDC` → `CreateDIBSection` → `DeleteObject` → `DeleteDC`；用 `EnsureBitmap`/`FreeBitmap` 缓存，仅在虚拟屏幕大小变化时重建

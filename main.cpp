@@ -24,7 +24,9 @@ void StartCrop(CropMode mode) {
     HWND target = GetForegroundWindow();
     if (!target || target == g_mainHwnd) return;
 
-    // Optional: check if target is one of our own windows to avoid cropping our own tools
+    wchar_t className[64] = {};
+    GetClassNameW(target, className, 64);
+    if (wcsstr(className, L"ZenCrop.") != nullptr) return;
 
     g_overlay = std::make_shared<OverlayWindow>(target, [mode](HWND t, RECT r) {
         if (r.right - r.left > 10 && r.bottom - r.top > 10) {
@@ -124,6 +126,11 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
     while (GetMessageW(&msg, nullptr, 0, 0)) {
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
+
+        g_reparents.erase(
+            std::remove_if(g_reparents.begin(), g_reparents.end(),
+                [](const std::shared_ptr<ReparentWindow>& rw) { return !rw->IsValid(); }),
+            g_reparents.end());
 
         g_thumbnails.erase(
             std::remove_if(g_thumbnails.begin(), g_thumbnails.end(),

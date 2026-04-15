@@ -42,6 +42,7 @@ OverlayWindow::OverlayWindow(HWND targetWindow, std::function<void(HWND, RECT)> 
 }
 
 OverlayWindow::~OverlayWindow() {
+    FreeBitmap();
     if (m_window) {
         DestroyWindow(m_window);
     }
@@ -109,14 +110,14 @@ RECT OverlayWindow::GetCropRect() const {
     return r;
 }
 
-void OverlayWindow::UpdateOverlay() {
-    int width = m_screenRect.right - m_screenRect.left;
-    int height = m_screenRect.bottom - m_screenRect.top;
+void OverlayWindow::EnsureBitmap(int width, int height) {
+    if (m_memDc && m_bitmap && m_bitmapWidth == width && m_bitmapHeight == height) return;
 
-    if (width <= 0 || height <= 0) return;
+    FreeBitmap();
 
     HDC hdcScreen = GetDC(nullptr);
-    HDC hdcMem = CreateCompatibleDC(hdcScreen);
+    m_memDc = CreateCompatibleDC(hdcScreen);
+    ReleaseDC(nullptr, hdcScreen);
 
     BITMAPINFO bmi = {};
     bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
@@ -127,16 +128,51 @@ void OverlayWindow::UpdateOverlay() {
     bmi.bmiHeader.biCompression = BI_RGB;
 
     void* pBits = nullptr;
-    HBITMAP hBitmap = CreateDIBSection(hdcMem, &bmi, DIB_RGB_COLORS, &pBits, nullptr, 0);
-    if (!hBitmap) {
-        DeleteDC(hdcMem);
-        ReleaseDC(nullptr, hdcScreen);
+    m_bitmap = CreateDIBSection(m_memDc, &bmi, DIB_RGB_COLORS, &pBits, nullptr, 0);
+    if (!m_bitmap) {
+        DeleteDC(m_memDc);
+        m_memDc = nullptr;
         return;
     }
 
-    HBITMAP hOldBitmap = (HBITMAP)SelectObject(hdcMem, hBitmap);
+    m_oldBitmap = (HBITMAP)SelectObject(m_memDc, m_bitmap);
+    m_pixels = (DWORD*)pBits;
+    m_bitmapWidth = width;
+    m_bitmapHeight = height;
+}
 
-    DWORD* pixels = (DWORD*)pBits;
+void OverlayWindow::FreeBitmap() {
+    if (m_memDc) {
+        if (m_oldBitmap) {
+            SelectObject(m_memDc, m_oldBitmap);
+            m_oldBitmap = nullptr;
+        }
+        if (m_bitmap) {
+            DeleteObject(m_bitmap);
+            m_bitmap = nullptr;
+        }
+        DeleteDC(m_memDc);
+        m_memDc = nullptr;
+    }
+    m_pixels = nullptr;
+    m_bitmapWidth = 0;
+    m_bitmapHeight = 0;
+}
+
+void OverlayWindow::UpdateOverlay() {
+    int width = m_screenRect.right - m_screenRect.left;
+    int height = m_screenRect.bottom - m_screenRect.top;
+
+    if (width <= 0 || height <= 0) return;
+
+    EnsureBitmap(width, height);
+    if (!m_pixels) return;
+
+    const DWORD shadePixel = 0x99000000;
+    const DWORD clearPixel = 0x01000000;
+    const DWORD redPixel = 0xFFFF0000;
+
+    std::fill(m_pixels, m_pixels + (size_t)width * height, shadePixel);
 
     RECT activeRect = m_hoveredRect;
     int activeLeft = activeRect.left - m_screenRect.left;
@@ -149,19 +185,9 @@ void OverlayWindow::UpdateOverlay() {
     if (activeRight > width) activeRight = width;
     if (activeBottom > height) activeBottom = height;
 
-    const DWORD shadePixel = 0x99000000;
-    const DWORD clearPixel = 0x01000000;
-    const DWORD redPixel = 0xFFFF0000;
-
-    for (int y = 0; y < height; y++) {
-        bool inActiveY = (y >= activeTop && y < activeBottom);
-        for (int x = 0; x < width; x++) {
-            if (inActiveY && x >= activeLeft && x < activeRight) {
-                pixels[y * width + x] = clearPixel;
-            } else {
-                pixels[y * width + x] = shadePixel;
-            }
-        }
+    for (int y = activeTop; y < activeBottom; y++) {
+        DWORD* row = m_pixels + (size_t)y * width;
+        std::fill(row + activeLeft, row + activeRight, clearPixel);
     }
 
     auto drawBorder = [&](int left, int top, int right, int bottom) {
@@ -173,22 +199,22 @@ void OverlayWindow::UpdateOverlay() {
 
             if (y1 >= 0 && y1 < height) {
                 for (int x = std::max(left, 0); x < std::min(right, width); x++) {
-                    pixels[y1 * width + x] = redPixel;
+                    m_pixels[(size_t)y1 * width + x] = redPixel;
                 }
             }
             if (y2 >= 0 && y2 < height && y2 != y1) {
                 for (int x = std::max(left, 0); x < std::min(right, width); x++) {
-                    pixels[y2 * width + x] = redPixel;
+                    m_pixels[(size_t)y2 * width + x] = redPixel;
                 }
             }
             if (x1 >= 0 && x1 < width) {
                 for (int y = std::max(top, 0); y < std::min(bottom, height); y++) {
-                    pixels[y * width + x1] = redPixel;
+                    m_pixels[(size_t)y * width + x1] = redPixel;
                 }
             }
             if (x2 >= 0 && x2 < width && x2 != x1) {
                 for (int y = std::max(top, 0); y < std::min(bottom, height); y++) {
-                    pixels[y * width + x2] = redPixel;
+                    m_pixels[(size_t)y * width + x2] = redPixel;
                 }
             }
         }
@@ -213,14 +239,11 @@ void OverlayWindow::UpdateOverlay() {
         }
     }
 
+    HDC hdcScreen = GetDC(nullptr);
     POINT ptSrc = { 0, 0 };
     SIZE sizeWnd = { width, height };
     BLENDFUNCTION blend = { AC_SRC_OVER, 0, 255, AC_SRC_ALPHA };
-    UpdateLayeredWindow(m_window, hdcScreen, nullptr, &sizeWnd, hdcMem, &ptSrc, 0, &blend, ULW_ALPHA);
-
-    SelectObject(hdcMem, hOldBitmap);
-    DeleteObject(hBitmap);
-    DeleteDC(hdcMem);
+    UpdateLayeredWindow(m_window, hdcScreen, nullptr, &sizeWnd, m_memDc, &ptSrc, 0, &blend, ULW_ALPHA);
     ReleaseDC(nullptr, hdcScreen);
 }
 
@@ -250,10 +273,9 @@ LRESULT OverlayWindow::MessageHandler(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
         ClientToScreen(hwnd, &pt);
 
         if (!m_hoveredWindow) {
+            m_pendingCropRect = {0, 0, 0, 0};
             ShowWindow(hwnd, SW_HIDE);
-            if (m_onCropped) {
-                m_onCropped(m_targetWindow, RECT{0,0,0,0});
-            }
+            PostMessage(hwnd, WM_APP, 0, 0);
             return 0;
         }
 
@@ -285,21 +307,11 @@ LRESULT OverlayWindow::MessageHandler(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
     }
     case WM_LBUTTONUP: {
         if (m_isDragging) {
-            RECT finalRect = GetCropRect();
+            m_pendingCropRect = GetCropRect();
             m_isDragging = false;
             ReleaseCapture();
             ShowWindow(hwnd, SW_HIDE);
-
-            if (finalRect.right - finalRect.left == 0 || finalRect.bottom - finalRect.top == 0) {
-                if (m_onCropped) {
-                    m_onCropped(m_targetWindow, RECT{0,0,0,0});
-                }
-                return 0;
-            }
-
-            if (m_onCropped) {
-                m_onCropped(m_targetWindow, finalRect);
-            }
+            PostMessage(hwnd, WM_APP, 0, 0);
         }
         return 0;
     }
@@ -310,11 +322,16 @@ LRESULT OverlayWindow::MessageHandler(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
                 ReleaseCapture();
                 UpdateOverlay();
             } else {
+                m_pendingCropRect = {0, 0, 0, 0};
                 ShowWindow(hwnd, SW_HIDE);
-                if (m_onCropped) {
-                    m_onCropped(m_targetWindow, RECT{0,0,0,0});
-                }
+                PostMessage(hwnd, WM_APP, 0, 0);
             }
+        }
+        return 0;
+    }
+    case WM_APP: {
+        if (m_onCropped) {
+            m_onCropped(m_targetWindow, m_pendingCropRect);
         }
         return 0;
     }

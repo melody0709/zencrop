@@ -6,6 +6,8 @@ public:
     ReparentWindow(HWND targetWindow, RECT cropRect, bool showTitlebar);
     ~ReparentWindow();
 
+    bool IsValid() const { return m_targetWindow && IsWindow(m_targetWindow); }
+
 private:
     HWND m_hostWindow = nullptr;
     HWND m_childWindow = nullptr;

@@ -165,6 +165,7 @@ LRESULT ReparentWindow::MessageHandler(HWND hwnd, UINT msg, WPARAM wParam, LPARA
     switch (msg) {
     case WM_DESTROY:
         RestoreOriginalState();
+        m_hostWindow = nullptr;
         return 0;
     case WM_CLOSE:
         DestroyWindow(hwnd);

@@ -1,86 +1,91 @@
-# ZenCrop v1.2
+# ZenCrop v1.3
 
-ZenCrop 是对 [PowerToys Crop And Lock](https://github.com/microsoft/PowerToys/tree/main/src/modules/cropandlock/) 的独立重构实现。
+[中文文档](README_zh.md)
 
-## 项目起源
+An independent reimplementation of [PowerToys Crop And Lock](https://github.com/microsoft/PowerToys/tree/main/src/modules/cropandlock/).
 
-PowerToys Crop And Lock 是微软 PowerToys 工具集中的一个模块,允许用户将任意窗口裁剪为子窗口并锁定在屏幕上。然而,原项目深度依赖 PowerToys 框架,难以独立使用和定制。
+## Background
 
-ZenCrop 从零开始重构,完全独立运行,不依赖 PowerToys,保持原有核心功能的同时提供更轻量的解决方案。
+PowerToys Crop And Lock is a module in the Microsoft PowerToys toolkit that allows users to crop any window into a sub-window and pin it on screen. However, the original project is deeply tied to the PowerToys framework, making it difficult to use independently or customize.
 
-## 功能特性
+ZenCrop is rebuilt from scratch, runs completely standalone without PowerToys, and provides a lighter solution while preserving the core functionality.
 
-- **Reparent 模式**: 通过重新父窗口化技术,将目标窗口裁剪为独立子窗口
-- **Thumbnail 模式**: 使用 Windows DWM 缩略图 API 实时显示目标窗口内容,带浅蓝色边框标识,支持拖拽移动和 ESC 关闭
-- **智能窗口检测**: 裁剪覆盖层自动跟随鼠标,动态高亮鼠标下方的窗口,支持裁剪屏幕上任意窗口
-- **重叠窗口处理**: 悬停窗口自动提到 Z 序顶部,确保重叠区域显示真实内容
-- **桌面过滤**: 桌面背景不可被选为裁剪目标,避免空输出
-- **Borderless / Titlebar 切换**: 默认无边框,可通过托盘菜单切换显示标题栏
-- **系统托盘**: 后台运行,右键托盘图标访问菜单
+## Features
 
-## 快捷键
+- **Reparent Mode**: Crops a target window into an independent child window using window reparenting
+- **Thumbnail Mode**: Displays a live DWM thumbnail of the target window with a cornflower blue border, supports drag-to-move and ESC to close
+- **Smart Window Detection**: The crop overlay automatically follows the mouse, dynamically highlighting the window under the cursor — crop any window on screen
+- **Overlapping Window Handling**: Hovered windows are automatically raised to the top of the Z-order, ensuring real content is displayed in overlapping areas
+- **Desktop Filtering**: The desktop background cannot be selected as a crop target, avoiding empty output
+- **Borderless / Titlebar Toggle**: Windows are borderless by default; toggle titlebar visibility via the tray menu
+- **Self-Window Filtering**: Prevents cropping ZenCrop's own windows to avoid recursion
+- **Stale Window Cleanup**: Automatically removes Reparent/Thumbnail windows whose target has been closed externally
+- **System Tray**: Runs in the background; right-click the tray icon for the menu
 
-| 快捷键 | 功能 |
-|--------|------|
-| `Ctrl+Alt+X` | 启动 Reparent 裁剪模式 |
-| `Ctrl+Alt+C` | 启动 Thumbnail 裁剪模式 |
-| `Ctrl+Alt+Z` | 关闭所有 Reparent 窗口 |
-| `ESC` | 关闭当前 Thumbnail 窗口 / 取消裁剪 |
-| 右键托盘图标 | 打开菜单 (切换标题栏/退出) |
+## Hotkeys
 
-## 使用方式
+| Hotkey | Action |
+|--------|--------|
+| `Ctrl+Alt+X` | Start Reparent crop mode |
+| `Ctrl+Alt+C` | Start Thumbnail crop mode |
+| `Ctrl+Alt+Z` | Close all Reparent windows |
+| `ESC` | Close focused Thumbnail window / cancel crop |
+| Right-click tray icon | Open menu (toggle titlebar / exit) |
 
-1. 按下 `Ctrl+Alt+X` 或 `Ctrl+Alt+C` 进入裁剪模式
-2. 移动鼠标,覆盖层会自动高亮鼠标下方的窗口
-3. 在目标窗口上按住左键拖拽,框选裁剪区域
-4. 释放鼠标完成裁剪
-5. 按 `ESC` 取消裁剪或关闭 Thumbnail 窗口
-6. 按 `Ctrl+Alt+Z` 关闭所有 Reparent 窗口
+## Usage
 
-> **注意**: 桌面背景无法被选为裁剪目标,鼠标移到桌面时点击将自动退出裁剪模式。
+1. Press `Ctrl+Alt+X` or `Ctrl+Alt+C` to enter crop mode
+2. Move the mouse — the overlay automatically highlights the window under the cursor
+3. Click and drag on the target window to select the crop area
+4. Release the mouse to complete the crop
+5. Press `ESC` to cancel cropping or close a Thumbnail window
+6. Press `Ctrl+Alt+Z` to close all Reparent windows
 
-## 技术栈
+> **Note**: The desktop background cannot be selected as a crop target. Clicking on the desktop will automatically exit crop mode.
 
-- **语言**: C++17
-- **框架**: Native Windows Win32 API
-- **依赖**: user32, gdi32, dwmapi, shcore, shell32
+## Tech Stack
 
-## 构建
+- **Language**: C++17
+- **Framework**: Native Windows Win32 API
+- **Dependencies**: user32, gdi32, dwmapi, shcore, shell32
 
-### 前提条件
+## Build
 
-- Visual Studio 2022 (含 vcvars64)
+### Prerequisites
+
+- Visual Studio 2022 (with vcvars64)
 - Windows SDK
 
-### 编译
+### Compile
 
 ```bash
-# 使用 build.bat (推荐)
+# Using build.bat (recommended)
 build.bat
 
-# 或使用 CMake
+# Or using CMake
 cmake -B build && cmake --build build
 ```
 
-编译完成后生成 `ZenCrop.exe`。
+The output is `ZenCrop.exe`.
 
-## 项目结构
+## Project Structure
 
 ```
 zencrop/
-├── main.cpp              # 入口点,系统托盘,消息循环
-├── Utils.h/cpp           # 工具函数
-├── OverlayWindow.h/cpp   # 裁剪区域选择覆盖层
-├── ReparentWindow.h/cpp  # Reparent 模式窗口
-├── ThumbnailWindow.h/cpp # Thumbnail 模式窗口
-├── app.ico               # 应用图标
-├── resources.rc          # 图标资源定义
-├── build.bat             # MSVC 构建脚本
-├── CMakeLists.txt        # CMake 配置
-├── CHANGELOG.md          # 更新日志
+├── main.cpp              # Entry point, system tray, message loop
+├── Utils.h/cpp           # Utility functions
+├── OverlayWindow.h/cpp   # Crop area selection overlay
+├── ReparentWindow.h/cpp  # Reparent mode window
+├── ThumbnailWindow.h/cpp # Thumbnail mode window
+├── app.ico               # Application icon
+├── resources.rc          # Icon resource definition
+├── build.bat             # MSVC build script
+├── CMakeLists.txt        # CMake configuration
+├── CHANGELOG.md          # Changelog
+├── AGENTS.md             # AI development guide
 └── README.md
 ```
 
-## 许可证
+## License
 
 MIT License

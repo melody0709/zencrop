@@ -57,6 +57,9 @@ ThumbnailWindow::ThumbnailWindow(HWND targetWindow, RECT cropRect, bool showTitl
 
     if (SUCCEEDED(DwmRegisterThumbnail(m_hostWindow, m_targetWindow, &m_thumbnail))) {
         UpdateThumbnail();
+    } else {
+        DestroyWindow(m_hostWindow);
+        m_hostWindow = nullptr;
     }
 
     ShowWindow(m_hostWindow, SW_SHOW);
@@ -173,7 +176,6 @@ LRESULT ThumbnailWindow::MessageHandler(HWND hwnd, UINT msg, WPARAM wParam, LPAR
         }
         break;
     case WM_SIZE:
-    case WM_SIZING:
         UpdateThumbnail();
         InvalidateRect(hwnd, nullptr, FALSE);
         break;

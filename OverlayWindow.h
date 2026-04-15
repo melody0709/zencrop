@@ -23,6 +23,18 @@ private:
     RECT m_hoveredRect = { 0, 0, 0, 0 };
     DWORD m_lastHoverUpdateTick = 0;
 
+    RECT m_pendingCropRect = { 0, 0, 0, 0 };
+
+    HDC m_memDc = nullptr;
+    HBITMAP m_bitmap = nullptr;
+    HBITMAP m_oldBitmap = nullptr;
+    DWORD* m_pixels = nullptr;
+    int m_bitmapWidth = 0;
+    int m_bitmapHeight = 0;
+
+    void EnsureBitmap(int width, int height);
+    void FreeBitmap();
+
     RECT GetCropRect() const;
     void UpdateOverlay();
     HWND WindowFromPointExcludingSelf(POINT pt);
