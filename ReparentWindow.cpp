@@ -30,6 +30,20 @@ ReparentWindow::ReparentWindow(HWND targetWindow, RECT cropRect, bool showTitleb
 
     SaveOriginalState();
 
+    if (m_wasMaximized) {
+        LONG_PTR style = GetWindowLongPtrW(m_targetWindow, GWL_STYLE);
+        style &= ~WS_MAXIMIZE;
+        SetWindowLongPtrW(m_targetWindow, GWL_STYLE, style);
+
+        MONITORINFO mi = { sizeof(mi) };
+        GetMonitorInfo(MonitorFromWindow(m_targetWindow, MONITOR_DEFAULTTONEAREST), &mi);
+        SetWindowPos(m_targetWindow, nullptr,
+            mi.rcWork.left, mi.rcWork.top,
+            mi.rcWork.right - mi.rcWork.left,
+            mi.rcWork.bottom - mi.rcWork.top,
+            SWP_NOZORDER | SWP_FRAMECHANGED | SWP_NOACTIVATE);
+    }
+
     int width = cropRect.right - cropRect.left;
     int height = cropRect.bottom - cropRect.top;
 
@@ -62,8 +76,13 @@ ReparentWindow::ReparentWindow(HWND targetWindow, RECT cropRect, bool showTitleb
         0, 0, width, height, m_hostWindow, nullptr, GetModuleHandleW(nullptr), nullptr
     );
 
-    int offsetX = cropRect.left - m_originalRect.left;
-    int offsetY = cropRect.top - m_originalRect.top;
+    // If window was maximized, its bounds were changed to mi.rcWork, which shifts the window relative to m_originalRect.
+    // We capture its new unmaximized bounds here so the crop offset correctly aligns with the content that was drawn.
+    RECT unmaximizedRect;
+    GetWindowRect(m_targetWindow, &unmaximizedRect);
+
+    int offsetX = cropRect.left - unmaximizedRect.left;
+    int offsetY = cropRect.top - unmaximizedRect.top;
 
     // Show and position host and child before reparenting
     // This is critical for DComp/XAML windows to not disconnect their visual tree
