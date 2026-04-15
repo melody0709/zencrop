@@ -1,4 +1,5 @@
 #include "Utils.h"
+#include <string>
 
 RECT GetVirtualScreenRect() {
     RECT rect;
@@ -21,4 +22,54 @@ RECT GetClientRectInScreenSpace(HWND hwnd) {
     rect.right = ptRightBottom.x;
     rect.bottom = ptRightBottom.y;
     return rect;
+}
+
+bool IsXamlOrDCompWindow(HWND hwnd) {
+    if (!hwnd || !IsWindow(hwnd)) return false;
+
+    // Check window class name for known XAML/DComp frameworks
+    wchar_t className[256] = {};
+    GetClassNameW(hwnd, className, 256);
+    std::wstring classStr(className);
+
+    // Windows 11 Explorer, Task Manager, and modern apps
+    if (classStr.find(L"Windows.UI.Core.CoreWindow") != std::wstring::npos) return true;
+    if (classStr.find(L"ApplicationFrameWindow") != std::wstring::npos) return true;
+
+    // Check for XAML Islands hosting windows
+    // These typically have specific window styles or extended styles
+    LONG_PTR exStyle = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+
+    // Check if window has a XAML Island by looking for child windows with specific classes
+    HWND child = FindWindowExW(hwnd, nullptr, L"Windows.UI.Composition.DesktopWindowContentBridge", nullptr);
+    if (child) return true;
+
+    child = FindWindowExW(hwnd, nullptr, L"Microsoft.UI.Content.DesktopChildSiteBridge", nullptr);
+    if (child) return true;
+
+    // Check for DirectComposition windows
+    // These windows often have WS_EX_NOREDIRECTIONBITMAP
+    if (exStyle & WS_EX_NOREDIRECTIONBITMAP) return true;
+
+    // Check for Windows 11 modern app windows
+    // These typically use ApplicationFrameHost or have specific characteristics
+    DWORD pid = 0;
+    GetWindowThreadProcessId(hwnd, &pid);
+
+    // Try to get process name
+    HANDLE hProcess = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    if (hProcess) {
+        wchar_t processName[MAX_PATH] = {};
+        DWORD size = MAX_PATH;
+        if (QueryFullProcessImageNameW(hProcess, 0, processName, &size)) {
+            std::wstring procStr(processName);
+            // Known XAML-based applications
+            if (procStr.find(L"Explorer.EXE") != std::wstring::npos) return true;
+            if (procStr.find(L"TaskManager.exe") != std::wstring::npos) return true;
+            if (procStr.find(L"ApplicationFrameHost.exe") != std::wstring::npos) return true;
+        }
+        CloseHandle(hProcess);
+    }
+
+    return false;
 }

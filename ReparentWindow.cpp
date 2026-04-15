@@ -1,4 +1,5 @@
 #include "ReparentWindow.h"
+#include <dwmapi.h>
 
 const wchar_t* ReparentWindow::ClassName = L"ZenCrop.ReparentHost";
 const wchar_t* ReparentWindow::ChildClassName = L"ZenCrop.ReparentChild";
@@ -18,6 +19,7 @@ void ReparentWindow::RegisterWindowClass() {
     wcex.lpfnWndProc = DefWindowProcW;
     wcex.lpszClassName = ChildClassName;
     wcex.hIcon = nullptr;
+    wcex.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
     RegisterClassExW(&wcex);
 }
 
@@ -45,17 +47,23 @@ ReparentWindow::ReparentWindow(HWND targetWindow, RECT cropRect, bool showTitleb
     int width = cropRect.right - cropRect.left;
     int height = cropRect.bottom - cropRect.top;
 
-    DWORD style = WS_POPUP | WS_CLIPCHILDREN;
+    DWORD style;
+    DWORD exStyle = WS_EX_TOOLWINDOW;
     if (showTitlebar) {
-        style |= WS_CAPTION | WS_SYSMENU;
+        style = WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN;
+        style &= ~(WS_MAXIMIZEBOX | WS_THICKFRAME);
+    } else {
+        style = WS_POPUP | WS_CLIPCHILDREN;
     }
 
-    DWORD exStyle = 0;
+    int windowWidth = width;
+    int windowHeight = height;
 
+    UINT dpi = GetDpiForWindow(m_targetWindow);
     RECT adjustedRect = { 0, 0, width, height };
-    AdjustWindowRectEx(&adjustedRect, style, FALSE, exStyle);
-    int windowWidth = adjustedRect.right - adjustedRect.left;
-    int windowHeight = adjustedRect.bottom - adjustedRect.top;
+    AdjustWindowRectExForDpi(&adjustedRect, style, FALSE, exStyle, dpi);
+    windowWidth = adjustedRect.right - adjustedRect.left;
+    windowHeight = adjustedRect.bottom - adjustedRect.top;
 
     m_hostWindow = CreateWindowExW(
         exStyle, ClassName, L"ZenCrop - Reparent", style,
@@ -64,7 +72,7 @@ ReparentWindow::ReparentWindow(HWND targetWindow, RECT cropRect, bool showTitleb
     );
 
     m_childWindow = CreateWindowExW(
-        0, ChildClassName, L"", WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN,
+        0, ChildClassName, L"", WS_CHILD | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
         0, 0, width, height, m_hostWindow, nullptr, GetModuleHandleW(nullptr), nullptr
     );
 
@@ -96,8 +104,13 @@ ReparentWindow::ReparentWindow(HWND targetWindow, RECT cropRect, bool showTitleb
     SetWindowPos(m_targetWindow, nullptr, -offsetX, -offsetY, 0, 0,
         SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED | SWP_NOACTIVATE);
 
-    ShowWindow(m_hostWindow, SW_SHOW);
-    UpdateWindow(m_hostWindow);
+    SetWindowPos(m_hostWindow, HWND_TOPMOST, 0, 0, 0, 0,
+        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    SetWindowPos(m_hostWindow, nullptr, 0, 0, 0, 0,
+        SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW | SWP_NOACTIVATE);
+
+    ShowWindow(m_childWindow, SW_SHOW);
+    UpdateWindow(m_childWindow);
 }
 
 ReparentWindow::~ReparentWindow() {
@@ -125,23 +138,24 @@ void ReparentWindow::SaveOriginalState() {
 void ReparentWindow::RestoreOriginalState() {
     if (!m_targetWindow || !IsWindow(m_targetWindow)) return;
 
+    // Restore window position and dimensions
     int width = m_originalRect.right - m_originalRect.left;
     int height = m_originalRect.bottom - m_originalRect.top;
     SetWindowPos(m_targetWindow, nullptr, m_originalRect.left, m_originalRect.top,
         width, height, SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
 
-    SetParent(m_targetWindow, m_originalParent);
+    SetParent(m_targetWindow, nullptr);
 
+    // Restore the original placement
     if (m_originalPlacement.showCmd != SW_SHOWMAXIMIZED) {
         m_originalPlacement.showCmd = SW_RESTORE;
     }
     SetWindowPlacement(m_targetWindow, &m_originalPlacement);
 
+    // Set the original extended style and style
     m_originalStyle &= ~WS_CHILD;
     SetWindowLongPtrW(m_targetWindow, GWL_EXSTYLE, m_originalExStyle);
     SetWindowLongPtrW(m_targetWindow, GWL_STYLE, m_originalStyle);
-
-    m_targetWindow = nullptr;
 }
 
 LRESULT CALLBACK ReparentWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
@@ -163,6 +177,42 @@ LRESULT CALLBACK ReparentWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
 
 LRESULT ReparentWindow::MessageHandler(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
+    case WM_NCCALCSIZE:
+        if (!m_showTitlebar && wParam) {
+            // Remove the standard window frame by making the client area
+            // fill the entire window rectangle
+            NCCALCSIZE_PARAMS* pParams = (NCCALCSIZE_PARAMS*)lParam;
+            // rgrc[0] contains the proposed window rectangle (including frame)
+            // By not modifying it and returning 0, we tell Windows to use
+            // the entire window area as client area
+            return 0;
+        }
+        break;
+    case WM_NCACTIVATE:
+        if (!m_showTitlebar) {
+            DefWindowProcW(hwnd, msg, FALSE, lParam);
+            return TRUE;
+        }
+        break;
+    case WM_MOUSEACTIVATE:
+        if (m_targetWindow && GetForegroundWindow() != m_targetWindow) {
+            SetForegroundWindow(m_targetWindow);
+        }
+        return MA_NOACTIVATE;
+    case WM_ACTIVATE:
+        if (!m_showTitlebar) {
+            // Extend DWM frame into client area for borderless mode
+            MARGINS margins = { -1, -1, -1, -1 };
+            DwmExtendFrameIntoClientArea(hwnd, &margins);
+        }
+        if (LOWORD(wParam) == WA_ACTIVE) {
+            if (m_targetWindow) {
+                SetForegroundWindow(m_targetWindow);
+            }
+        }
+        break;
+    case WM_DPICHANGED:
+        break;
     case WM_DESTROY:
         RestoreOriginalState();
         m_hostWindow = nullptr;

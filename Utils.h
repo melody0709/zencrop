@@ -11,3 +11,7 @@
 
 RECT GetVirtualScreenRect();
 RECT GetClientRectInScreenSpace(HWND hwnd);
+
+// Check if window uses XAML Islands or DirectComposition
+// These windows cannot be reparented properly due to DComp visual tree disconnect
+bool IsXamlOrDCompWindow(HWND hwnd);

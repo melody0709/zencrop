@@ -109,17 +109,22 @@ void OverlayWindow::UpdateHoveredWindow(POINT pt) {
     m_hasSmartRect = false;
     if (m_hoveredWindow && m_state == OverlayState::Hover) {
         RECT elemRect = {};
-        if (SmartDetector::Instance().GetElementRectAtPoint(pt, elemRect, m_window)) {
+        if (SmartDetector::Instance().GetElementRectAtPoint(pt, elemRect, m_window, &m_hoveredRect)) {
             RECT clamped = elemRect;
             if (clamped.left < m_hoveredRect.left) clamped.left = m_hoveredRect.left;
             if (clamped.top < m_hoveredRect.top) clamped.top = m_hoveredRect.top;
             if (clamped.right > m_hoveredRect.right) clamped.right = m_hoveredRect.right;
             if (clamped.bottom > m_hoveredRect.bottom) clamped.bottom = m_hoveredRect.bottom;
 
-            if (clamped.right - clamped.left > 5 && clamped.bottom - clamped.top > 5 &&
-                !EqualRect(&clamped, &m_hoveredRect)) {
-                m_smartRect = clamped;
-                m_hasSmartRect = true;
+            if (clamped.right - clamped.left > 5 && clamped.bottom - clamped.top > 5) {
+                long long smartArea = (long long)(clamped.right - clamped.left) * (long long)(clamped.bottom - clamped.top);
+                long long clientArea = (long long)(m_hoveredRect.right - m_hoveredRect.left) * (long long)(m_hoveredRect.bottom - m_hoveredRect.top);
+                double ratio = clientArea > 0 ? (double)smartArea / clientArea : 0;
+
+                if (ratio < 0.98) {
+                    m_smartRect = clamped;
+                    m_hasSmartRect = true;
+                }
             }
         }
 
