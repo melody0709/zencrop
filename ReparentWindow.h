@@ -15,7 +15,9 @@ private:
     // Original state of target window
     HWND m_originalParent = nullptr;
     LONG_PTR m_originalStyle = 0;
+    LONG_PTR m_originalExStyle = 0;
     RECT m_originalRect = { 0, 0, 0, 0 };
+    WINDOWPLACEMENT m_originalPlacement = { sizeof(WINDOWPLACEMENT) };
     bool m_wasMaximized = false;
 
     static const wchar_t* ClassName;

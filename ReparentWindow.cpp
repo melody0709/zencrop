@@ -28,6 +28,20 @@ ReparentWindow::ReparentWindow(HWND targetWindow, RECT cropRect, bool showTitleb
 
     SaveOriginalState();
 
+    if (m_wasMaximized) {
+        LONG_PTR style = GetWindowLongPtrW(m_targetWindow, GWL_STYLE);
+        style &= ~WS_MAXIMIZE;
+        SetWindowLongPtrW(m_targetWindow, GWL_STYLE, style);
+
+        MONITORINFO mi = { sizeof(mi) };
+        GetMonitorInfo(MonitorFromWindow(m_targetWindow, MONITOR_DEFAULTTONEAREST), &mi);
+        SetWindowPos(m_targetWindow, nullptr,
+            mi.rcWork.left, mi.rcWork.top,
+            mi.rcWork.right - mi.rcWork.left,
+            mi.rcWork.bottom - mi.rcWork.top,
+            SWP_NOZORDER | SWP_FRAMECHANGED | SWP_NOACTIVATE);
+    }
+
     int width = cropRect.right - cropRect.left;
     int height = cropRect.bottom - cropRect.top;
 
@@ -56,8 +70,23 @@ ReparentWindow::ReparentWindow(HWND targetWindow, RECT cropRect, bool showTitleb
 
     RECT targetRect;
     GetWindowRect(m_targetWindow, &targetRect);
-    int offsetX = cropRect.left - targetRect.left;
-    int offsetY = cropRect.top - targetRect.top;
+
+    int diffX = 0, diffY = 0;
+    if (m_wasMaximized) {
+        MONITORINFO mi = { sizeof(mi) };
+        GetMonitorInfo(MonitorFromWindow(m_targetWindow, MONITOR_DEFAULTTONEAREST), &mi);
+        diffX = mi.rcWork.left - targetRect.left;
+        diffY = mi.rcWork.top - targetRect.top;
+    }
+
+    RECT adjustedCropRect = cropRect;
+    adjustedCropRect.left += diffX;
+    adjustedCropRect.top += diffY;
+    adjustedCropRect.right += diffX;
+    adjustedCropRect.bottom += diffY;
+
+    int offsetX = adjustedCropRect.left - targetRect.left;
+    int offsetY = adjustedCropRect.top - targetRect.top;
 
     SetParent(m_targetWindow, m_childWindow);
     LONG_PTR targetStyle = GetWindowLongPtrW(m_targetWindow, GWL_STYLE);
@@ -84,29 +113,33 @@ ReparentWindow::~ReparentWindow() {
 void ReparentWindow::SaveOriginalState() {
     m_originalParent = GetParent(m_targetWindow);
     m_originalStyle = GetWindowLongPtrW(m_targetWindow, GWL_STYLE);
+    m_originalExStyle = GetWindowLongPtrW(m_targetWindow, GWL_EXSTYLE);
     GetWindowRect(m_targetWindow, &m_originalRect);
 
-    WINDOWPLACEMENT placement = { sizeof(placement) };
-    if (GetWindowPlacement(m_targetWindow, &placement)) {
-        m_wasMaximized = (placement.showCmd == SW_SHOWMAXIMIZED);
+    m_originalPlacement = { sizeof(WINDOWPLACEMENT) };
+    if (GetWindowPlacement(m_targetWindow, &m_originalPlacement)) {
+        m_wasMaximized = (m_originalPlacement.showCmd == SW_SHOWMAXIMIZED);
     }
 }
 
 void ReparentWindow::RestoreOriginalState() {
     if (!m_targetWindow || !IsWindow(m_targetWindow)) return;
 
-    SetParent(m_targetWindow, m_originalParent);
-    SetWindowLongPtrW(m_targetWindow, GWL_STYLE, m_originalStyle);
-
     int width = m_originalRect.right - m_originalRect.left;
     int height = m_originalRect.bottom - m_originalRect.top;
-
     SetWindowPos(m_targetWindow, nullptr, m_originalRect.left, m_originalRect.top,
-        width, height, SWP_NOZORDER | SWP_FRAMECHANGED | SWP_NOACTIVATE);
+        width, height, SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
 
-    if (m_wasMaximized) {
-        ShowWindow(m_targetWindow, SW_MAXIMIZE);
+    SetParent(m_targetWindow, m_originalParent);
+
+    if (m_originalPlacement.showCmd != SW_SHOWMAXIMIZED) {
+        m_originalPlacement.showCmd = SW_RESTORE;
     }
+    SetWindowPlacement(m_targetWindow, &m_originalPlacement);
+
+    m_originalStyle &= ~WS_CHILD;
+    SetWindowLongPtrW(m_targetWindow, GWL_EXSTYLE, m_originalExStyle);
+    SetWindowLongPtrW(m_targetWindow, GWL_STYLE, m_originalStyle);
 
     m_targetWindow = nullptr;
 }

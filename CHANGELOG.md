@@ -1,5 +1,25 @@
 # Changelog
 
+## V1.2 (2026-04-15)
+
+### 修复
+
+- **最大化窗口 Reparent 裁剪错位**: Chrome 等浏览器最大化时 Ctrl+Alt+X 裁剪内容与实际框选不一致、出现白色空白的问题
+  - Reparent 前移除 `WS_MAXIMIZE` 样式，防止子窗口"最大化"行为导致尺寸和布局异常
+  - 最大化窗口偏移量改用 `GetMonitorInfo` → `mi.rcWork` 计算，而非直接用 `GetWindowRect` 的负坐标
+- **最大化窗口还原后内容错位**: Ctrl+Alt+Z 还原后 Chrome 内容位置偏移的问题
+  - 保存完整 `WINDOWPLACEMENT` 结构（含 normal 位置和 maximized 状态），而非仅保存布尔值
+  - 还原操作顺序修正：`SetWindowPos` → `SetParent` → `SetWindowPlacement` → 恢复样式
+  - 用 `SetWindowPlacement` 一次性恢复位置和最大化状态，替代 `SetWindowPos` + `ShowWindow(SW_MAXIMIZE)` 的错误组合
+  - 保存并恢复 `GWL_EXSTYLE`，防止扩展样式丢失
+
+### 修改
+
+- `ReparentWindow.h`: 新增 `m_originalPlacement`, `m_originalExStyle` 成员
+- `ReparentWindow.cpp`: 重写 `SaveOriginalState`、`RestoreOriginalState`，构造函数增加最大化窗口预处理和偏移量校正
+
+---
+
 ## V1.11 (2026-04-15)
 
 ### 新增

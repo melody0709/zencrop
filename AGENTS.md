@@ -47,3 +47,5 @@ temp_powertoys 有源码,需要时可仓库对比
 - **图标加载**: 不要用 `IDI_APPLICATION` 或 `LR_LOADFROMFILE`，统一用 `LoadIconW(GetModuleHandleW(nullptr), MAKEINTRESOURCE(1))` 从嵌入资源加载
 - **窗口销毁防闪烁**: 析构时先 `ShowWindow(SW_HIDE)` 再销毁；`RestoreOriginalState` 末尾置 `m_targetWindow = nullptr` 防止 `WM_DESTROY` 重复调用
 - **Thumbnail 窗口销毁**: `WM_DESTROY` 中不要调 `PostQuitMessage`，只做自身清理（注销 thumbnail、置空 `m_hostWindow`）；通过 `IsValid()` 让消息循环清理 `shared_ptr`
+- **最大化窗口 Reparent**: reparent 前必须移除 `WS_MAXIMIZE` 样式并用 `SetWindowPos` 设为工作区大小，否则 `WS_MAXIMIZE + WS_CHILD` 组合导致窗口尺寸和布局异常；偏移量用 `GetMonitorInfo` → `mi.rcWork` 计算而非 `GetWindowRect` 的负坐标
+- **窗口状态还原**: 用 `SetWindowPlacement` 一次性恢复位置和最大化状态，不要用 `SetWindowPos` + `ShowWindow(SW_MAXIMIZE)` 组合；操作顺序：`SetWindowPos` → `SetParent` → `SetWindowPlacement` → 恢复样式；必须保存完整 `WINDOWPLACEMENT` 和 `GWL_EXSTYLE`

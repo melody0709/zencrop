@@ -1,4 +1,4 @@
-# ZenCrop v1.11
+# ZenCrop v1.2
 
 ZenCrop 是对 [PowerToys Crop And Lock](https://github.com/microsoft/PowerToys/tree/main/src/modules/cropandlock/) 的独立重构实现。
 
