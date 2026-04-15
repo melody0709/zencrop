@@ -50,9 +50,16 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         wchar_t exePath[MAX_PATH];
         GetModuleFileNameW(nullptr, exePath, MAX_PATH);
         wchar_t* backslash = wcsrchr(exePath, L'\\');
+        wchar_t iconPath[MAX_PATH];
         if (backslash) {
-            wcscpy(backslash + 1, L"app.ico");
-            nid.hIcon = (HICON)LoadImageW(nullptr, exePath, IMAGE_ICON, 0, 0, LR_LOADFROMFILE);
+            *backslash = L'\0';
+            wchar_t* parent = wcsrchr(exePath, L'\\');
+            if (parent) {
+                wcscpy(parent, L"\\app.ico");
+                nid.hIcon = (HICON)LoadImageW(nullptr, exePath, IMAGE_ICON, 0, 0, LR_LOADFROMFILE);
+            } else {
+                nid.hIcon = (HICON)LoadImageW(nullptr, L"app.ico", IMAGE_ICON, 0, 0, LR_LOADFROMFILE);
+            }
         } else {
             nid.hIcon = (HICON)LoadImageW(nullptr, L"app.ico", IMAGE_ICON, 0, 0, LR_LOADFROMFILE);
         }
