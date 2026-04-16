@@ -1,4 +1,4 @@
-# ZenCrop v1.4.2
+# ZenCrop v1.4.3
 
 [English](README.md)
 

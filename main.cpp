@@ -16,8 +16,9 @@
 #define ID_TRAY_TITLEBAR 1002
 #define ID_TRAY_RELEASE 1003
 
-#define ZENCROP_VERSION L"1.4.2"
+#define ZENCROP_VERSION L"1.4.3"
 #define ZENCROP_RELEASE_URL L"https://github.com/melody0709/zencrop/releases"
+#define ZENCROP_MUTEX_NAME L"Global\\ZenCrop"
 
 bool g_showTitlebar = false;
 
@@ -138,6 +139,13 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
 }
 
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
+    HANDLE hMutex = CreateMutexW(nullptr, TRUE, ZENCROP_MUTEX_NAME);
+    if (GetLastError() == ERROR_ALREADY_EXISTS) {
+        MessageBoxW(nullptr, L"ZenCrop is already running.", L"ZenCrop", MB_OK | MB_ICONINFORMATION);
+        CloseHandle(hMutex);
+        return 0;
+    }
+
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     SmartDetector::Instance().Initialize();
@@ -169,5 +177,6 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
 
     SmartDetector::Instance().Shutdown();
     CoUninitialize();
+    CloseHandle(hMutex);
     return 0;
 }

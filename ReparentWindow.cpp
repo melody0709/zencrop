@@ -129,21 +129,30 @@ void ReparentWindow::SaveOriginalState() {
 void ReparentWindow::RestoreOriginalState() {
     if (!m_targetWindow || !IsWindow(m_targetWindow)) return;
 
-    // Restore window position and dimensions
-    int width = m_originalRect.right - m_originalRect.left;
-    int height = m_originalRect.bottom - m_originalRect.top;
-    SetWindowPos(m_targetWindow, nullptr, m_originalRect.left, m_originalRect.top,
-        width, height, SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+    if (m_wasMaximized) {
+        RECT& rc = m_originalPlacement.rcNormalPosition;
+        SetWindowPos(m_targetWindow, nullptr,
+            rc.left, rc.top,
+            rc.right - rc.left, rc.bottom - rc.top,
+            SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+    } else {
+        int width = m_originalRect.right - m_originalRect.left;
+        int height = m_originalRect.bottom - m_originalRect.top;
+        SetWindowPos(m_targetWindow, nullptr, m_originalRect.left, m_originalRect.top,
+            width, height, SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+    }
 
     SetParent(m_targetWindow, nullptr);
 
-    // Restore the original placement
+    LONG_PTR currentStyle = GetWindowLongPtrW(m_targetWindow, GWL_STYLE);
+    currentStyle &= ~WS_CHILD;
+    SetWindowLongPtrW(m_targetWindow, GWL_STYLE, currentStyle);
+
     if (m_originalPlacement.showCmd != SW_SHOWMAXIMIZED) {
         m_originalPlacement.showCmd = SW_RESTORE;
     }
     SetWindowPlacement(m_targetWindow, &m_originalPlacement);
 
-    // Set the original extended style and style
     m_originalStyle &= ~WS_CHILD;
     SetWindowLongPtrW(m_targetWindow, GWL_EXSTYLE, m_originalExStyle);
     SetWindowLongPtrW(m_targetWindow, GWL_STYLE, m_originalStyle);
