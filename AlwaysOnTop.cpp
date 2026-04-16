@@ -1,9 +1,20 @@
 #include "AlwaysOnTop.h"
 #include "Utils.h"
 #include <algorithm>
+#include <dwmapi.h>
 
 const wchar_t* AlwaysOnTopManager::BorderClassName = L"ZenCrop.AlwaysOnTopBorder";
 static std::once_flag s_borderClassReg;
+
+static RECT GetWindowVisibleRect(HWND hwnd) {
+    RECT rect = {};
+    HRESULT hr = DwmGetWindowAttribute(hwnd, DWMWA_EXTENDED_FRAME_BOUNDS, &rect, sizeof(rect));
+    if (SUCCEEDED(hr)) {
+        return rect;
+    }
+    GetWindowRect(hwnd, &rect);
+    return rect;
+}
 
 void AlwaysOnTopManager::RegisterBorderWindowClass() {
     WNDCLASSEXW wcex = { sizeof(wcex) };
@@ -148,7 +159,7 @@ void AlwaysOnTopManager::CreateBorderWindow(PinnedWindowInfo& info) {
         GetWindowPlacement(info.targetWindow, &wp);
         targetRect = wp.rcNormalPosition;
     } else {
-        GetWindowRect(info.targetWindow, &targetRect);
+        targetRect = GetWindowVisibleRect(info.targetWindow);
     }
 
     int t = m_settings.thickness;
@@ -195,7 +206,7 @@ void AlwaysOnTopManager::UpdateBorderPosition(PinnedWindowInfo& info) {
     }
 
     RECT targetRect = {};
-    GetWindowRect(info.targetWindow, &targetRect);
+    targetRect = GetWindowVisibleRect(info.targetWindow);
 
     int t = m_settings.thickness;
     int w = (targetRect.right - targetRect.left) + 2 * t;

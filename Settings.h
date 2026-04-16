@@ -1,5 +1,6 @@
 #pragma once
 #include <windows.h>
+#include <string>
 
 #define IDD_AOT_SETTINGS        2010
 #define IDC_AOT_SHOW_BORDER     2001
@@ -23,6 +24,15 @@
 #define IDC_ZC_THICK_LABEL      2034
 #define IDC_ZC_CROP_ON_TOP      2035
 
+#define IDC_HK_REPARENT_EDIT    2040
+#define IDC_HK_REPARENT_CLEAR   2041
+#define IDC_HK_THUMBNAIL_EDIT   2042
+#define IDC_HK_THUMBNAIL_CLEAR  2043
+#define IDC_HK_CLOSE_EDIT       2044
+#define IDC_HK_CLOSE_CLEAR      2045
+#define IDC_HK_AOT_EDIT         2046
+#define IDC_HK_AOT_CLEAR        2047
+
 struct AotSettings {
     bool showBorder = true;
     bool customColor = true;
@@ -38,9 +48,38 @@ struct OverlaySettings {
     bool cropOnTop = false;
 };
 
+struct HotkeyConfig {
+    bool win = false;
+    bool ctrl = false;
+    bool shift = false;
+    bool alt = false;
+    unsigned char key = 0;
+
+    bool IsEmpty() const { return key == 0; }
+    UINT Modifiers() const {
+        UINT mod = 0;
+        if (win) mod |= MOD_WIN;
+        if (ctrl) mod |= MOD_CONTROL;
+        if (shift) mod |= MOD_SHIFT;
+        if (alt) mod |= MOD_ALT;
+        mod |= MOD_NOREPEAT;
+        return mod;
+    }
+    std::wstring ToString() const;
+};
+
+struct HotkeySettings {
+    HotkeyConfig reparent;
+    HotkeyConfig thumbnail;
+    HotkeyConfig closeReparent;
+    HotkeyConfig alwaysOnTop;
+};
+
 AotSettings LoadAotSettings();
 void SaveAotSettings(const AotSettings& settings);
 OverlaySettings LoadOverlaySettings();
 void SaveOverlaySettings(const OverlaySettings& settings);
+HotkeySettings LoadHotkeySettings();
+void SaveHotkeySettings(const HotkeySettings& settings);
 COLORREF GetSystemAccentColor();
 void ShowSettingsDialog(HWND parent);

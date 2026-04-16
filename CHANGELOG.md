@@ -1,5 +1,42 @@
 # Changelog
 
+## V2.0 (2026-04-16)
+
+### 新增
+
+- **Always On Top 功能**: 按 `Alt+T` 将任意窗口置顶，再次按 `Alt+T` 取消置顶
+  - 可自定义边框颜色、透明度、粗细和圆角
+  - 边框使用 `DWMWA_EXTENDED_FRAME_BOUNDS` 紧贴窗口可见边缘，无空隙
+  - 支持系统强调色或自定义颜色
+  - 窗口最小化时自动隐藏边框，恢复时自动重新显示
+- **统一设置对话框**: 右键托盘 → Settings 打开标签式设置界面
+  - **ZenCrop 标签**: 裁剪覆盖层颜色/粗细、Crop On Top 开关、Reparent/Thumbnail/Close Reparent 快捷键自定义
+  - **Always On Top 标签**: 边框显示/颜色/透明度/粗细/圆角、AOT 快捷键自定义
+- **快捷键自定义**: 所有快捷键均可自定义，支持按键捕获输入
+  - 按键捕获控件：点击输入框后按下组合键即可录入
+  - Backspace/Delete 清空快捷键，Escape 取消编辑
+  - 内部冲突检测：重复快捷键自动警告
+  - 外部冲突检测：`RegisterHotKey` 失败时提示被其他程序占用
+  - 支持 `MOD_NOREPEAT` 防止按住重复触发
+- **Crop On Top**: 设置中开启后，裁剪窗口自动应用 Always On Top
+  - 对裁剪后的 Host 窗口置顶（非原始窗口），边框大小正确
+- **Alt+T 支持裁剪窗口**: 在 Reparent/Thumbnail 裁剪窗口中按 `Alt+T` 正确切换置顶
+  - 使用 `GetAncestor(GA_ROOT)` 识别裁剪窗口的 Host 容器
+
+### 修复
+
+- **PropertySheet 居中闪烁**: 使用 `PSCB_PRECREATE` 移除 `WS_VISIBLE`，居中后再 `ShowWindow`，消除先左上角再居中的跳变
+- **AOT 边框颜色 R/B 反转**: 32 位 ARGB 像素格式 `0xAARRGGBB` 与 `COLORREF` `0x00BBGGRR` 字节序不同，修正 `GetRValue`/`GetBValue` 位置
+- **AOT 透明度不生效**: `UpdateLayeredWindow` + `AC_SRC_ALPHA` 需要预乘 Alpha 值（`preR = r * alpha / 255`）
+- **Alt+T 对裁剪窗口产生超大边框**: `GetForegroundWindow()` 返回子窗口而非 Host，用 `GetAncestor(GA_ROOT)` + 类名匹配定位到 `ZenCrop.ReparentHost`/`ZenCrop.ThumbnailHost`
+
+### 优化
+
+- **文件重命名**: `AlwaysOnTopSettings.h/cpp` → `Settings.h/cpp`，统一设置接口
+- **AOT 边框紧贴窗口**: 使用 `DwmGetWindowAttribute(DWMWA_EXTENDED_FRAME_BOUNDS)` 替代 `GetWindowRect`，排除不可见调整边框
+
+---
+
 ## V1.4.3 (2026-04-16)
 
 ### 新增
@@ -59,18 +96,6 @@
 - **红色虚线建议框**: 悬停时显示红色虚线建议框（8px 绘制 + 4px 间隔），替代原来的整个窗口红色实线框
 - **三层检测回退**: UIA ElementFromPoint → RealChildWindowFromPoint → 全客户区
 
-### 修改
-
-- 新增 `SmartDetector.h/cpp`：封装 UIA 检测逻辑，单例模式，`GetElementRectAtPoint` + `GetChildWindowRectAtPoint`
-- `main.cpp`：添加 `CoInitializeEx` / `CoUninitialize`，启动/关闭 SmartDetector
-- `OverlayWindow.h`：新增 `m_smartRect`、`m_hasSmartRect`、`m_clickStartPoint`、`ClickThreshold`
-- `OverlayWindow.cpp`：
-  - `UpdateHoveredWindow` 每次鼠标移动都调用 SmartDetector 更新建议框
-  - `UpdateOverlay` 有建议框时渲染红色虚线 + 清除建议区域，无建议框时回退到整个窗口红色实线框
-  - `WM_LBUTTONUP` 区分单击（< 5px 位移）和拖拽，单击接受建议框或整个窗口客户区
-- `build.bat` / `CMakeLists.txt`：添加 `SmartDetector.cpp`、`ole32.lib`、`oleaut32.lib`
-- 所有边框粗细从 5px 改为 3px
-
 ---
 
 ## V1.3.1 (2026-04-15)
@@ -86,11 +111,6 @@
   - 点击矩形外部 → 取消当前矩形，回到悬停模式
 - **8 个调整手柄**: 调整模式下矩形四角和四边中点显示红色实心圆点手柄，直观提示可调整区域
 - **智能光标切换**: 鼠标悬停在手柄/矩形内部/矩形外部时自动切换对应光标样式（对角↔↔↕↔✋→）
-
-### 修改
-
-- `OverlayWindow.h`: 新增 `OverlayState`、`AdjustAction` 枚举，新增 `m_cropRect`、`m_adjustAction`、`m_adjustAnchor`、`m_adjustStartRect` 成员，新增 `HitTestCropRect`、`ClampCropRect`、`UpdateCursorForPoint` 方法
-- `OverlayWindow.cpp`: 注册窗口类添加 `CS_DBLCLKS`；重写 `MessageHandler` 为三阶段状态机 (Hover → DragCreate → Adjust)；`UpdateOverlay` 新增调整模式渲染（裁剪矩形 + 圆点手柄）；`WM_LBUTTONUP` 不再立即发送回调
 
 ---
 
@@ -108,12 +128,6 @@
 - **Reparent 失效窗口自动清理**: 消息循环中增加 `g_reparents` 失效清理，目标窗口被外部关闭时自动移除对应的 ReparentWindow
 - **StartCrop 过滤自身窗口**: 裁剪模式启动时检查目标窗口类名，过滤 `ZenCrop.*` 窗口，防止裁剪自身窗口导致递归
 
-### 优化
-
-- **OverlayWindow GDI 对象缓存**: `UpdateOverlay` 不再每次调用都创建/销毁 `HDC`、`HBITMAP`，改为 `EnsureBitmap`/`FreeBitmap` 缓存机制，仅在虚拟屏幕大小变化时重建，减少鼠标移动时的 GDI 开销
-- **OverlayWindow 像素填充优化**: 用 `std::fill` 替代逐像素分支循环，先全量填充 shade 像素再覆盖 active 区域，减少分支预测开销
-- **移除 ThumbnailWindow WM_SIZING 死代码**: 窗口无 `WS_THICKFRAME` 样式，`WM_SIZING` 永远不会触发，移除无效 case
-
 ---
 
 ## V1.2 (2026-04-15)
@@ -121,18 +135,7 @@
 ### 修复
 
 - **最大化窗口 Reparent 裁剪错位**: Chrome 等浏览器最大化时 Ctrl+Alt+X 裁剪内容与实际框选不一致、出现白色空白的问题
-  - Reparent 前移除 `WS_MAXIMIZE` 样式，防止子窗口"最大化"行为导致尺寸和布局异常
-  - 最大化窗口偏移量改用 `GetMonitorInfo` → `mi.rcWork` 计算，而非直接用 `GetWindowRect` 的负坐标
 - **最大化窗口还原后内容错位**: Ctrl+Alt+Z 还原后 Chrome 内容位置偏移的问题
-  - 保存完整 `WINDOWPLACEMENT` 结构（含 normal 位置和 maximized 状态），而非仅保存布尔值
-  - 还原操作顺序修正：`SetWindowPos` → `SetParent` → `SetWindowPlacement` → 恢复样式
-  - 用 `SetWindowPlacement` 一次性恢复位置和最大化状态，替代 `SetWindowPos` + `ShowWindow(SW_MAXIMIZE)` 的错误组合
-  - 保存并恢复 `GWL_EXSTYLE`，防止扩展样式丢失
-
-### 修改
-
-- `ReparentWindow.h`: 新增 `m_originalPlacement`, `m_originalExStyle` 成员
-- `ReparentWindow.cpp`: 重写 `SaveOriginalState`、`RestoreOriginalState`，构造函数增加最大化窗口预处理和偏移量校正
 
 ---
 
@@ -140,14 +143,10 @@
 
 ### 新增
 
-- **Thumbnail 窗口浅蓝色边框**: Thumbnail 模式裁剪窗口四周显示 3px 玉米蓝边框 (`RGB(100,149,237)`),便于区分裁剪窗口与原窗口
+- **Thumbnail 窗口浅蓝色边框**: Thumbnail 模式裁剪窗口四周显示 3px 玉米蓝边框
 - **Thumbnail 窗口鼠标拖拽**: 左键点击 Thumbnail 窗口可拖拽移动
-- **Thumbnail 窗口 ESC 关闭**: 按 ESC 键关闭当前聚焦的 Thumbnail 窗口 (仅关闭该窗口,不退出程序)
+- **Thumbnail 窗口 ESC 关闭**: 按 ESC 键关闭当前聚焦的 Thumbnail 窗口
 - **快捷键 Ctrl+Alt+Z**: 关闭所有 Reparent 模式窗口,恢复原始窗口状态
-
-### 修改
-
-- **快捷键变更**: Thumbnail 模式快捷键从 `Ctrl+Alt+T` 改为 `Ctrl+Alt+C`
 
 ---
 
@@ -155,31 +154,9 @@
 
 ### 新增
 
-- **激活区域跟随鼠标**: 裁剪覆盖层不再固定高亮触发窗口,而是动态检测鼠标下方的窗口并实时切换激活区域,支持裁剪屏幕上任意窗口
-- **穿透检测**: 通过临时设置 `WS_EX_TRANSPARENT` 实现 `WindowFromPoint` 穿透 Overlay,准确获取鼠标下方的目标窗口
-- **悬停更新节流**: 30ms 间隔的 `UpdateHoveredWindow` 节流机制,避免频繁重绘导致性能问题
-
-### 优化
-
-- **消除空输出**: 桌面空白区域不再成为激活目标 (`GetDesktopWindow` 过滤),框选始终在有效窗口内容内进行
-- **遮罩渲染优化**: 使用 `UpdateLayeredWindow` + 32位 ARGB DIB Section 实现逐像素 alpha 控制,替代 `SetLayeredWindowAttributes` 统一透明度方案
-  - 非激活区域: alpha=153 (60% 黑色遮罩)
-  - 激活区域: alpha=1 (近乎全透明,保留点击响应)
-  - 红色边框: alpha=255 (完全不透明)
-- **消除闪烁**: 移除 `WM_PAINT` + `InvalidateRect` 绘制方式,改用 `UpdateOverlay()` 直接更新;`WM_ERASEBKGND` 返回 1 阻止背景擦除
-
-### 修复
-
-- **窗口重叠时框选空输出**: 悬停切换窗口时调用 `SetWindowPos(HWND_TOP)` 将目标窗口提到 Z 序顶部,确保重叠区域显示被高亮窗口的真实内容
-- **桌面窗口框选错误**: 过滤 `Progman` 和 `WorkerW` 类名窗口,防止桌面背景被选为裁剪目标 (DWM Thumbnail 对桌面窗口的 source rect 偏移计算不正确,导致框选内容总是从左上角算起)
-- **鼠标移到桌面后仍可框选**: 修复 `UpdateHoveredWindow` 中 `m_hoveredWindow` 未被清空的问题,鼠标移到桌面时 `m_hoveredWindow` 正确设为 `nullptr`,点击时自动退出裁剪模式
-- **任务栏图标显示错误**: ReparentWindow/ThumbnailWindow 窗口类使用 `IDI_APPLICATION` 通用图标,改为从资源加载 `MAKEINTRESOURCE(1)`;托盘图标从文件系统加载 `app.ico` 改为从资源加载,分发 exe 时不再需要附带 ico 文件
-- **退出时窗口闪烁**: 析构函数中先 `ShowWindow(SW_HIDE)` 隐藏窗口再销毁;`RestoreOriginalState` 末尾设置 `m_targetWindow = nullptr` 防止 `WM_DESTROY` 中重复调用
-
-### 修改
-
-- `OverlayWindow.h`: 新增 `m_hoveredWindow`, `m_hoveredRect`, `m_lastHoverUpdateTick`, `WindowFromPointExcludingSelf()`, `UpdateHoveredWindow()`, `HoverUpdateIntervalMs`
-- `OverlayWindow.cpp`: 重写交互逻辑 — `WM_LBUTTONDOWN` 不再限制点击区域,`WM_MOUSEMOVE` 非拖拽时动态检测悬停窗口,`GetCropRect()` 移除固定返回 `m_targetRect` 逻辑
+- **激活区域跟随鼠标**: 裁剪覆盖层动态检测鼠标下方的窗口并实时切换激活区域
+- **穿透检测**: 通过临时设置 `WS_EX_TRANSPARENT` 实现 `WindowFromPoint` 穿透 Overlay
+- **悬停更新节流**: 30ms 间隔的 `UpdateHoveredWindow` 节流机制
 
 ---
 

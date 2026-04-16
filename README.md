@@ -1,4 +1,4 @@
-# ZenCrop v1.4.3
+# ZenCrop v2.0
 
 [中文文档](README_zh.md)
 
@@ -14,14 +14,14 @@ ZenCrop is rebuilt from scratch, runs completely standalone without PowerToys, a
 
 - **Reparent Mode**: Crops a target window into an independent child window using window reparenting
 - **Thumbnail Mode**: Displays a live DWM thumbnail of the target window with a cornflower blue border, supports drag-to-move and ESC to close
+- **Always On Top**: Press `Alt+T` to pin any window on top of all others, with a customizable border (color, opacity, thickness, rounded corners)
+- **Customizable Hotkeys**: All hotkeys can be customized in Settings — click the input field and press your desired key combo
+- **Crop On Top**: Optionally auto-pin cropped windows on top (configurable in Settings)
 - **Smart Window Detection**: The crop overlay automatically follows the mouse, dynamically highlighting the window under the cursor — crop any window on screen
-- **Overlapping Window Handling**: Hovered windows are automatically raised to the top of the Z-order, ensuring real content is displayed in overlapping areas
-- **Desktop Filtering**: The desktop background cannot be selected as a crop target, avoiding empty output
-- **Borderless / Titlebar Toggle**: Windows are borderless by default; toggle titlebar visibility via the tray menu
 - **Smart Content Detection**: UI Automation-based element detection — the overlay automatically identifies the UI element under the cursor (browser title bar, address bar, content area, etc.) and suggests a crop region with a red dashed border
 - **Click to Accept**: Single-click accepts the smart suggestion; drag to manually draw a rectangle
 - **Crop Area Adjustment**: After drawing the crop rectangle, you can resize it by dragging edges/corners, move it by dragging inside, and double-click to confirm — no more accidental crops
-- **Smart Cursor**: Cursor automatically changes to indicate resize/move actions when hovering over handles or inside the crop rectangle
+- **Borderless / Titlebar Toggle**: Windows are borderless by default; toggle titlebar visibility via the tray menu
 - **Stale Window Cleanup**: Automatically removes Reparent/Thumbnail windows whose target has been closed externally
 - **System Tray**: Runs in the background; right-click the tray icon for the menu
 
@@ -32,8 +32,11 @@ ZenCrop is rebuilt from scratch, runs completely standalone without PowerToys, a
 | `Ctrl+Alt+X` | Start Reparent crop mode |
 | `Ctrl+Alt+C` | Start Thumbnail crop mode |
 | `Ctrl+Alt+Z` | Close all Reparent windows |
+| `Alt+T` | Toggle Always On Top for the foreground window |
 | `ESC` | Cancel current crop rectangle / cancel entire crop mode / close focused Thumbnail window |
-| Right-click tray icon | Open menu (toggle titlebar / exit) |
+| Right-click tray icon | Open menu (toggle titlebar / settings / exit) |
+
+> All hotkeys are customizable in Settings (right-click tray → Settings → ZenCrop / Always On Top tab).
 
 ## Usage
 
@@ -47,14 +50,22 @@ ZenCrop is rebuilt from scratch, runs completely standalone without PowerToys, a
    - Press `ESC` to cancel the rectangle and redraw, press `ESC` again to exit
    - Click outside the rectangle to cancel and redraw
 5. Press `Ctrl+Alt+Z` to close all Reparent windows
+6. Press `Alt+T` to toggle Always On Top for any window
 
 > **Note**: The desktop background cannot be selected as a crop target. Clicking on the desktop will automatically exit crop mode.
+
+## Settings
+
+Right-click the tray icon → **Settings** to open the tabbed settings dialog:
+
+- **ZenCrop tab**: Overlay color & thickness, Crop On Top toggle, Reparent/Thumbnail/Close Reparent hotkey customization
+- **Always On Top tab**: Border visibility, color (system accent or custom), opacity, thickness, rounded corners, AOT hotkey customization
 
 ## Tech Stack
 
 - **Language**: C++17
 - **Framework**: Native Windows Win32 API
-- **Dependencies**: user32, gdi32, dwmapi, shcore, shell32, ole32, oleaut32
+- **Dependencies**: user32, gdi32, dwmapi, shcore, shell32, ole32, oleaut32, shlwapi, comctl32, comdlg32, advapi32
 
 ## Build
 
@@ -85,8 +96,11 @@ zencrop/
 ├── OverlayWindow.h/cpp   # Crop area selection overlay
 ├── ReparentWindow.h/cpp  # Reparent mode window
 ├── ThumbnailWindow.h/cpp # Thumbnail mode window
+├── AlwaysOnTop.h/cpp     # Always On Top manager & border window
+├── Settings.h/cpp        # Unified settings (AOT, overlay, hotkeys)
 ├── app.ico               # Application icon
-├── resources.rc          # Icon resource definition
+├── resources.rc          # Dialog templates & icon resource
+├── app.manifest          # DPI awareness & compatibility
 ├── build.bat             # MSVC build script
 ├── CMakeLists.txt        # CMake configuration
 ├── CHANGELOG.md          # Changelog

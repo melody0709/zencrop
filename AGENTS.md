@@ -16,15 +16,19 @@ temp\_powertoys 有源码,需要时可仓库对比
 - **Ctrl+Alt+X**: Reparent mode (captures window by reparenting it)
 - **Ctrl+Alt+C**: Thumbnail mode (captures window as thumbnail)
 - **Ctrl+Alt+Z**: Close all Reparent windows
+- **Alt+T**: Toggle Always On Top for foreground window
 - **ESC**: Close focused Thumbnail window / cancel crop
-- **Right-click tray icon**: Show menu (toggle titlebar / exit)
+- **Right-click tray icon**: Show menu (toggle titlebar / settings / exit)
+
+> All hotkeys are customizable in Settings.
 
 ## Architecture
 
 - **Entry point**: `main.cpp` - Win32 application with system tray
-- **Core components**: `OverlayWindow`, `ReparentWindow`, `ThumbnailWindow`
+- **Core components**: `OverlayWindow`, `ReparentWindow`, `ThumbnailWindow`, `AlwaysOnTopManager`
+- **Settings**: `Settings.h/cpp` - Unified settings (AOT, overlay, hotkeys) with PropertySheet UI
 - **Platform**: Native Windows C++17 with Win32 API
-- **Dependencies**: user32, gdi32, dwmapi, shcore, shell32
+- **Dependencies**: user32, gdi32, dwmapi, shcore, shell32, ole32, oleaut32, shlwapi, comctl32, comdlg32, advapi32
 
 ## Features
 
@@ -60,4 +64,21 @@ temp\_powertoys 有源码,需要时可仓库对比
 ### Reparent 任务栏图标
 
 - **Host 窗口扩展样式**: 必须使用 `exStyle = 0`（普通顶级窗口），**严禁**使用 `WS_EX_TOOLWINDOW`（会隐藏任务栏图标）或 `WS_EX_APPWINDOW`（会显示目标窗口图标而非 ZenCrop 图标）。`exStyle = 0` 时，Host 窗口会出现在任务栏并显示窗口类注册时的 ZenCrop 图标，这是 v1.2 以来的正确行为。
+
+### Always On Top 边框
+
+- **边框紧贴窗口**: 必须使用 `DwmGetWindowAttribute(DWMWA_EXTENDED_FRAME_BOUNDS)` 获取窗口可见边界，而非 `GetWindowRect`。后者包含不可见的调整边框（resize border），导致边框与窗口之间出现空隙。
+- **预乘 Alpha**: `UpdateLayeredWindow` + `AC_SRC_ALPHA` 要求像素值为预乘 Alpha（`preR = r * alpha / 255`），否则透明度不生效。
+- **ARGB 与 COLORREF 字节序**: 32 位 DIB Section 像素格式为 `0xAARRGGBB`，而 `COLORREF` 为 `0x00BBGGRR`。构造像素时必须用 `GetRValue` 在高位、`GetBValue` 在低位，不能直接移位 `COLORREF`。
+
+### PropertySheet 设置对话框
+
+- **居中无闪烁**: 使用 `PSCB_PRECREATE` 回调移除 `WS_VISIBLE` 样式，在 `PSCB_INITIALIZED` 中用 `SetTimer(0ms)` 延迟居中，最后 `ShowWindow(SW_SHOWNORMAL)` 显示。直接在 `PSCB_INITIALIZED` 中居中会导致窗口先在左上角闪现再跳到中间。
+- **DLU 与像素转换**: .rc 文件使用对话框单位（DLU），`MoveWindow` 使用像素。动态创建的控件定位时必须用 `MapDialogRect` 转换 DLU 坐标，或用 `GetWindowRect` + `MapWindowPoints` 获取已有控件的像素位置来计算。
+- **自定义控件焦点**: 自定义窗口类（如 HotkeyEdit）必须处理 `WM_LBUTTONDOWN` 并调用 `SetFocus(hwnd)`，否则点击无法获得焦点，键盘事件无法捕获。
+
+### 快捷键与窗口识别
+
+- **裁剪窗口的 Alt+T**: `GetForegroundWindow()` 在 Reparent 模式下返回的是子窗口（原始目标），而非 Host 容器。必须用 `GetAncestor(target, GA_ROOT)` 向上查找根窗口，再通过类名匹配 `ZenCrop.ReparentHost`/`ZenCrop.ThumbnailHost` 定位到 Host。
+- **类名一致性**: 代码中引用窗口类名时必须与注册时一致（如 `ZenCrop.ReparentHost` 而非 `ZenCrop.Reparent`），否则 `wcscmp` 匹配失败。
 

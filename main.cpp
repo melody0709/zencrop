@@ -19,11 +19,12 @@
 #define ID_TRAY_RELEASE 1003
 #define ID_TRAY_AOT_SETTINGS 1004
 
-#define ZENCROP_VERSION L"1.4.3"
+#define ZENCROP_VERSION L"2.0"
 #define ZENCROP_RELEASE_URL L"https://github.com/melody0709/zencrop/releases"
 #define ZENCROP_MUTEX_NAME L"Global\\ZenCrop"
 
 bool g_showTitlebar = false;
+HotkeySettings g_hotkeys;
 
 enum class CropMode { Reparent, Thumbnail };
 
@@ -72,11 +73,15 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         wcscpy_s(nid.szTip, L"ZenCrop (Right click to exit)");
         Shell_NotifyIconW(NIM_ADD, &nid);
 
-        // Register Hotkeys
-        RegisterHotKey(hwnd, 1, MOD_CONTROL | MOD_ALT, 'X');
-        RegisterHotKey(hwnd, 2, MOD_CONTROL | MOD_ALT, 'C');
-        RegisterHotKey(hwnd, 3, MOD_CONTROL | MOD_ALT, 'Z');
-        RegisterHotKey(hwnd, 4, MOD_ALT, 'T');
+        g_hotkeys = LoadHotkeySettings();
+        if (!g_hotkeys.reparent.IsEmpty())
+            RegisterHotKey(hwnd, 1, g_hotkeys.reparent.Modifiers(), g_hotkeys.reparent.key);
+        if (!g_hotkeys.thumbnail.IsEmpty())
+            RegisterHotKey(hwnd, 2, g_hotkeys.thumbnail.Modifiers(), g_hotkeys.thumbnail.key);
+        if (!g_hotkeys.closeReparent.IsEmpty())
+            RegisterHotKey(hwnd, 3, g_hotkeys.closeReparent.Modifiers(), g_hotkeys.closeReparent.key);
+        if (!g_hotkeys.alwaysOnTop.IsEmpty())
+            RegisterHotKey(hwnd, 4, g_hotkeys.alwaysOnTop.Modifiers(), g_hotkeys.alwaysOnTop.key);
         return 0;
     }
     case WM_HOTKEY: {
@@ -152,6 +157,20 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         } else if (LOWORD(wParam) == ID_TRAY_AOT_SETTINGS) {
             ShowSettingsDialog(hwnd);
             AlwaysOnTopManager::Instance().UpdateSettings();
+
+            UnregisterHotKey(hwnd, 1);
+            UnregisterHotKey(hwnd, 2);
+            UnregisterHotKey(hwnd, 3);
+            UnregisterHotKey(hwnd, 4);
+            g_hotkeys = LoadHotkeySettings();
+            if (!g_hotkeys.reparent.IsEmpty())
+                RegisterHotKey(hwnd, 1, g_hotkeys.reparent.Modifiers(), g_hotkeys.reparent.key);
+            if (!g_hotkeys.thumbnail.IsEmpty())
+                RegisterHotKey(hwnd, 2, g_hotkeys.thumbnail.Modifiers(), g_hotkeys.thumbnail.key);
+            if (!g_hotkeys.closeReparent.IsEmpty())
+                RegisterHotKey(hwnd, 3, g_hotkeys.closeReparent.Modifiers(), g_hotkeys.closeReparent.key);
+            if (!g_hotkeys.alwaysOnTop.IsEmpty())
+                RegisterHotKey(hwnd, 4, g_hotkeys.alwaysOnTop.Modifiers(), g_hotkeys.alwaysOnTop.key);
         }
         return 0;
     }
