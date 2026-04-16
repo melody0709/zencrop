@@ -7,10 +7,17 @@
 #include <windowsx.h>
 #include <algorithm>
 #include <objbase.h>
+#include <shlwapi.h>
+
+#pragma comment(lib, "shlwapi.lib")
 
 #define WM_TRAYICON (WM_USER + 1)
 #define ID_TRAY_EXIT 1001
 #define ID_TRAY_TITLEBAR 1002
+#define ID_TRAY_RELEASE 1003
+
+#define ZENCROP_VERSION L"1.4.2"
+#define ZENCROP_RELEASE_URL L"https://github.com/melody0709/zencrop/releases"
 
 bool g_showTitlebar = false;
 
@@ -76,13 +83,30 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         if (lParam == WM_RBUTTONUP) {
             POINT pt;
             GetCursorPos(&pt);
+
             HMENU hMenu = CreatePopupMenu();
             UINT titlebarFlag = g_showTitlebar ? MF_CHECKED : MF_UNCHECKED;
             AppendMenuW(hMenu, MF_STRING | titlebarFlag, ID_TRAY_TITLEBAR, L"Show Titlebar");
             AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
+            AppendMenuW(hMenu, MF_STRING, ID_TRAY_RELEASE, L"Open Release Page");
+            AppendMenuW(hMenu, MF_STRING | MF_GRAYED, 0, L"ZenCrop v" ZENCROP_VERSION);
+            AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
             AppendMenuW(hMenu, MF_STRING, ID_TRAY_EXIT, L"Exit ZenCrop");
+
             SetForegroundWindow(hwnd);
-            TrackPopupMenu(hMenu, TPM_BOTTOMALIGN | TPM_LEFTALIGN, pt.x, pt.y, 0, hwnd, nullptr);
+
+            HMONITOR hMon = MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
+            MONITORINFO mi = { sizeof(mi) };
+            GetMonitorInfo(hMon, &mi);
+            int taskbarTop = mi.rcWork.bottom;
+
+            UINT flags = TPM_LEFTALIGN;
+            if (pt.y > taskbarTop - 10) {
+                flags = TPM_BOTTOMALIGN;
+                pt.y = taskbarTop;
+            }
+
+            TrackPopupMenu(hMenu, flags, pt.x, pt.y, 0, hwnd, nullptr);
             DestroyMenu(hMenu);
         }
         return 0;
@@ -92,6 +116,8 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
             PostMessage(hwnd, WM_CLOSE, 0, 0);
         } else if (LOWORD(wParam) == ID_TRAY_TITLEBAR) {
             g_showTitlebar = !g_showTitlebar;
+        } else if (LOWORD(wParam) == ID_TRAY_RELEASE) {
+            ShellExecuteW(nullptr, L"open", ZENCROP_RELEASE_URL, nullptr, nullptr, SW_SHOWNORMAL);
         }
         return 0;
     }
