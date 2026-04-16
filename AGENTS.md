@@ -8,7 +8,8 @@ temp\_powertoys 有源码,需要时可仓库对比
 
 ## Build Commands
 
-- **MSVC build script**: `build.bat` (requires Visual Studio 2022 with vcvars64)
+- **构建**: `build.bat` (需要 Visual Studio 2022 + vcvars64，在 cmd.exe 中运行)
+- **Trae IDE 终端注意**: `build.bat` 依赖 `vcvars64.bat` 设置环境变量，但 Trae 终端是 PowerShell 且 `cmd /c` 被安全策略阻止，因此需手动配置 PATH/INCLUDE/LIB 后直接调用 `cl`，具体命令参考 `build.bat` 内容
 
 ## Runtime Controls
 
@@ -55,4 +56,8 @@ temp\_powertoys 有源码,需要时可仓库对比
 - **桌面窗口过滤**: 仅仅判断 `GetDesktopWindow()` 是不够的，必须额外通过 `GetClassNameW` 字符串比对过滤掉 `Progman` 和 `WorkerW`（这些是 Shell 桌面组件的真实承载窗口）。
 - **指针更新条件**: `if (hwnd && hwnd != old)` 这种写法会在移出到无效区域 (nullptr) 时不触发更新，应改为 `if (hwnd != old)`，让其自然处理 nullptr。
 - **图标加载**: 不要使用 `IDI_APPLICATION` 或 `LR_LOADFROMFILE`，由于我们要分发单个 EXE，统一使用 `LoadIconW(GetModuleHandleW(nullptr), MAKEINTRESOURCE(1))` 直接从内嵌的 RC 资源加载。
+
+### Reparent 任务栏图标
+
+- **Host 窗口扩展样式**: 必须使用 `exStyle = 0`（普通顶级窗口），**严禁**使用 `WS_EX_TOOLWINDOW`（会隐藏任务栏图标）或 `WS_EX_APPWINDOW`（会显示目标窗口图标而非 ZenCrop 图标）。`exStyle = 0` 时，Host 窗口会出现在任务栏并显示窗口类注册时的 ZenCrop 图标，这是 v1.2 以来的正确行为。
 

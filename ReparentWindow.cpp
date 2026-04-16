@@ -48,7 +48,7 @@ ReparentWindow::ReparentWindow(HWND targetWindow, RECT cropRect, bool showTitleb
     int height = cropRect.bottom - cropRect.top;
 
     DWORD style;
-    DWORD exStyle = WS_EX_TOOLWINDOW;
+    DWORD exStyle = 0;
     if (m_showTitlebar) {
         style = WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN;
         style &= ~(WS_MAXIMIZEBOX | WS_THICKFRAME);
