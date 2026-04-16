@@ -4,7 +4,6 @@
 #include <cmath>
 
 const wchar_t* OverlayWindow::ClassName = L"ZenCrop.OverlayWindow";
-const int OverlayWindow::BorderThickness = 3;
 const int OverlayWindow::HandleSize = 8;
 const int OverlayWindow::MinCropSize = 10;
 const int OverlayWindow::ClickThreshold = 5;
@@ -23,6 +22,8 @@ void OverlayWindow::RegisterWindowClass() {
 
 OverlayWindow::OverlayWindow(HWND targetWindow, std::function<void(HWND, RECT)> onCropped)
     : m_targetWindow(targetWindow), m_onCropped(onCropped) {
+
+    m_overlaySettings = LoadOverlaySettings();
 
     std::call_once(s_overlayClassReg, []() { RegisterWindowClass(); });
 
@@ -286,7 +287,9 @@ void OverlayWindow::UpdateOverlay() {
 
     const DWORD shadePixel = 0x99000000;
     const DWORD clearPixel = 0x01000000;
-    const DWORD redPixel = 0xFFFF0000;
+    COLORREF borderColor = m_overlaySettings.color;
+    const DWORD borderPixel = 0xFF000000 | (GetRValue(borderColor) << 16) | (GetGValue(borderColor) << 8) | GetBValue(borderColor);
+    const int borderThickness = m_overlaySettings.thickness;
 
     std::fill(m_pixels, m_pixels + (size_t)width * height, shadePixel);
 
@@ -302,7 +305,7 @@ void OverlayWindow::UpdateOverlay() {
     };
 
     auto drawBorder = [&](int left, int top, int right, int bottom) {
-        for (int t = 0; t < BorderThickness; t++) {
+        for (int t = 0; t < borderThickness; t++) {
             int y1 = top + t;
             int y2 = bottom - 1 - t;
             int x1 = left + t;
@@ -310,22 +313,22 @@ void OverlayWindow::UpdateOverlay() {
 
             if (y1 >= 0 && y1 < height) {
                 for (int x = std::max(left, 0); x < std::min(right, width); x++) {
-                    m_pixels[(size_t)y1 * width + x] = redPixel;
+                    m_pixels[(size_t)y1 * width + x] = borderPixel;
                 }
             }
             if (y2 >= 0 && y2 < height && y2 != y1) {
                 for (int x = std::max(left, 0); x < std::min(right, width); x++) {
-                    m_pixels[(size_t)y2 * width + x] = redPixel;
+                    m_pixels[(size_t)y2 * width + x] = borderPixel;
                 }
             }
             if (x1 >= 0 && x1 < width) {
                 for (int y = std::max(top, 0); y < std::min(bottom, height); y++) {
-                    m_pixels[(size_t)y * width + x1] = redPixel;
+                    m_pixels[(size_t)y * width + x1] = borderPixel;
                 }
             }
             if (x2 >= 0 && x2 < width && x2 != x1) {
                 for (int y = std::max(top, 0); y < std::min(bottom, height); y++) {
-                    m_pixels[(size_t)y * width + x2] = redPixel;
+                    m_pixels[(size_t)y * width + x2] = borderPixel;
                 }
             }
         }
@@ -338,7 +341,7 @@ void OverlayWindow::UpdateOverlay() {
                     int px = cx + dx;
                     int py = cy + dy;
                     if (px >= 0 && px < width && py >= 0 && py < height) {
-                        m_pixels[(size_t)py * width + px] = redPixel;
+                        m_pixels[(size_t)py * width + px] = borderPixel;
                     }
                 }
             }
@@ -415,7 +418,7 @@ void OverlayWindow::UpdateOverlay() {
             if (smartBottom > height) smartBottom = height;
 
             clearRect(smartLeft, smartTop, smartRight, smartBottom);
-            drawDashedBorder(smartLeft, smartTop, smartRight, smartBottom, redPixel);
+            drawDashedBorder(smartLeft, smartTop, smartRight, smartBottom, borderPixel);
         } else if (m_hoveredWindow) {
             RECT activeRect = m_hoveredRect;
             int activeLeft = activeRect.left - m_screenRect.left;

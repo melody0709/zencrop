@@ -7,6 +7,7 @@ public:
     ~ReparentWindow();
 
     bool IsValid() const { return m_targetWindow && IsWindow(m_targetWindow); }
+    HWND GetHostWindow() const { return m_hostWindow; }
 
 private:
     HWND m_hostWindow = nullptr;

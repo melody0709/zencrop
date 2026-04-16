@@ -7,6 +7,7 @@ public:
     ~ThumbnailWindow();
 
     bool IsValid() const { return m_hostWindow != nullptr; }
+    HWND GetHostWindow() const { return m_hostWindow; }
 
 private:
     HWND m_hostWindow = nullptr;

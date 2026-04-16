@@ -13,6 +13,8 @@ add_executable(ZenCrop WIN32
     ReparentWindow.h ReparentWindow.cpp
     ThumbnailWindow.h ThumbnailWindow.cpp
     SmartDetector.h SmartDetector.cpp
+    AlwaysOnTop.h AlwaysOnTop.cpp
+    Settings.h Settings.cpp
     resources.rc
 )
 
@@ -30,4 +32,7 @@ target_link_libraries(ZenCrop
     shell32
     ole32
     oleaut32
+    shlwapi
+    comdlg32
+    advapi32
 )

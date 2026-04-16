@@ -1,5 +1,6 @@
 #pragma once
 #include "Utils.h"
+#include "Settings.h"
 
 enum class OverlayState { Hover, DragCreate, Adjust };
 enum class AdjustAction { None, Move, ResizeTL, ResizeTR, ResizeBL, ResizeBR, ResizeT, ResizeB, ResizeL, ResizeR };
@@ -46,6 +47,8 @@ private:
     int m_bitmapWidth = 0;
     int m_bitmapHeight = 0;
 
+    OverlaySettings m_overlaySettings;
+
     void EnsureBitmap(int width, int height);
     void FreeBitmap();
 
@@ -62,7 +65,6 @@ private:
     LRESULT MessageHandler(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
     static const wchar_t* ClassName;
-    static const int BorderThickness;
     static const int HandleSize;
     static const int MinCropSize;
     static const int ClickThreshold;

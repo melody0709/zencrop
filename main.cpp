@@ -3,6 +3,8 @@
 #include "ReparentWindow.h"
 #include "ThumbnailWindow.h"
 #include "SmartDetector.h"
+#include "AlwaysOnTop.h"
+#include "Settings.h"
 #include <shellapi.h>
 #include <windowsx.h>
 #include <algorithm>
@@ -15,6 +17,7 @@
 #define ID_TRAY_EXIT 1001
 #define ID_TRAY_TITLEBAR 1002
 #define ID_TRAY_RELEASE 1003
+#define ID_TRAY_AOT_SETTINGS 1004
 
 #define ZENCROP_VERSION L"1.4.3"
 #define ZENCROP_RELEASE_URL L"https://github.com/melody0709/zencrop/releases"
@@ -40,10 +43,15 @@ void StartCrop(CropMode mode) {
 
     g_overlay = std::make_shared<OverlayWindow>(target, [mode](HWND t, RECT r) {
         if (r.right - r.left > 10 && r.bottom - r.top > 10) {
+            bool cropOnTop = LoadOverlaySettings().cropOnTop;
             if (mode == CropMode::Reparent) {
-                g_reparents.push_back(std::make_shared<ReparentWindow>(t, r, g_showTitlebar));
+                auto rw = std::make_shared<ReparentWindow>(t, r, g_showTitlebar);
+                if (cropOnTop) AlwaysOnTopManager::Instance().PinWindow(rw->GetHostWindow());
+                g_reparents.push_back(rw);
             } else {
-                g_thumbnails.push_back(std::make_shared<ThumbnailWindow>(t, r, g_showTitlebar));
+                auto tw = std::make_shared<ThumbnailWindow>(t, r, g_showTitlebar);
+                if (cropOnTop) AlwaysOnTopManager::Instance().PinWindow(tw->GetHostWindow());
+                g_thumbnails.push_back(tw);
             }
         }
         g_overlay.reset();
@@ -68,6 +76,7 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         RegisterHotKey(hwnd, 1, MOD_CONTROL | MOD_ALT, 'X');
         RegisterHotKey(hwnd, 2, MOD_CONTROL | MOD_ALT, 'C');
         RegisterHotKey(hwnd, 3, MOD_CONTROL | MOD_ALT, 'Z');
+        RegisterHotKey(hwnd, 4, MOD_ALT, 'T');
         return 0;
     }
     case WM_HOTKEY: {
@@ -77,6 +86,26 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
             StartCrop(CropMode::Thumbnail);
         } else if (wParam == 3) {
             g_reparents.clear();
+        } else if (wParam == 4) {
+            HWND target = GetForegroundWindow();
+            if (target && target != g_mainHwnd) {
+                HWND root = GetAncestor(target, GA_ROOT);
+                if (root) {
+                    wchar_t rootCn[64] = {};
+                    GetClassNameW(root, rootCn, 64);
+                    if (wcscmp(rootCn, L"ZenCrop.ReparentHost") == 0 ||
+                    wcscmp(rootCn, L"ZenCrop.ThumbnailHost") == 0) {
+                        target = root;
+                    }
+                }
+                wchar_t cn[64] = {};
+                GetClassNameW(target, cn, 64);
+                if (wcscmp(cn, L"ZenCrop.Main") != 0 &&
+                    wcscmp(cn, L"ZenCrop.Overlay") != 0 &&
+                    wcscmp(cn, L"ZenCrop.AlwaysOnTopBorder") != 0) {
+                    AlwaysOnTopManager::Instance().TogglePin(target);
+                }
+            }
         }
         return 0;
     }
@@ -88,6 +117,7 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
             HMENU hMenu = CreatePopupMenu();
             UINT titlebarFlag = g_showTitlebar ? MF_CHECKED : MF_UNCHECKED;
             AppendMenuW(hMenu, MF_STRING | titlebarFlag, ID_TRAY_TITLEBAR, L"Show Titlebar");
+            AppendMenuW(hMenu, MF_STRING, ID_TRAY_AOT_SETTINGS, L"Settings");
             AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
             AppendMenuW(hMenu, MF_STRING, ID_TRAY_RELEASE, L"Open Release Page");
             AppendMenuW(hMenu, MF_STRING | MF_GRAYED, 0, L"ZenCrop v" ZENCROP_VERSION);
@@ -119,6 +149,9 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
             g_showTitlebar = !g_showTitlebar;
         } else if (LOWORD(wParam) == ID_TRAY_RELEASE) {
             ShellExecuteW(nullptr, L"open", ZENCROP_RELEASE_URL, nullptr, nullptr, SW_SHOWNORMAL);
+        } else if (LOWORD(wParam) == ID_TRAY_AOT_SETTINGS) {
+            ShowSettingsDialog(hwnd);
+            AlwaysOnTopManager::Instance().UpdateSettings();
         }
         return 0;
     }
@@ -131,6 +164,7 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         return 0;
     }
     case WM_DESTROY: {
+        AlwaysOnTopManager::Instance().UnpinAll();
         PostQuitMessage(0);
         return 0;
     }
@@ -173,6 +207,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
             std::remove_if(g_thumbnails.begin(), g_thumbnails.end(),
                 [](const std::shared_ptr<ThumbnailWindow>& tw) { return !tw->IsValid(); }),
             g_thumbnails.end());
+
+        AlwaysOnTopManager::Instance().CleanupInvalid();
     }
 
     SmartDetector::Instance().Shutdown();

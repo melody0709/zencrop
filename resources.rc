@@ -1,3 +1,38 @@
+#include "Settings.h"
+
 1 ICON "app.ico"
 
 1 24 "app.manifest"
+
+IDD_SETTINGS_ZENCROP DIALOGEX 0, 0, 220, 150
+STYLE DS_SHELLFONT | WS_CHILD | WS_VISIBLE | WS_CAPTION
+CAPTION "ZenCrop"
+FONT 10, "Segoe UI"
+BEGIN
+    LTEXT         "Color:", -1, 14, 16, 36, 12
+    CONTROL       "", IDC_ZC_COLOR_PREVIEW, "Static", SS_OWNERDRAW, 54, 14, 36, 16
+    PUSHBUTTON    "Choose...", IDC_ZC_CHOOSE_COLOR, 96, 12, 70, 18
+    LTEXT         "Thickness (px):", -1, 14, 46, 80, 12
+    CONTROL       "", IDC_ZC_THICK_SLIDER, "msctls_trackbar32", TBS_AUTOTICKS, 98, 44, 110, 18
+    LTEXT         "3", IDC_ZC_THICK_LABEL, 212, 46, 20, 12
+    AUTOCHECKBOX  "Enable crop on top", IDC_ZC_CROP_ON_TOP, 14, 76, 200, 14
+END
+
+IDD_SETTINGS_AOT DIALOGEX 0, 0, 220, 150
+STYLE DS_SHELLFONT | WS_CHILD | WS_VISIBLE | WS_CAPTION
+CAPTION "Always On Top"
+FONT 10, "Segoe UI"
+BEGIN
+    AUTOCHECKBOX  "Show a border around the pinned window", IDC_AOT_SHOW_BORDER, 14, 12, 200, 14
+    AUTOCHECKBOX  "Custom color", IDC_AOT_COLOR_MODE, 14, 34, 100, 14
+    LTEXT         "Color:", -1, 14, 58, 32, 12
+    CONTROL       "", IDC_AOT_COLOR_PREVIEW, "Static", SS_OWNERDRAW, 50, 56, 36, 16
+    PUSHBUTTON    "Choose...", IDC_AOT_CHOOSE_COLOR, 92, 54, 70, 18
+    LTEXT         "Opacity (%):", -1, 14, 82, 60, 12
+    CONTROL       "", IDC_AOT_OPACITY_SLIDER, "msctls_trackbar32", TBS_AUTOTICKS, 78, 80, 110, 18
+    LTEXT         "100%", IDC_AOT_OPACITY_LABEL, 192, 82, 34, 12
+    LTEXT         "Thickness (px):", -1, 14, 108, 66, 12
+    CONTROL       "", IDC_AOT_THICK_SLIDER, "msctls_trackbar32", TBS_AUTOTICKS, 84, 106, 104, 18
+    LTEXT         "6 px", IDC_AOT_THICK_LABEL, 192, 108, 34, 12
+    AUTOCHECKBOX  "Enable rounded corners", IDC_AOT_ROUNDED, 14, 132, 200, 14
+END
