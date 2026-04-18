@@ -27,7 +27,7 @@
 bool g_showTitlebar = false;
 HotkeySettings g_hotkeys;
 
-enum class CropMode { Reparent, Thumbnail, Viewport };
+enum class CropMode { Reparent, Thumbnail };
 
 std::vector<std::shared_ptr<ReparentWindow>> g_reparents;
 std::vector<std::shared_ptr<ThumbnailWindow>> g_thumbnails;
@@ -57,19 +57,23 @@ void StartCrop(CropMode mode) {
         if (r.right - r.left > 10 && r.bottom - r.top > 10) {
             bool cropOnTop = LoadOverlaySettings().cropOnTop;
             if (mode == CropMode::Reparent) {
-                auto rw = std::make_shared<ReparentWindow>(t, r, g_showTitlebar);
-                if (cropOnTop) AlwaysOnTopManager::Instance().PinWindow(rw->GetHostWindow());
-                g_reparents.push_back(rw);
+                if (IsXamlOrDCompWindow(t)) {
+                    // Modern apps (UWP/WinUI/XAML/DComp) don't reparent well.
+                    // Fall back to Viewport mode which crops the original window.
+                    RemoveViewportForTarget(t);
+                    auto vw = std::make_shared<ViewportWindow>(t, r, cropOnTop);
+                    if (vw->IsValid()) {
+                        g_viewports.push_back(vw);
+                    }
+                } else {
+                    auto rw = std::make_shared<ReparentWindow>(t, r, g_showTitlebar);
+                    if (cropOnTop) AlwaysOnTopManager::Instance().PinWindow(rw->GetHostWindow());
+                    g_reparents.push_back(rw);
+                }
             } else if (mode == CropMode::Thumbnail) {
                 auto tw = std::make_shared<ThumbnailWindow>(t, r, g_showTitlebar);
                 if (cropOnTop) AlwaysOnTopManager::Instance().PinWindow(tw->GetHostWindow());
                 g_thumbnails.push_back(tw);
-            } else {
-                RemoveViewportForTarget(t);
-                auto vw = std::make_shared<ViewportWindow>(t, r, cropOnTop);
-                if (vw->IsValid()) {
-                    g_viewports.push_back(vw);
-                }
             }
         }
         g_overlay.reset();
@@ -99,7 +103,6 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
             RegisterHotKey(hwnd, 3, g_hotkeys.closeReparent.Modifiers(), g_hotkeys.closeReparent.key);
         if (!g_hotkeys.alwaysOnTop.IsEmpty())
             RegisterHotKey(hwnd, 4, g_hotkeys.alwaysOnTop.Modifiers(), g_hotkeys.alwaysOnTop.key);
-        RegisterHotKey(hwnd, 5, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, 'V');
         return 0;
     }
     case WM_HOTKEY: {
@@ -130,8 +133,6 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
                     AlwaysOnTopManager::Instance().TogglePin(target);
                 }
             }
-        } else if (wParam == 5) {
-            StartCrop(CropMode::Viewport);
         }
         return 0;
     }
