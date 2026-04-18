@@ -9,10 +9,38 @@ static std::once_flag s_borderClassReg;
 static RECT GetWindowVisibleRect(HWND hwnd) {
     RECT rect = {};
     HRESULT hr = DwmGetWindowAttribute(hwnd, DWMWA_EXTENDED_FRAME_BOUNDS, &rect, sizeof(rect));
-    if (SUCCEEDED(hr)) {
-        return rect;
+    if (FAILED(hr)) {
+        GetWindowRect(hwnd, &rect);
     }
-    GetWindowRect(hwnd, &rect);
+
+    // Adjust for any applied window regions (used in Viewport mode for modern apps)
+    HRGN rgn = CreateRectRgn(0, 0, 0, 0);
+    int rgnType = GetWindowRgn(hwnd, rgn);
+    if (rgnType != ERROR && rgnType != NULLREGION) {
+        RECT rgnBox;
+        if (GetRgnBox(rgn, &rgnBox) != ERROR) {
+            RECT wRect;
+            GetWindowRect(hwnd, &wRect);
+            
+            // Calculate absolute screen coordinates of the region box
+            RECT absRgnBox = {
+                wRect.left + rgnBox.left,
+                wRect.top + rgnBox.top,
+                wRect.left + rgnBox.right,
+                wRect.top + rgnBox.bottom
+            };
+
+            // Intersect the DWM/Window rect with the visible region
+            RECT finalRect;
+            if (IntersectRect(&finalRect, &rect, &absRgnBox)) {
+                rect = finalRect;
+            } else {
+                rect = absRgnBox;
+            }
+        }
+    }
+    DeleteObject(rgn);
+
     return rect;
 }
 
