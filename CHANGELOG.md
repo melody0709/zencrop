@@ -1,5 +1,17 @@
 # Changelog
 
+## V2.1.0 (2026-04-18)
+
+### 重磅更新 (Major Update)
+
+- **智能 Reparent 模式融合**: 解决了长期存在的现代 UWP/WinUI 应用 (如计算器、系统设置) 在执行重父化 (Reparent) 时会变成全白无法渲染的问题。
+  - 新增 `Viewport` 视口裁剪引擎，专为沙盒容器应用设计。
+  - **自动路由**: 按下 `Ctrl+Alt+X` 时，ZenCrop 会动态嗅探底层架构。如果是 `ApplicationFrameWindow` 类的现代应用，自动无缝回退到 Viewport 模式；如果是 Chrome、Task Manager 等传统混合应用，则依然使用高度兼容的 Reparent 模式。
+- **强制 Viewport 快捷键**: 新增热键 `Ctrl+Alt+V`，允许用户手动强制对任意窗口使用 Viewport 裁剪模式作为兜底方案。
+- **精确可视边框修正**: 修复了 Viewport 模式下被裁剪窗口的 Always On Top (Alt+T) 蓝色边框仍包围原窗口巨大轮廓的问题，现在蓝框会严丝合缝地贴紧裁剪后的实际可见区域。
+
+---
+
 ## V2.0.1 (2026-04-16)
 
 ### 新增

@@ -20,14 +20,14 @@
 #define ID_TRAY_RELEASE 1003
 #define ID_TRAY_AOT_SETTINGS 1004
 
-#define ZENCROP_VERSION L"2.0.1"
+#define ZENCROP_VERSION L"2.1.0"
 #define ZENCROP_RELEASE_URL L"https://github.com/melody0709/zencrop/releases"
 #define ZENCROP_MUTEX_NAME L"Global\\ZenCrop"
 
 bool g_showTitlebar = false;
 HotkeySettings g_hotkeys;
 
-enum class CropMode { Reparent, Thumbnail };
+enum class CropMode { Reparent, Thumbnail, Viewport };
 
 std::vector<std::shared_ptr<ReparentWindow>> g_reparents;
 std::vector<std::shared_ptr<ThumbnailWindow>> g_thumbnails;
@@ -74,6 +74,12 @@ void StartCrop(CropMode mode) {
                 auto tw = std::make_shared<ThumbnailWindow>(t, r, g_showTitlebar);
                 if (cropOnTop) AlwaysOnTopManager::Instance().PinWindow(tw->GetHostWindow());
                 g_thumbnails.push_back(tw);
+            } else if (mode == CropMode::Viewport) {
+                RemoveViewportForTarget(t);
+                auto vw = std::make_shared<ViewportWindow>(t, r, cropOnTop);
+                if (vw->IsValid()) {
+                    g_viewports.push_back(vw);
+                }
             }
         }
         g_overlay.reset();
@@ -103,6 +109,10 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
             RegisterHotKey(hwnd, 3, g_hotkeys.closeReparent.Modifiers(), g_hotkeys.closeReparent.key);
         if (!g_hotkeys.alwaysOnTop.IsEmpty())
             RegisterHotKey(hwnd, 4, g_hotkeys.alwaysOnTop.Modifiers(), g_hotkeys.alwaysOnTop.key);
+        
+        // Hardcoded Viewport mode fallback hotkey: Ctrl+Alt+V
+        RegisterHotKey(hwnd, 5, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, 'V');
+        
         return 0;
     }
     case WM_HOTKEY: {
@@ -133,6 +143,8 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
                     AlwaysOnTopManager::Instance().TogglePin(target);
                 }
             }
+        } else if (wParam == 5) {
+            StartCrop(CropMode::Viewport);
         }
         return 0;
     }

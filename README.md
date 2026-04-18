@@ -1,4 +1,4 @@
-# ZenCrop v2.0.1
+# ZenCrop v2.1.0
 
 [中文文档](README_zh.md)
 
@@ -12,7 +12,7 @@ ZenCrop is rebuilt from scratch, runs completely standalone without PowerToys, a
 
 ## Features
 
-- **Reparent Mode**: Crops a target window into an independent child window using window reparenting
+- **Smart Reparent Mode**: Crops a target window into an independent child window. ZenCrop automatically detects modern UWP/WinUI applications (like Calculator or Settings) and seamlessly falls back to a special **Viewport** mode. This prevents the "all-white" rendering bug associated with standard reparenting, ensuring all apps remain interactive.
 - **Thumbnail Mode**: Displays a live DWM thumbnail of the target window with a cornflower blue border, supports drag-to-move and ESC to close
 - **Always On Top**: Press `Alt+T` to pin any window on top of all others, with a customizable border (color, opacity, thickness, rounded corners)
 - **Customizable Hotkeys**: All hotkeys can be customized in Settings — click the input field and press your desired key combo
@@ -22,7 +22,7 @@ ZenCrop is rebuilt from scratch, runs completely standalone without PowerToys, a
 - **Click to Accept**: Single-click accepts the smart suggestion; drag to manually draw a rectangle
 - **Crop Area Adjustment**: After drawing the crop rectangle, you can resize it by dragging edges/corners, move it by dragging inside, and double-click to confirm — no more accidental crops
   - **Arrow Key Control**: Fine-tune the crop box with keyboard in adjust mode — Arrow keys move 1px, Ctrl+Arrow expands, Shift+Arrow shrinks, Enter confirms
-  - **Coordinate Display**: Shows real-time coordinates and dimensions at the top-left corner (e.g., `1077, 864 · 320 x 240 px`)
+  - **Coordinate Display**: Shows real-time coordinates and dimensions at the top-left corner (e.g., `1077, 864 — 320 x 240 px`)
 - **Borderless / Titlebar Toggle**: Windows are borderless by default; toggle titlebar visibility via the tray menu
 - **Stale Window Cleanup**: Automatically removes Reparent/Thumbnail windows whose target has been closed externally
 - **System Tray**: Runs in the background; right-click the tray icon for the menu
@@ -31,9 +31,10 @@ ZenCrop is rebuilt from scratch, runs completely standalone without PowerToys, a
 
 | Hotkey | Action |
 |--------|--------|
-| `Ctrl+Alt+X` | Start Reparent crop mode |
+| `Ctrl+Alt+X` | Start Smart Reparent crop mode |
 | `Ctrl+Alt+C` | Start Thumbnail crop mode |
-| `Ctrl+Alt+Z` | Close all Reparent windows |
+| `Ctrl+Alt+V` | Force Viewport crop mode (Manual fallback) |
+| `Ctrl+Alt+Z` | Close all active crop windows |
 | `Alt+T` | Toggle Always On Top for the foreground window |
 | `ESC` | Cancel current crop rectangle / cancel entire crop mode / close focused Thumbnail window |
 | Right-click tray icon | Open menu (toggle titlebar / settings / exit) |
