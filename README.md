@@ -1,4 +1,4 @@
-# ZenCrop v2.0
+# ZenCrop v2.0.1
 
 [中文文档](README_zh.md)
 

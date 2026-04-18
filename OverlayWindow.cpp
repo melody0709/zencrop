@@ -227,6 +227,63 @@ void OverlayWindow::UpdateCursorForPoint(POINT pt) {
     SetCursor(LoadCursorW(nullptr, cursor));
 }
 
+void OverlayWindow::DrawCropLabel(int cropLeft, int cropTop, int cropRight, int cropBottom) {
+    int cropW = m_cropRect.right - m_cropRect.left;
+    int cropH = m_cropRect.bottom - m_cropRect.top;
+
+    wchar_t label[128];
+    swprintf_s(label, 128, L"%d, %d \x00B7 %d x %d px",
+        (int)m_cropRect.left, (int)m_cropRect.top, cropW, cropH);
+
+    HFONT hFont = CreateFontW(-15, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+        DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+        NONANTIALIASED_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+    if (!hFont) return;
+
+    HFONT oldFont = (HFONT)SelectObject(m_memDc, hFont);
+    SIZE textSize;
+    GetTextExtentPoint32W(m_memDc, label, (int)wcslen(label), &textSize);
+
+    int padX = 8, padY = 4;
+    int labelW = textSize.cx + padX * 2;
+    int labelH = textSize.cy + padY * 2;
+
+    int labelX = cropLeft;
+    int labelY = cropTop - labelH - 2;
+    if (labelY < 0) labelY = cropBottom + 2;
+    if (labelX + labelW > m_bitmapWidth) labelX = m_bitmapWidth - labelW;
+    if (labelX < 0) labelX = 0;
+
+    for (int py = labelY; py < labelY + labelH; py++) {
+        for (int px = labelX; px < labelX + labelW; px++) {
+            if (px >= 0 && px < m_bitmapWidth && py >= 0 && py < m_bitmapHeight) {
+                m_pixels[py * m_bitmapWidth + px] = 0xFF000000;
+            }
+        }
+    }
+
+    SetTextColor(m_memDc, RGB(255, 255, 255));
+    SetBkMode(m_memDc, TRANSPARENT);
+    RECT textRect = { labelX + padX, labelY + padY, labelX + padX + textSize.cx, labelY + padY + textSize.cy };
+    DrawTextW(m_memDc, label, -1, &textRect, DT_LEFT | DT_TOP | DT_NOCLIP);
+
+    for (int py = labelY; py < labelY + labelH; py++) {
+        for (int px = labelX; px < labelX + labelW; px++) {
+            if (px >= 0 && px < m_bitmapWidth && py >= 0 && py < m_bitmapHeight) {
+                DWORD& pixel = m_pixels[py * m_bitmapWidth + px];
+                if (pixel & 0x00FFFFFF) {
+                    pixel = 0xFFFFFFFF;
+                } else {
+                    pixel = 0xCC000000;
+                }
+            }
+        }
+    }
+
+    SelectObject(m_memDc, oldFont);
+    DeleteObject(hFont);
+}
+
 void OverlayWindow::EnsureBitmap(int width, int height) {
     if (m_memDc && m_bitmap && m_bitmapWidth == width && m_bitmapHeight == height) return;
 
@@ -405,6 +462,8 @@ void OverlayWindow::UpdateOverlay() {
         drawCircle(midX, cropBottom, HandleSize);
         drawCircle(cropLeft, midY, HandleSize);
         drawCircle(cropRight, midY, HandleSize);
+
+        DrawCropLabel(cropLeft, cropTop, cropRight, cropBottom);
     } else {
         if (m_hasSmartRect) {
             int smartLeft = m_smartRect.left - m_screenRect.left;
@@ -670,6 +729,36 @@ LRESULT OverlayWindow::MessageHandler(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
                 ReleaseCapture();
                 ShowWindow(hwnd, SW_HIDE);
                 PostMessage(hwnd, WM_APP, 0, 0);
+            }
+        } else if (m_state == OverlayState::Adjust) {
+            if (wParam == VK_RETURN) {
+                m_pendingCropRect = m_cropRect;
+                ReleaseCapture();
+                ShowWindow(hwnd, SW_HIDE);
+                PostMessage(hwnd, WM_APP, 0, 0);
+            } else if (wParam == VK_UP || wParam == VK_DOWN || wParam == VK_LEFT || wParam == VK_RIGHT) {
+                bool ctrl = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+                bool shift = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+
+                if (ctrl) {
+                    if (wParam == VK_UP) m_cropRect.top -= 1;
+                    else if (wParam == VK_DOWN) m_cropRect.bottom += 1;
+                    else if (wParam == VK_LEFT) m_cropRect.left -= 1;
+                    else if (wParam == VK_RIGHT) m_cropRect.right += 1;
+                } else if (shift) {
+                    if (wParam == VK_UP && m_cropRect.bottom - m_cropRect.top > MinCropSize) m_cropRect.top += 1;
+                    else if (wParam == VK_DOWN && m_cropRect.bottom - m_cropRect.top > MinCropSize) m_cropRect.bottom -= 1;
+                    else if (wParam == VK_LEFT && m_cropRect.right - m_cropRect.left > MinCropSize) m_cropRect.left += 1;
+                    else if (wParam == VK_RIGHT && m_cropRect.right - m_cropRect.left > MinCropSize) m_cropRect.right -= 1;
+                } else {
+                    if (wParam == VK_UP) { m_cropRect.top -= 1; m_cropRect.bottom -= 1; }
+                    else if (wParam == VK_DOWN) { m_cropRect.top += 1; m_cropRect.bottom += 1; }
+                    else if (wParam == VK_LEFT) { m_cropRect.left -= 1; m_cropRect.right -= 1; }
+                    else if (wParam == VK_RIGHT) { m_cropRect.left += 1; m_cropRect.right += 1; }
+                }
+
+                ClampCropRect();
+                UpdateOverlay();
             }
         }
         return 0;

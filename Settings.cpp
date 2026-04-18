@@ -483,9 +483,13 @@ static void RegisterHotkeyEditClass() {
                 hk.shift = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
                 hk.win = (GetAsyncKeyState(VK_LWIN) & 0x8000) != 0 ||
                          (GetAsyncKeyState(VK_RWIN) & 0x8000) != 0;
-                hk.key = (unsigned char)MapVirtualKeyW((UINT)wParam, MAPVK_VK_TO_CHAR);
-                if (hk.key == 0) hk.key = (unsigned char)wParam;
-                if (hk.key >= 'a' && hk.key <= 'z') hk.key -= 32;
+                UINT ch = MapVirtualKeyW((UINT)wParam, MAPVK_VK_TO_CHAR);
+                if (ch != 0) {
+                    hk.key = (unsigned char)ch;
+                    if (hk.key >= 'a' && hk.key <= 'z') hk.key -= 32;
+                } else {
+                    hk.key = (unsigned char)wParam;
+                }
 
                 if (!hk.ctrl && !hk.alt && !hk.shift && !hk.win) {
                     hk.alt = true;
@@ -518,9 +522,13 @@ static void RegisterHotkeyEditClass() {
                 hk.shift = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
                 hk.win = (GetAsyncKeyState(VK_LWIN) & 0x8000) != 0 ||
                          (GetAsyncKeyState(VK_RWIN) & 0x8000) != 0;
-                hk.key = (unsigned char)MapVirtualKeyW((UINT)wParam, MAPVK_VK_TO_CHAR);
-                if (hk.key == 0) hk.key = (unsigned char)wParam;
-                if (hk.key >= 'a' && hk.key <= 'z') hk.key -= 32;
+                UINT ch = MapVirtualKeyW((UINT)wParam, MAPVK_VK_TO_CHAR);
+                if (ch != 0) {
+                    hk.key = (unsigned char)ch;
+                    if (hk.key >= 'a' && hk.key <= 'z') hk.key -= 32;
+                } else {
+                    hk.key = (unsigned char)wParam;
+                }
 
                 if (!hk.ctrl && !hk.alt && !hk.shift && !hk.win) {
                     hk.alt = true;
