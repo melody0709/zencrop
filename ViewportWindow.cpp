@@ -90,28 +90,52 @@ void ViewportWindow::ApplyPinState(bool pinOnTop) {
 }
 
 void ViewportWindow::ApplyViewport(RECT cropRect) {
+    POINT oldClientPt = {0, 0};
+    ClientToScreen(m_targetWindow, &oldClientPt);
+    RECT oldWindowRect = {};
+    GetWindowRect(m_targetWindow, &oldWindowRect);
+
+    // Strip caption and borders before applying region so DWM/FrameHost 
+    // doesn't draw a new title bar at the top of the cropped region
+    LONG_PTR style = GetWindowLongPtrW(m_targetWindow, GWL_STYLE);
+    style &= ~(WS_CAPTION | WS_THICKFRAME);
+    SetWindowLongPtrW(m_targetWindow, GWL_STYLE, style);
+    SetWindowPos(m_targetWindow, nullptr, 0, 0, 0, 0, 
+        SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+
+    POINT newClientPt = {0, 0};
+    ClientToScreen(m_targetWindow, &newClientPt);
     RECT currentRect = {};
     if (!GetWindowRect(m_targetWindow, &currentRect)) return;
 
-    RECT cropInWindow = {
-        cropRect.left - currentRect.left,
-        cropRect.top - currentRect.top,
-        cropRect.right - currentRect.left,
-        cropRect.bottom - currentRect.top
-    };
+    int clientOffsetX = cropRect.left - oldClientPt.x;
+    int clientOffsetY = cropRect.top - oldClientPt.y;
 
-    if (cropInWindow.right - cropInWindow.left <= 0 ||
-        cropInWindow.bottom - cropInWindow.top <= 0) {
+    int cropInWindowLeft = clientOffsetX + (newClientPt.x - currentRect.left);
+    int cropInWindowTop = clientOffsetY + (newClientPt.y - currentRect.top);
+    int cropWidth = cropRect.right - cropRect.left;
+    int cropHeight = cropRect.bottom - cropRect.top;
+
+    if (cropWidth <= 0 || cropHeight <= 0) {
         return;
     }
 
-    HRGN finalRegion = CreateRectRgn(cropInWindow.left, cropInWindow.top, cropInWindow.right, cropInWindow.bottom);
+    HRGN finalRegion = CreateRectRgn(cropInWindowLeft, cropInWindowTop, cropInWindowLeft + cropWidth, cropInWindowTop + cropHeight);
     if (!finalRegion) return;
 
     if (m_hadOriginalRegion && m_originalRegion) {
-        if (CombineRgn(finalRegion, finalRegion, m_originalRegion, RGN_AND) == ERROR) {
-            DeleteObject(finalRegion);
-            return;
+        int shiftX = (newClientPt.x - currentRect.left) - (oldClientPt.x - oldWindowRect.left);
+        int shiftY = (newClientPt.y - currentRect.top) - (oldClientPt.y - oldWindowRect.top);
+        
+        HRGN shiftedOriginal = DuplicateRegion(m_originalRegion);
+        if (shiftedOriginal) {
+            OffsetRgn(shiftedOriginal, shiftX, shiftY);
+            if (CombineRgn(finalRegion, finalRegion, shiftedOriginal, RGN_AND) == ERROR) {
+                DeleteObject(finalRegion);
+                DeleteObject(shiftedOriginal);
+                return;
+            }
+            DeleteObject(shiftedOriginal);
         }
     }
 
