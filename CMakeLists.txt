@@ -12,6 +12,7 @@ add_executable(ZenCrop WIN32
     OverlayWindow.h OverlayWindow.cpp
     ReparentWindow.h ReparentWindow.cpp
     ThumbnailWindow.h ThumbnailWindow.cpp
+    ViewportWindow.h ViewportWindow.cpp
     SmartDetector.h SmartDetector.cpp
     AlwaysOnTop.h AlwaysOnTop.cpp
     Settings.h Settings.cpp
