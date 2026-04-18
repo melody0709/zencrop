@@ -21,6 +21,8 @@ ZenCrop is rebuilt from scratch, runs completely standalone without PowerToys, a
 - **Smart Content Detection**: UI Automation-based element detection — the overlay automatically identifies the UI element under the cursor (browser title bar, address bar, content area, etc.) and suggests a crop region with a red dashed border
 - **Click to Accept**: Single-click accepts the smart suggestion; drag to manually draw a rectangle
 - **Crop Area Adjustment**: After drawing the crop rectangle, you can resize it by dragging edges/corners, move it by dragging inside, and double-click to confirm — no more accidental crops
+  - **Arrow Key Control**: Fine-tune the crop box with keyboard in adjust mode — Arrow keys move 1px, Ctrl+Arrow expands, Shift+Arrow shrinks, Enter confirms
+  - **Coordinate Display**: Shows real-time coordinates and dimensions at the top-left corner (e.g., `1077, 864 · 320 x 240 px`)
 - **Borderless / Titlebar Toggle**: Windows are borderless by default; toggle titlebar visibility via the tray menu
 - **Stale Window Cleanup**: Automatically removes Reparent/Thumbnail windows whose target has been closed externally
 - **System Tray**: Runs in the background; right-click the tray icon for the menu
@@ -47,6 +49,10 @@ ZenCrop is rebuilt from scratch, runs completely standalone without PowerToys, a
    - Drag edges/corners to resize
    - Drag inside the rectangle to move
    - Double-click inside the rectangle to confirm the crop
+   - **Arrow keys** (↑↓←→) to move the crop box by 1px
+   - **Ctrl+Arrow keys** to expand the corresponding edge by 1px
+   - **Shift+Arrow keys** to shrink the corresponding edge by 1px
+   - **Enter** to confirm (same as double-click)
    - Press `ESC` to cancel the rectangle and redraw, press `ESC` again to exit
    - Click outside the rectangle to cancel and redraw
 5. Press `Ctrl+Alt+Z` to close all Reparent windows
