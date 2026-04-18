@@ -1,10 +1,11 @@
 # ZenCrop Development Guide
 
+## Reference Repositories
+`temp_powertoys` 和 `temp_AltSnap` 是其他开源软件的参考源码仓库。**一般情况下不要去读取这些参考文件夹中的内容**，只有在遇到极其刁钻的底层逻辑而我们需要参考官方源码的特殊实现时，才可以去查阅。
+
 ## Project Origin
 
 ZenCrop is an independent reimplementation of [PowerToys Crop And Lock](https://github.com/microsoft/PowerToys/tree/main/src/modules/cropandlock/).
-
-temp\_powertoys 有源码,需要时可仓库对比
 
 ## Build Commands
 
@@ -46,6 +47,8 @@ temp\_powertoys 有源码,需要时可仓库对比
 
 ### 窗口裁剪与重父化 (Reparent)
 
+- **现代应用 (UWP/WinUI/XAML) 全白/黑屏 Bug**: 如果对 `ApplicationFrameWindow` 或 `CoreWindow` 直接使用跨进程 `SetParent`，其内部的 DComp 视觉树会彻底断开连接并变成一块全白画刷。**解决方案**：不要对这些现代应用使用 Reparent，改用 Viewport 模式（`SetWindowRgn` 原位裁剪）。
+- **Viewport 裁剪时的标题栏幽灵与坐标偏移**: 对应用了 `SetWindowRgn` 的现代窗口，如果不移除 `WS_CAPTION | WS_THICKFRAME`，DWM 会在裁剪区域的顶部强行合成一个新的假标题栏。而在移除这俩样式后，Client Rect（客户区）原点会向左上角发生跳变。**解决方案**：剥离样式前后各调用一次 `ClientToScreen` 算出 `clientOffsetX/Y` 差值，用以逆向补偿 `CreateRectRgn` 的参数，确保视觉内容严格对齐。
 - **现代应用 (WinUI 3/XAML/Electron) 重父化黑屏**: 必须确保 Host 和 Child 窗口在执行 `SetParent` 前已经调用 `ShowWindow` 显示并完成 `SetWindowPos` 定位。如果目标窗口是被隐藏的，其内部的 DirectComposition (DComp) 视觉树在跨进程挂载时会断开连接，导致大面积黑屏或渲染失效。
 - **防止 DWM 玻璃穿透导致字体重叠**: 严禁在无边框模式的 Host Window 上使用 `DwmExtendFrameIntoClientArea` (传入 `-1` 扩展全屏)。这会将 GDI 的白色/黑色背景强转为全透明玻璃，导致现代应用（如 Win11 资源管理器）在发生悬停或重绘时，因为没有不透明衬底而出现字体反复叠加重影。
 - **最大化窗口 Reparent**: Reparent 前必须移除 `WS_MAXIMIZE` 样式，并用 `SetWindowPos` 设为 `mi.rcWork` (工作区大小)，否则 `WS_MAXIMIZE + WS_CHILD` 组合会导致 Chrome 等窗口尺寸自动撑满、内容错位或出现大块白色；在去除最大化后，必须**重新调用** `GetWindowRect` 捕获真实的未最大化边框，再与选区坐标相减计算精确偏移量。
@@ -67,7 +70,7 @@ temp\_powertoys 有源码,需要时可仓库对比
 
 ### Always On Top 边框
 
-- **边框紧贴窗口**: 必须使用 `DwmGetWindowAttribute(DWMWA_EXTENDED_FRAME_BOUNDS)` 获取窗口可见边界，而非 `GetWindowRect`。后者包含不可见的调整边框（resize border），导致边框与窗口之间出现空隙。
+- **边框紧贴窗口与 Region 冲突**: `DwmGetWindowAttribute(DWMWA_EXTENDED_FRAME_BOUNDS)` 会无视 `SetWindowRgn` 带来的裁剪效果，永远返回窗口最原始的逻辑边界。因此如果对 Viewport 模式裁剪的窗口加 AOT 蓝框，必须额外调用 `GetRgnBox` 算出实际可视区域，转化为屏幕坐标后与 DWM 矩形求交集 (`IntersectRect`)，否则蓝框会包围巨大的不可见区域。
 - **预乘 Alpha**: `UpdateLayeredWindow` + `AC_SRC_ALPHA` 要求像素值为预乘 Alpha（`preR = r * alpha / 255`），否则透明度不生效。
 - **ARGB 与 COLORREF 字节序**: 32 位 DIB Section 像素格式为 `0xAARRGGBB`，而 `COLORREF` 为 `0x00BBGGRR`。构造像素时必须用 `GetRValue` 在高位、`GetBValue` 在低位，不能直接移位 `COLORREF`。
 

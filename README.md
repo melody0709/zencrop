@@ -1,14 +1,21 @@
 # ZenCrop v2.1.0
 
-[中文文档](README_zh.md)
+[中文文档](doc/README_zh.md)
 
-An independent reimplementation of [PowerToys Crop And Lock](https://github.com/microsoft/PowerToys/tree/main/src/modules/cropandlock/).
+An independent, **enhanced** reimplementation of [PowerToys Crop And Lock](https://github.com/microsoft/PowerToys/tree/main/src/modules/cropandlock/).
+
+## 🚀 Why ZenCrop over PowerToys?
+
+While the official PowerToys module suffers from an ["all-white/black screen" known issue](https://learn.microsoft.com/en-us/windows/powertoys/crop-and-lock#known-issues) when trying to reparent modern Windows applications (UWP/WinUI/XAML apps like Calculator or Settings), **ZenCrop has completely solved this.**
+
+Through our innovative **Native Viewport Cropping Technology**, ZenCrop intelligently detects the app architecture and seamlessly switches rendering engines. This allows you to crop *any* modern app flawlessly without breaking its interactivity. 
+📖 *Deep dive: [Overcoming Modern App Cropping Challenges: ZenCrop Viewport Technology Implementation Report](doc/viewport_technology_report_en.md)*
 
 ## Background
 
 PowerToys Crop And Lock is a module in the Microsoft PowerToys toolkit that allows users to crop any window into a sub-window and pin it on screen. However, the original project is deeply tied to the PowerToys framework, making it difficult to use independently or customize.
 
-ZenCrop is rebuilt from scratch, runs completely standalone without PowerToys, and provides a lighter solution while preserving the core functionality.
+ZenCrop is rebuilt from scratch, runs completely standalone without PowerToys, and provides a lighter solution while preserving and exceeding the core functionality.
 
 ## Features
 
@@ -103,16 +110,21 @@ zencrop/
 ├── OverlayWindow.h/cpp   # Crop area selection overlay
 ├── ReparentWindow.h/cpp  # Reparent mode window
 ├── ThumbnailWindow.h/cpp # Thumbnail mode window
+├── ViewportWindow.h/cpp  # Viewport mode window (for modern apps)
 ├── AlwaysOnTop.h/cpp     # Always On Top manager & border window
-├── Settings.h/cpp        # Unified settings (AOT, overlay, hotkeys)
+├── Settings.h/cpp        # Unified settings dialog (AOT, overlay, hotkeys)
 ├── app.ico               # Application icon
 ├── resources.rc          # Dialog templates & icon resource
 ├── app.manifest          # DPI awareness & compatibility
 ├── build.bat             # MSVC build script
 ├── CMakeLists.txt        # CMake configuration
-├── CHANGELOG.md          # Changelog
 ├── AGENTS.md             # AI development guide
-└── README.md
+├── README.md
+└── doc/
+    ├── CHANGELOG.md                   # Detailed changelog
+    ├── README_zh.md                   # Chinese documentation
+    ├── viewport_technology_report.md  # Tech report on Viewport mode (CN)
+    └── viewport_technology_report_en.md # Tech report on Viewport mode (EN)
 ```
 
 ## License

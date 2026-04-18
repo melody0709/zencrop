@@ -4,11 +4,13 @@
 
 ### 重磅更新 (Major Update)
 
-- **智能 Reparent 模式融合**: 解决了长期存在的现代 UWP/WinUI 应用 (如计算器、系统设置) 在执行重父化 (Reparent) 时会变成全白无法渲染的问题。
-  - 新增 `Viewport` 视口裁剪引擎，专为沙盒容器应用设计。
-  - **自动路由**: 按下 `Ctrl+Alt+X` 时，ZenCrop 会动态嗅探底层架构。如果是 `ApplicationFrameWindow` 类的现代应用，自动无缝回退到 Viewport 模式；如果是 Chrome、Task Manager 等传统混合应用，则依然使用高度兼容的 Reparent 模式。
-- **强制 Viewport 快捷键**: 新增热键 `Ctrl+Alt+V`，允许用户手动强制对任意窗口使用 Viewport 裁剪模式作为兜底方案。
-- **精确可视边框修正**: 修复了 Viewport 模式下被裁剪窗口的 Always On Top (Alt+T) 蓝色边框仍包围原窗口巨大轮廓的问题，现在蓝框会严丝合缝地贴紧裁剪后的实际可见区域。
+- **原生 Viewport (视口) 裁剪引擎**: 彻底解决了长期存在的现代 Windows 应用 (如计算器、系统设置等 UWP/WinUI 应用) 在执行重父化 (Reparent) 时会断开渲染变全白/黑屏的问题（连官方 PowerToys 至今也未能解决该缺陷）。
+- **智能 Reparent 融合架构**: 实现了双裁剪引擎的热切换路由。
+  - 按下 `Ctrl+Alt+X` 时，ZenCrop 会毫秒级动态嗅探应用的底层架构。如果是 `ApplicationFrameWindow` 类的现代沙盒应用，自动无缝回退到全新的 Viewport 引擎处理。
+  - 对于 Chrome、Task Manager 等传统与混合桌面应用，继续使用高度兼容的经典 Reparent 引擎，告别白名单硬编码。
+- **强制 Viewport 快捷键**: 新增了快捷键 `Ctrl+Alt+V`，允许用户手动强制对任意窗口启用 Viewport 原位裁剪模式作为终极兜底方案。
+- **Settings UI 拓展**: 在系统托盘的设置面板中新增了 Viewport 热键的自定义配置选项，与原有的 Thumbnail、Reparent 等保持一致，即时修改即时生效。
+- **精确可视边框修正**: 独家计算动态 Client Rect 偏移，修复了 Viewport 模式下由于 DWM 强制剥离标题栏引发的坐标偏移问题。同时解决了 Always On Top (`Alt+T`) 蓝色置顶边框无限膨胀包围原不可见巨大轮廓的底层 Bug，现在蓝框会严丝合缝、分毫不差地贴紧裁剪后的实际内容区域。
 
 ---
 
