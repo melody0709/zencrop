@@ -48,8 +48,16 @@ bool IsXamlOrDCompWindow(HWND hwnd) {
     if (child) return true;
 
     // Check for DirectComposition windows
-    // These windows often have WS_EX_NOREDIRECTIONBITMAP
-    if (exStyle & WS_EX_NOREDIRECTIONBITMAP) return true;
+    // Many modern apps (and browsers like Chrome/Edge) use WS_EX_NOREDIRECTIONBITMAP.
+    // However, Chrome/Edge/Electron (Chrome_WidgetWin_1, etc.) handle reparenting fine
+    // and fail miserably with Viewport cropping, so we explicitly exclude them from this rule.
+    if (exStyle & WS_EX_NOREDIRECTIONBITMAP) {
+        if (classStr.find(L"Chrome_WidgetWin") == std::wstring::npos && 
+            classStr.find(L"MozillaWindowClass") == std::wstring::npos &&
+            classStr.find(L"CefBrowserWindow") == std::wstring::npos) {
+            return true;
+        }
+    }
 
     // Check for Windows 11 modern app windows
     // These typically use ApplicationFrameHost or have specific characteristics
