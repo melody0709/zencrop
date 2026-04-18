@@ -109,9 +109,8 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
             RegisterHotKey(hwnd, 3, g_hotkeys.closeReparent.Modifiers(), g_hotkeys.closeReparent.key);
         if (!g_hotkeys.alwaysOnTop.IsEmpty())
             RegisterHotKey(hwnd, 4, g_hotkeys.alwaysOnTop.Modifiers(), g_hotkeys.alwaysOnTop.key);
-        
-        // Hardcoded Viewport mode fallback hotkey: Ctrl+Alt+V
-        RegisterHotKey(hwnd, 5, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, 'V');
+        if (!g_hotkeys.viewport.IsEmpty())
+            RegisterHotKey(hwnd, 5, g_hotkeys.viewport.Modifiers(), g_hotkeys.viewport.key);
         
         return 0;
     }
@@ -196,6 +195,7 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
             UnregisterHotKey(hwnd, 2);
             UnregisterHotKey(hwnd, 3);
             UnregisterHotKey(hwnd, 4);
+            UnregisterHotKey(hwnd, 5);
             g_hotkeys = LoadHotkeySettings();
             if (!g_hotkeys.reparent.IsEmpty())
                 RegisterHotKey(hwnd, 1, g_hotkeys.reparent.Modifiers(), g_hotkeys.reparent.key);
@@ -205,6 +205,8 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
                 RegisterHotKey(hwnd, 3, g_hotkeys.closeReparent.Modifiers(), g_hotkeys.closeReparent.key);
             if (!g_hotkeys.alwaysOnTop.IsEmpty())
                 RegisterHotKey(hwnd, 4, g_hotkeys.alwaysOnTop.Modifiers(), g_hotkeys.alwaysOnTop.key);
+            if (!g_hotkeys.viewport.IsEmpty())
+                RegisterHotKey(hwnd, 5, g_hotkeys.viewport.Modifiers(), g_hotkeys.viewport.key);
         }
         return 0;
     }

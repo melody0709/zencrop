@@ -28,6 +28,8 @@
 #define IDC_HK_REPARENT_CLEAR   2041
 #define IDC_HK_THUMBNAIL_EDIT   2042
 #define IDC_HK_THUMBNAIL_CLEAR  2043
+#define IDC_HK_VIEWPORT_EDIT    2048
+#define IDC_HK_VIEWPORT_CLEAR   2049
 #define IDC_HK_CLOSE_EDIT       2044
 #define IDC_HK_CLOSE_CLEAR      2045
 #define IDC_HK_AOT_EDIT         2046
@@ -71,6 +73,7 @@ struct HotkeyConfig {
 struct HotkeySettings {
     HotkeyConfig reparent;
     HotkeyConfig thumbnail;
+    HotkeyConfig viewport;
     HotkeyConfig closeReparent;
     HotkeyConfig alwaysOnTop;
 };

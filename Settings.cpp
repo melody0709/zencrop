@@ -265,6 +265,7 @@ static HotkeySettings GetDefaultHotkeys() {
     HotkeySettings hs;
     hs.reparent = { false, true, false, true, 'X' };
     hs.thumbnail = { false, true, false, true, 'C' };
+    hs.viewport = { false, true, false, true, 'V' };
     hs.closeReparent = { false, true, false, true, 'Z' };
     hs.alwaysOnTop = { false, false, false, true, 'T' };
     return hs;
@@ -284,6 +285,8 @@ HotkeySettings LoadHotkeySettings() {
     if (!sub.empty()) settings.reparent = ParseHotkeySection(sub);
     sub = FindJsonValue(hotkeySection, L"thumbnail");
     if (!sub.empty()) settings.thumbnail = ParseHotkeySection(sub);
+    sub = FindJsonValue(hotkeySection, L"viewport");
+    if (!sub.empty()) settings.viewport = ParseHotkeySection(sub);
     sub = FindJsonValue(hotkeySection, L"closeReparent");
     if (!sub.empty()) settings.closeReparent = ParseHotkeySection(sub);
     sub = FindJsonValue(hotkeySection, L"alwaysOnTop");
@@ -309,6 +312,7 @@ void SaveHotkeySettings(const HotkeySettings& settings) {
 
     std::wstring hkJson = L"  \"hotkeys\": {\n    \"reparent\": " + HotkeyConfigToJson(settings.reparent) +
         L",\n    \"thumbnail\": " + HotkeyConfigToJson(settings.thumbnail) +
+        L",\n    \"viewport\": " + HotkeyConfigToJson(settings.viewport) +
         L",\n    \"closeReparent\": " + HotkeyConfigToJson(settings.closeReparent) +
         L",\n    \"alwaysOnTop\": " + HotkeyConfigToJson(settings.alwaysOnTop) +
         L"\n  }";
@@ -619,10 +623,10 @@ static void ClearHotkeyEdit(HWND parent, int ctrlId) {
 }
 
 static bool HasHotkeyConflict(const HotkeySettings& hs) {
-    HotkeyConfig keys[] = { hs.reparent, hs.thumbnail, hs.closeReparent, hs.alwaysOnTop };
-    for (int i = 0; i < 4; i++) {
+    HotkeyConfig keys[] = { hs.reparent, hs.thumbnail, hs.viewport, hs.closeReparent, hs.alwaysOnTop };
+    for (int i = 0; i < 5; i++) {
         if (keys[i].IsEmpty()) continue;
-        for (int j = i + 1; j < 4; j++) {
+        for (int j = i + 1; j < 5; j++) {
             if (keys[j].IsEmpty()) continue;
             if (keys[i].Modifiers() == keys[j].Modifiers() && keys[i].key == keys[j].key)
                 return true;
@@ -672,20 +676,23 @@ static INT_PTR CALLBACK ZenCropPageProc(HWND hPage, UINT msg, WPARAM wParam, LPA
 
         CreateHotkeyEdit(hPage, IDC_HK_REPARENT_EDIT, g_sharedSettings.hotkeys.reparent);
         CreateHotkeyEdit(hPage, IDC_HK_THUMBNAIL_EDIT, g_sharedSettings.hotkeys.thumbnail);
+        CreateHotkeyEdit(hPage, IDC_HK_VIEWPORT_EDIT, g_sharedSettings.hotkeys.viewport);
         CreateHotkeyEdit(hPage, IDC_HK_CLOSE_EDIT, g_sharedSettings.hotkeys.closeReparent);
 
         HFONT pageFont = (HFONT)SendMessageW(hPage, WM_GETFONT, 0, 0);
         SendDlgItemMessageW(hPage, IDC_HK_REPARENT_EDIT, WM_SETFONT, (WPARAM)pageFont, 0);
         SendDlgItemMessageW(hPage, IDC_HK_THUMBNAIL_EDIT, WM_SETFONT, (WPARAM)pageFont, 0);
+        SendDlgItemMessageW(hPage, IDC_HK_VIEWPORT_EDIT, WM_SETFONT, (WPARAM)pageFont, 0);
         SendDlgItemMessageW(hPage, IDC_HK_CLOSE_EDIT, WM_SETFONT, (WPARAM)pageFont, 0);
 
         struct { int edit; int clear; } hkIds[] = {
             { IDC_HK_REPARENT_EDIT, IDC_HK_REPARENT_CLEAR },
             { IDC_HK_THUMBNAIL_EDIT, IDC_HK_THUMBNAIL_CLEAR },
+            { IDC_HK_VIEWPORT_EDIT, IDC_HK_VIEWPORT_CLEAR },
             { IDC_HK_CLOSE_EDIT, IDC_HK_CLOSE_CLEAR },
         };
 
-        for (int i = 0; i < 3; i++) {
+        for (int i = 0; i < 4; i++) {
             HWND hClear = GetDlgItem(hPage, hkIds[i].clear);
             RECT clearRc = {};
             GetWindowRect(hClear, &clearRc);
@@ -744,6 +751,10 @@ static INT_PTR CALLBACK ZenCropPageProc(HWND hPage, UINT msg, WPARAM wParam, LPA
             ClearHotkeyEdit(hPage, IDC_HK_THUMBNAIL_EDIT);
             PropSheet_Changed(GetParent(hPage), hPage);
             return TRUE;
+        case IDC_HK_VIEWPORT_CLEAR:
+            ClearHotkeyEdit(hPage, IDC_HK_VIEWPORT_EDIT);
+            PropSheet_Changed(GetParent(hPage), hPage);
+            return TRUE;
         case IDC_HK_CLOSE_CLEAR:
             ClearHotkeyEdit(hPage, IDC_HK_CLOSE_EDIT);
             PropSheet_Changed(GetParent(hPage), hPage);
@@ -770,6 +781,7 @@ static INT_PTR CALLBACK ZenCropPageProc(HWND hPage, UINT msg, WPARAM wParam, LPA
 
             g_sharedSettings.hotkeys.reparent = GetHotkeyFromEdit(hPage, IDC_HK_REPARENT_EDIT);
             g_sharedSettings.hotkeys.thumbnail = GetHotkeyFromEdit(hPage, IDC_HK_THUMBNAIL_EDIT);
+            g_sharedSettings.hotkeys.viewport = GetHotkeyFromEdit(hPage, IDC_HK_VIEWPORT_EDIT);
             g_sharedSettings.hotkeys.closeReparent = GetHotkeyFromEdit(hPage, IDC_HK_CLOSE_EDIT);
 
             if (HasHotkeyConflict(g_sharedSettings.hotkeys)) {
