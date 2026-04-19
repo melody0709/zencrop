@@ -9,7 +9,7 @@ ZenCrop is an independent reimplementation of [PowerToys Crop And Lock](https://
 
 ## Build Commands
 
-- **构建**: `build.bat` (需要 Visual Studio 2022 + vcvars64，在 cmd.exe 中运行)
+- **Build**: `build.bat` (生成 `build/ZenCrop.exe`)
 
 ## Runtime Controls
 

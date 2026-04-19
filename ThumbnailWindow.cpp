@@ -44,7 +44,7 @@ ThumbnailWindow::ThumbnailWindow(HWND targetWindow, RECT cropRect, bool showTitl
     if (showTitlebar) {
         style |= WS_CAPTION | WS_SYSMENU;
     }
-    DWORD exStyle = WS_EX_TOOLWINDOW;
+    DWORD exStyle = 0;
 
     int totalWidth = width + BorderWidth * 2;
     int totalHeight = height + BorderWidth * 2;
@@ -120,9 +120,10 @@ void ThumbnailWindow::ApplyHiddenState() {
         }
     }
 
-    // 2. Remove from Alt+Tab (WARNING: WS_EX_TOOLWINDOW shrinks the title bar 
-    // and causes the client area to shift up, ruining our crop coordinates! 
-    // So we skip WS_EX_TOOLWINDOW and rely solely on ITaskbarList)
+    // 2. Remove from Alt+Tab (WARNING: The old WS_EX_TOOLWINDOW approach shrinks the title bar
+    // and causes the client area to shift up, ruining our crop coordinates!
+    // So we rely solely on ITaskbarList for taskbar hiding on the TARGET window,
+    // and intentionally leave the HOST window as a standard window so it gets its own icon.)
     // LONG_PTR exStyle = m_originalExStyle;
     // exStyle &= ~WS_EX_APPWINDOW;
     // exStyle |= WS_EX_TOOLWINDOW;
