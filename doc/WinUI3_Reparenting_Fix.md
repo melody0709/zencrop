@@ -12,7 +12,7 @@ Specifically, the following three core issues were identified during development
 2. **The "Blue Ghost" Fallback Titlebar (Magpie and others):**
    Applications built using `DesktopWindowContentBridge` (traditional Win32 nesting XAML) typically hide their standard non-client title bar and draw custom XAML title bars instead. However, when such a window is demoted from a top-level window to a child window via `WS_CHILD`, the underlying User32 rendering engine panics because the window still technically possesses the `WS_CAPTION` style. It responds by drawing a highly obtrusive, retro-styled blue child window caption bar right over the application's custom UI.
 
-3. **Total Composition Breakdown and Offset Bugs (Win11 Paint, Photos):**
+3. **Total Composition Breakdown and Offset Bugs (Win11 Paint):**
    Applications built with the newest WinUI 3 architecture (`DesktopChildSiteBridge` and `DesktopWindowXamlSource`) have extremely fragile DWM visual trees.
    - If we attempt to deeply reparent their inner XAML render surface (`DesktopWindowXamlSource`), the framework panics and the rendering halts.
    - If we attempt to reparent the top-level window *and* strip its `WS_CAPTION` style (which was our solution to fix the "Blue Ghost" issue above), the entire DWM composition chain breaks, resulting in a large, solid grey/blank background with no app content.
@@ -32,7 +32,7 @@ To fix the loss of Mica/Acrylic when an app becomes a child window, ZenCrop now 
 *   **Propagation:** ZenCrop applies the `DWMWA_USE_IMMERSIVE_DARK_MODE` attribute to its own outer host window, ensuring its own window borders and custom titlebars perfectly match the dark theme.
 
 ### 2. Precision Radar for Modern XAML (`EnumChildWindows` Refactor)
-To handle the conflict between old nested XAML apps (Magpie) and pure WinUI 3 apps (Paint, Photos), ZenCrop must know exactly what kind of architecture it is dealing with before touching the window styles.
+To handle the conflict between old nested XAML apps (Magpie) and pure WinUI 3 apps (Paint), ZenCrop must know exactly what kind of architecture it is dealing with before touching the window styles.
 
 ZenCrop uses `EnumChildWindows` with a custom lambda to scan the entire UI tree of the target window.
 *   It specifically searches for classes named `DesktopChildSiteBridge` or `DesktopWindowXamlSource`.
@@ -47,7 +47,7 @@ For apps like Magpie, removing `WS_CAPTION` is perfectly safe and highly necessa
 1.  **Strip Caption:** ZenCrop removes `WS_CAPTION | WS_THICKFRAME` and adds `WS_CHILD`.
 2.  **Align Coordinates:** ZenCrop captures the client point to screen offset before and after the style stripping using `ClientToScreen`. This calculates exactly how much the window contents shifted when the frame vanished. It then applies this delta to the crop offset (`offsetX/Y`), ensuring pixel-perfect alignment.
 
-#### Path B: Modern WinUI 3 Apps (Paint, Photos) -> `m_hasModernXAML == true`
+#### Path B: Modern WinUI 3 Apps (Paint) -> `m_hasModernXAML == true`
 For apps like Win11 Paint, removing `WS_CAPTION` causes the grey screen of death.
 1.  **Preserve Caption:** ZenCrop *keeps* `WS_CAPTION` intact and simply adds `WS_CHILD`.
 2.  **Reverse Push Compensation:** Because keeping `WS_CAPTION` on a child window causes Windows to secretly push the internal client area down, ZenCrop calculates the unmaximized absolute bounding box of the window. By taking `cropRect.left/top - unmaximizedRect.left/top`, ZenCrop figures out the precise mathematical offset needed to shove the entire window upwards and to the left inside the crop container. This effectively hides the newly formed internal fake titlebar outside the visible bounds of the ZenCrop host window.

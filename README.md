@@ -8,13 +8,18 @@ An independent, **enhanced** reimplementation of [PowerToys Crop And Lock](https
 
 While the official PowerToys module suffers from an ["all-white/black screen" known issue](https://learn.microsoft.com/en-us/windows/powertoys/crop-and-lock#known-issues) when trying to reparent modern Windows applications (UWP/WinUI/XAML apps like Calculator or Settings), **ZenCrop has completely solved this.**
 
-ZenCrop successfully supports interactive reparenting of applications that the original PowerToys Crop And Lock explicitly cannot handle, including:
-- **Windows 11 Paint & Photos** (Modern `DesktopChildSiteBridge` WinUI 3 apps)
-- **Windows Calculator, Settings, Microsoft To Do** (Modern UWP apps)
-- **Magpie** and other traditional Win32 apps nesting modern XAML components (`DesktopWindowContentBridge`)
+ZenCrop successfully supports interactive cropping of applications that the original PowerToys Crop And Lock explicitly cannot handle, utilizing two distinct cutting-edge rendering engines:
 
-Through our innovative **Native Viewport Cropping Technology** and our newly engineered **Deep Visual Tree Radar**, ZenCrop intelligently detects the exact app architecture and seamlessly switches rendering engines. It safely circumvents fragile DWM composition rules, applies smart dark-mode background camouflage, and utilizes inverse coordinate compensation to allow you to crop *any* modern app flawlessly without breaking its interactivity. 
-📖 *Deep dive: [Overcoming Modern App Cropping Challenges: WinUI 3 Reparenting Technical Report](doc/WinUI3_Reparenting_Fix.md)*
+**1. Native Viewport Cropping Technology:**
+- **Windows Calculator, Settings, Microsoft To Do** (Modern UWP apps)
+- Completely bypasses the "all-white screen" rendering bug by manipulating the window region instead of forcing a cross-process DWM visual tree attachment.
+📖 *Deep dive: [ZenCrop Viewport Technology Implementation Report](doc/viewport_technology_report_en.md)*
+
+**2. Deep Visual Tree Radar & Advanced Reparenting:**
+- **Windows 11 Paint** (Modern `DesktopChildSiteBridge` WinUI 3 apps)
+- **Magpie** and other traditional Win32 apps nesting modern XAML components (`DesktopWindowContentBridge`)
+- Intelligently circumvents fragile DWM composition rules, applies smart dark-mode background camouflage to prevent washed-out colors, and utilizes inverse coordinate compensation to perfectly align the crop without triggering fallback titlebars or crashes.
+📖 *Deep dive: [WinUI 3 Reparenting Technical Report](doc/WinUI3_Reparenting_Fix.md)*
 
 ## Background
 

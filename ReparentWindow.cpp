@@ -103,7 +103,7 @@ ReparentWindow::ReparentWindow(HWND targetWindow, RECT cropRect, bool showTitleb
     // For modern WinUI 3 (DesktopChildSiteBridge), deep reparenting breaks DWM composition (gray screen).
     HWND bestXamlChild = nullptr;
     int maxArea = 0;
-    m_hasModernXAML = false; // Flag for WinUI 3 / modern UWP (Paint, Photos)
+    m_hasModernXAML = false; // Flag for WinUI 3 / modern UWP (Paint)
 
     void* enumParams[] = { &bestXamlChild, &maxArea, &m_hasModernXAML };
 
@@ -113,7 +113,7 @@ ReparentWindow::ReparentWindow(HWND targetWindow, RECT cropRect, bool showTitleb
             void** pParams = (void**)lParam;
             bool* pHasModern = (bool*)pParams[2];
             
-            // Paint and Photos use DesktopChildSiteBridge
+            // Paint uses DesktopChildSiteBridge
             if (wcsstr(childClass, L"DesktopChildSiteBridge") != nullptr) {
                 *pHasModern = true;
             }
@@ -192,7 +192,7 @@ ReparentWindow::ReparentWindow(HWND targetWindow, RECT cropRect, bool showTitleb
             offsetX = (cropRect.left - oldClientPt.x) + (newClientPt.x - currentRect.left);
             offsetY = (cropRect.top - oldClientPt.y) + (newClientPt.y - currentRect.top);
         } else {
-            // For WinUI 3 / modern UWP apps (Paint, Photos), stripping WS_CAPTION completely breaks their DWM composition (gray screen).
+            // For WinUI 3 / modern UWP apps (Paint), stripping WS_CAPTION completely breaks their DWM composition (gray screen).
             // We must keep their WS_CAPTION and just add WS_CHILD.
             POINT oldClientPt = {0, 0};
             ClientToScreen(m_targetWindow, &oldClientPt);

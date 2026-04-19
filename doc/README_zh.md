@@ -8,13 +8,17 @@ ZenCrop 是对 [PowerToys Crop And Lock](https://github.com/microsoft/PowerToys/
 
 微软官方的 PowerToys 模块在尝试裁剪现代 Windows 应用（UWP/WinUI/XAML 应用，如计算器、系统设置等）时，会触发底层的渲染断连，导致严重的[“全白/黑屏”已知缺陷](https://learn.microsoft.com/en-us/windows/powertoys/crop-and-lock#known-issues)。
 
-**ZenCrop 彻底攻克了这一技术壁垒！** 官方 PowerToys Crop And Lock **明确无法支持**、**裁剪即崩溃**的应用，ZenCrop 如今皆能完美交互式裁剪：
-- **Win11 画图 (Paint)、照片 (Photos)** (采用现代 `DesktopChildSiteBridge` WinUI 3 架构)
-- **Windows 计算器、设置、Microsoft To Do (微软待办)** (现代 UWP 应用)
+**ZenCrop 彻底攻克了这一技术壁垒！** 官方 PowerToys Crop And Lock **明确无法支持**、**一剪就崩溃或全白**的应用，ZenCrop 如今皆能通过独创的双引擎架构完美交互式裁剪：
+
+**1. 原生 Viewport (视口) 裁剪技术:**
+- **Windows 计算器、设置、Microsoft To Do (微软待办)** 等现代 UWP 沙盒应用
+- 通过视口区域操作而非跨进程 DWM 挂载，彻底避免了传统 Reparent 机制引发的底层渲染管线断连 Bug，完美保留交互能力。
+📖 *技术深度解析：[ZenCrop Viewport 技术实现报告](viewport_technology_report.md)*
+
+**2. 深度视觉树雷达检测与高级重父化 (Reparenting):**
+- **Win11 画图 (Paint)** (采用现代 `DesktopChildSiteBridge` WinUI 3 架构)
 - **Magpie (麦皮)** 等内嵌现代 XAML 组件的传统 Win32 程序 (`DesktopWindowContentBridge`)
-
-依靠独创的 **原生 Viewport 视口裁剪技术** 以及全新研发的 **深度视觉树雷达检测引擎**，ZenCrop 能在毫秒级智能识别目标应用的底层渲染架构并动态分支其重父化逻辑。我们通过智能背景色伪装（修复 Mica 材质丢失问题）、差异化的标题栏剥夺技术以及精密的逆向坐标推移补偿算法，安全绕过了 Windows DWM 脆弱的组合机制，完美支持裁剪任意现代沙盒应用且保持极其流畅的交互，这是官方工具至今未能实现的功能。
-
+- 毫秒级智能识别底层架构，动态分支其重父化逻辑：通过智能背景色伪装（修复深色模式 Mica 材质丢失问题）、差异化的标题栏剥夺技术以及精密的逆向坐标推移补偿算法，安全绕过了 Windows 脆弱的组合机制，彻底消除了崩溃与标题栏错位 Bug，实现无缝视觉融合。
 📖 *技术深度解析：[攻克现代应用裁剪难题：WinUI 3 Reparenting 技术实现报告](WinUI3_Reparenting_Fix_zh.md)*
 
 ## 项目起源

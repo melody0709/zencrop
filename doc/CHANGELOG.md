@@ -4,16 +4,15 @@
 
 ### 🚀 重大突破 (Major Breakthrough)
 
-- **现代应用完美 Reparent 裁剪**: 彻底攻克了官方 PowerToys Crop And Lock **明确无法支持、一剪就崩溃**的现代 WinUI 3 及 UWP 应用！
-  - **Win11 画图 (Paint)、照片 (Photos)** (采用现代 `DesktopChildSiteBridge` 架构)：不再出现全灰/全白崩溃，画面像素级完美对齐！
-  - **Windows 计算器、设置、Microsoft To Do (微软待办)** (现代 UWP 应用)：交互流畅，告别渲染断连。
-  - **Magpie (麦皮)** 及其他内嵌现代 XAML 组件的传统程序 (`DesktopWindowContentBridge`)：移除了恶性的“蓝色幽灵”后备标题栏，视觉完美融合！
+- **现代应用完美 Reparent 裁剪**: 彻底攻克了官方 PowerToys Crop And Lock **明确无法支持、一剪就崩溃或失色**的多种现代 WinUI 3 架构应用！
+  - **Win11 画图 (Paint)** (采用现代 `DesktopChildSiteBridge` 架构)：不再出现全灰/全白崩溃，利用全新的逆向坐标推移补偿算法，实现画面像素级完美对齐！
+  - **Magpie (麦皮)** 及其他内嵌现代 XAML 组件的传统程序 (`DesktopWindowContentBridge`)：成功移除了恶性的“蓝色幽灵”后备标题栏，视觉完美融合！
 - **智能深色模式伪装 (Dark Mode Camouflage)**: 
   - 当现代应用被强制转为子窗口并丢失 DWM Mica/Acrylic 玻璃材质时，ZenCrop 现会自动嗅探其主题。
   - 智能注入极度匹配的 `#202020` 深灰或 `#F3F3F3` 亮灰底色，彻底告别刺眼的白底 Bug。
 - **深度视觉树雷达检测引擎**: 
   - `ReparentWindow` 引入全新 `EnumChildWindows` 扫描引擎，精准识别底层架构。
-  - 基于架构动态分支：对传统嵌套应用实行“标题栏剥夺术”；对脆弱的纯血 WinUI 3 应用实行“逆向坐标推移补偿算法”，安全绕过 Windows DWM 脆弱的组合机制。
+  - 基于架构动态分支：对传统嵌套应用实行“标题栏剥夺术”；对脆弱的纯血 WinUI 3 应用实行“不剥夺标题栏 + 坐标推移补偿”，安全绕过 Windows DWM 脆弱的组合机制。
 
 *阅读完整技术解析：[攻克现代应用裁剪难题：WinUI 3 Reparenting 技术实现报告](WinUI3_Reparenting_Fix_zh.md)*
 
@@ -24,6 +23,9 @@
 ### 重磅更新 (Major Update)
 
 - **原生 Viewport (视口) 裁剪引擎**: 彻底解决了长期存在的现代 Windows 应用 (如计算器、系统设置等 UWP/WinUI 应用) 在执行重父化 (Reparent) 时会断开渲染变全白/黑屏的问题（连官方 PowerToys 至今也未能解决该缺陷）。
+
+*阅读完整技术解析：[攻克现代应用裁剪难题：ZenCrop Viewport 技术实现报告](viewport_technology_report.md)*
+
 - **智能 Reparent 融合架构**: 实现了双裁剪引擎的热切换路由。
   - 按下 `Ctrl+Alt+X` 时，ZenCrop 会毫秒级动态嗅探应用的底层架构。如果是 `ApplicationFrameWindow` 类的现代沙盒应用，自动无缝回退到全新的 Viewport 引擎处理。
   - 对于 Chrome、Task Manager 等传统与混合桌面应用，继续使用高度兼容的经典 Reparent 引擎，告别白名单硬编码。
