@@ -20,7 +20,7 @@
 #define ID_TRAY_RELEASE 1003
 #define ID_TRAY_AOT_SETTINGS 1004
 
-#define ZENCROP_VERSION L"2.2.0"
+#define ZENCROP_VERSION L"2.2.1"
 #define ZENCROP_RELEASE_URL L"https://github.com/melody0709/zencrop/releases"
 #define ZENCROP_MUTEX_NAME L"Global\\ZenCrop"
 

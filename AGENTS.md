@@ -41,6 +41,9 @@ ZenCrop is an independent reimplementation of [PowerToys Crop And Lock](https://
 - `build/` contains compiled objects and executables
 - Output: `ZenCrop.exe`
 
+## 版本号对齐
+- 修改版本号必须同步 README.md README_zh.md resources.rc CHANGELOG.md main.cpp 中的版本号和更新日志。
+  
 ## 踩坑规则
 
 > AI 在完成重大修改或解决复杂报错后，可追加规则。

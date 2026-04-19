@@ -1,5 +1,15 @@
 # Changelog
 
+## V2.2.1 (2026-04-20)
+
+### 优化 (Enhancements)
+
+- **Thumbnail 模式任务栏图标恢复**: 移除了 Thumbnail 宿主窗口的 `WS_EX_TOOLWINDOW` 扩展样式。现在，通过 `Ctrl+Alt+C` 抓取的 Thumbnail 缩略图窗口将像 Reparent 窗口一样，在 Windows 任务栏中显示其独立的 ZenCrop 图标。
+  - 提升了窗口的可发现性，让用户在窗口被遮挡时可以通过任务栏或 Alt+Tab 轻松将其带回前台。
+  - 允许直接通过右键任务栏图标来关闭 Thumbnail 窗口，大幅优化多窗口管理体验。
+
+---
+
 ## V2.2.0 (2026-04-19)
 
 ### 🚀 重大突破 (Major Breakthrough)
