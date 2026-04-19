@@ -4,6 +4,17 @@
 
 ZenCrop 是对 [PowerToys Crop And Lock](https://github.com/microsoft/PowerToys/tree/main/src/modules/CropAndLock/) 的独立、**增强型**重构实现。
 
+---
+## 🔥 V2.2.0 震撼更新：终极 Thumbnail 缩略图模式
+
+我们彻底重构了 **Thumbnail（缩略图）模式 (Ctrl+Alt+C)**，突破了 Windows DWM API 的底层限制，带来了史无前例的强大特性：
+
+- **严格等比例缩放**: 无论是通过原生窗口边缘拖拽，还是使用 **AltSnap** 等第三方神器，ZenCrop 都会在底层数学级别强行锁定裁剪画面的原始宽高比。画面永远不会变形，也绝不产生黑边！
+- **欺骗引擎级的无痕后台渲染**: 将庞大的原始窗口从任务栏和屏幕上完全隐藏！我们利用开创性的“1像素驻留 + 强制置顶” Hack 结合 COM 接口抹除技术，完美骗过现代浏览器（Chrome、Edge）和 Electron（VSCode）的遮挡追踪器，令其在后台毫无察觉地为您源源不断提供满血 60FPS 的实时渲染流。
+
+📖 *技术深度解析：[ZenCrop Thumbnail 缩放与隐身技术报告](thumbnail_scaling_hiding_technology_zh.md)*
+---
+
 ## 🚀 为什么选择 ZenCrop 胜过官方 PowerToys？
 
 微软官方的 PowerToys 模块在尝试裁剪现代 Windows 应用（UWP/WinUI/XAML 应用，如计算器、系统设置等）时，会触发底层的渲染断连，导致严重的[“全白/黑屏”已知缺陷](https://learn.microsoft.com/en-us/windows/powertoys/crop-and-lock#known-issues)。
