@@ -47,7 +47,7 @@ ZenCrop is an independent reimplementation of [PowerToys Crop And Lock](https://
 
 ### 窗口裁剪与重父化 (Reparent)
 
-- **现代应用 (UWP/WinUI/XAML) 全白/黑屏 Bug**: 如果对 `ApplicationFrameWindow` 或 `CoreWindow` 直接使用跨进程 `SetParent`，其内部的 DComp 视觉树会彻底断开连接并变成一块全白画刷。**解决方案**：不要对这些现代应用使用 Reparent，改用 Viewport 模式（`SetWindowRgn` 原位裁剪）。
+- **现代应用 (UWP) 全白/黑屏 Bug**: 如果对 `ApplicationFrameWindow` 或 `CoreWindow` 直接使用跨进程 `SetParent`，其内部的 DComp 视觉树会彻底断开连接并变成一块全白画刷。**解决方案**：不要对这些现代应用使用 Reparent，改用 Viewport 模式（`SetWindowRgn` 原位裁剪）。
 - **Viewport 裁剪时的标题栏幽灵与坐标偏移**: 对应用了 `SetWindowRgn` 的现代窗口，如果不移除 `WS_CAPTION | WS_THICKFRAME`，DWM 会在裁剪区域的顶部强行合成一个新的假标题栏。而在移除这俩样式后，Client Rect（客户区）原点会向左上角发生跳变。**解决方案**：剥离样式前后各调用一次 `ClientToScreen` 算出 `clientOffsetX/Y` 差值，用以逆向补偿 `CreateRectRgn` 的参数，确保视觉内容严格对齐。
 - **防止 DWM 玻璃穿透导致字体重叠**: 严禁在无边框模式的 Host Window 上使用 `DwmExtendFrameIntoClientArea` (传入 `-1` 扩展全屏)。这会将 GDI 的白色/黑色背景强转为全透明玻璃，导致现代应用（如 Win11 资源管理器）在发生悬停或重绘时，因为没有不透明衬底而出现字体反复叠加重影。
 - **最大化窗口 Reparent**: Reparent 前必须移除 `WS_MAXIMIZE` 样式，并用 `SetWindowPos` 设为 `mi.rcWork` (工作区大小)，否则 `WS_MAXIMIZE + WS_CHILD` 组合会导致 Chrome 等窗口尺寸自动撑满、内容错位或出现大块白色；在去除最大化后，必须**重新调用** `GetWindowRect` 捕获真实的未最大化边框，再与选区坐标相减计算精确偏移量。
