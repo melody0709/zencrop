@@ -1,5 +1,21 @@
 # Changelog
 
+## V2.2.0 (2026-04-19)
+
+### 🚀 重大突破 (Major Breakthrough)
+
+- **Thumbnail 严格等比例缩放**: 彻底解决了 Thumbnail 窗口自由拉伸导致的比例失调和黑边问题。
+  - 完美拦截原生 `WM_SIZING` 边缘拖拽，在拖拽过程中强制锁定裁剪画面的原始宽高比。
+  - 深度兼容第三方窗口管理神器 (如 **AltSnap**)。通过在 `WM_WINDOWPOSCHANGING` 层级智能推断锚点，确保即使是从窗口中心向外扩展或拉伸，画面也不会“跑掉”。
+- **Thumbnail 引擎级隐身渲染 (Invisible Rendering)**: 史诗级 Hack 机制！真正实现了“将原目标窗口从任务栏和屏幕双重隐藏，且画面绝不卡死”。
+  - **COM 级抹除**: 通过 `ITaskbarList::DeleteTab` 在不破坏窗口样式的同时，优雅地从任务栏消除图标。
+  - **1 像素的欺骗**: 将目标大窗口瞬间发配到当前所有虚拟显示器总宽度的边缘 (`virtualRight - 1`)，仅保留 1 个像素与屏幕重叠。
+  - **打破 Occlusion Tracker**: 结合 `HWND_TOPMOST` 强制置顶。这 1 像素的极微弱重叠不仅人眼无法察觉，还能完美欺骗现代浏览器（Chrome、Edge）和 Electron（VSCode）的遮挡追踪器，令其误以为自身可见，从而源源不断地为 DWM 提供满血的 60FPS 游戏/视频渲染流！
+
+*阅读完整技术解析：[ZenCrop Thumbnail 缩放与隐身技术报告](thumbnail_scaling_hiding_technology_zh.md)*
+
+---
+
 ## V2.1.1 (2026-04-19)
 
 ### 🚀 重大突破 (Major Breakthrough)

@@ -21,6 +21,22 @@ ThumbnailWindow::ThumbnailWindow(HWND targetWindow, RECT cropRect, bool showTitl
 
     std::call_once(s_thumbnailClassReg, []() { RegisterWindowClass(); });
 
+    SaveOriginalState();
+
+    // We must calculate m_sourceRect BEFORE applying hidden state, 
+    // because ApplyHiddenState moves the target window and changes its rect!
+    RECT windowRect = { 0 };
+    if (FAILED(DwmGetWindowAttribute(m_targetWindow, DWMWA_EXTENDED_FRAME_BOUNDS, &windowRect, sizeof(windowRect)))) {
+        GetWindowRect(m_targetWindow, &windowRect);
+    }
+
+    m_sourceRect.left = cropRect.left - windowRect.left;
+    m_sourceRect.top = cropRect.top - windowRect.top;
+    m_sourceRect.right = cropRect.right - windowRect.left;
+    m_sourceRect.bottom = cropRect.bottom - windowRect.top;
+
+    ApplyHiddenState();
+
     int width = cropRect.right - cropRect.left;
     int height = cropRect.bottom - cropRect.top;
 
@@ -50,16 +66,6 @@ ThumbnailWindow::ThumbnailWindow(HWND targetWindow, RECT cropRect, bool showTitl
         nullptr, nullptr, GetModuleHandleW(nullptr), this
     );
 
-    RECT windowRect = { 0 };
-    if (FAILED(DwmGetWindowAttribute(m_targetWindow, DWMWA_EXTENDED_FRAME_BOUNDS, &windowRect, sizeof(windowRect)))) {
-        GetWindowRect(m_targetWindow, &windowRect);
-    }
-
-    m_sourceRect.left = cropRect.left - windowRect.left;
-    m_sourceRect.top = cropRect.top - windowRect.top;
-    m_sourceRect.right = cropRect.right - windowRect.left;
-    m_sourceRect.bottom = cropRect.bottom - windowRect.top;
-
     if (SUCCEEDED(DwmRegisterThumbnail(m_hostWindow, m_targetWindow, &m_thumbnail))) {
         UpdateThumbnail();
     } else {
@@ -72,6 +78,8 @@ ThumbnailWindow::ThumbnailWindow(HWND targetWindow, RECT cropRect, bool showTitl
 }
 
 ThumbnailWindow::~ThumbnailWindow() {
+    RestoreOriginalState();
+
     if (m_thumbnail) {
         DwmUnregisterThumbnail(m_thumbnail);
         m_thumbnail = nullptr;
@@ -80,6 +88,118 @@ ThumbnailWindow::~ThumbnailWindow() {
         DestroyWindow(m_hostWindow);
         m_hostWindow = nullptr;
     }
+}
+
+void ThumbnailWindow::SaveOriginalState() {
+    m_originalStyle = GetWindowLongPtrW(m_targetWindow, GWL_STYLE);
+    m_originalExStyle = GetWindowLongPtrW(m_targetWindow, GWL_EXSTYLE);
+    GetWindowRect(m_targetWindow, &m_originalRect);
+
+    m_originalPlacement = { sizeof(WINDOWPLACEMENT) };
+    if (GetWindowPlacement(m_targetWindow, &m_originalPlacement)) {
+        m_wasMaximized = (m_originalPlacement.showCmd == SW_SHOWMAXIMIZED);
+    }
+
+    if (m_originalExStyle & WS_EX_LAYERED) {
+        m_wasLayered = true;
+        GetLayeredWindowAttributes(m_targetWindow, &m_originalColorKey, &m_originalAlpha, &m_originalLayeredFlags);
+    } else {
+        m_wasLayered = false;
+        m_originalAlpha = 255;
+        m_originalLayeredFlags = LWA_ALPHA;
+    }
+}
+
+void ThumbnailWindow::ApplyHiddenState() {
+    // 1. Remove from taskbar via ITaskbarList
+    if (SUCCEEDED(CoCreateInstance(CLSID_TaskbarList, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&m_taskbarList)))) {
+        if (SUCCEEDED(m_taskbarList->HrInit())) {
+            m_taskbarList->DeleteTab(m_targetWindow);
+        } else {
+            m_taskbarList.Reset();
+        }
+    }
+
+    // 2. Remove from Alt+Tab (WARNING: WS_EX_TOOLWINDOW shrinks the title bar 
+    // and causes the client area to shift up, ruining our crop coordinates! 
+    // So we skip WS_EX_TOOLWINDOW and rely solely on ITaskbarList)
+    // LONG_PTR exStyle = m_originalExStyle;
+    // exStyle &= ~WS_EX_APPWINDOW;
+    // exStyle |= WS_EX_TOOLWINDOW;
+    // SetWindowLongPtrW(m_targetWindow, GWL_EXSTYLE, exStyle);
+
+    // 3. Move to offscreen position, leaving 1 pixel overlapping the virtual desktop
+    // This tricks Chromium's OcclusionTracker into believing it is visible,
+    // while keeping the actual window opaque so DwmRegisterThumbnail can capture it.
+    int virtualRight = GetSystemMetrics(SM_XVIRTUALSCREEN) + GetSystemMetrics(SM_CXVIRTUALSCREEN);
+    
+    // If window is maximized, we need to unmaximize it first to move it
+    if (m_wasMaximized) {
+        LONG_PTR style = GetWindowLongPtrW(m_targetWindow, GWL_STYLE);
+        style &= ~WS_MAXIMIZE;
+        SetWindowLongPtrW(m_targetWindow, GWL_STYLE, style);
+
+        // We must maintain the EXACT physical size of the window,
+        // otherwise the inner client area shifts relative to the frame.
+        int origWidth = m_originalRect.right - m_originalRect.left;
+        int origHeight = m_originalRect.bottom - m_originalRect.top;
+        
+        SetWindowPos(m_targetWindow, HWND_TOPMOST, 
+            virtualRight - 1, 0, origWidth, origHeight, 
+            SWP_NOACTIVATE | SWP_FRAMECHANGED);
+    } else {
+        // Move to the edge, leaving 1 pixel visible to avoid being flagged as completely off-screen
+        SetWindowPos(m_targetWindow, HWND_TOPMOST, 
+            virtualRight - 1, 0, 0, 0, 
+            SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+    }
+}
+
+void ThumbnailWindow::RestoreOriginalState() {
+    if (!m_targetWindow || !IsWindow(m_targetWindow)) return;
+
+    // 1. Restore taskbar icon
+    if (m_taskbarList) {
+        m_taskbarList->AddTab(m_targetWindow);
+        m_taskbarList.Reset();
+    }
+
+    // 2. Restore extended styles (removes TOOLWINDOW hack if it wasn't there)
+    SetWindowLongPtrW(m_targetWindow, GWL_EXSTYLE, m_originalExStyle);
+
+    // 3. Restore opacity
+    if (m_wasLayered) {
+        SetLayeredWindowAttributes(m_targetWindow, m_originalColorKey, m_originalAlpha, m_originalLayeredFlags);
+    } else {
+        // Just stripping WS_EX_LAYERED via GWL_EXSTYLE above is usually enough,
+        // but we can be thorough:
+        SetWindowPos(m_targetWindow, nullptr, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+    }
+
+    // 4. Restore position & maximized state
+    if (m_wasMaximized) {
+        RECT& rc = m_originalPlacement.rcNormalPosition;
+        SetWindowPos(m_targetWindow, HWND_NOTOPMOST,
+            rc.left, rc.top,
+            rc.right - rc.left, rc.bottom - rc.top,
+            SWP_NOACTIVATE | SWP_FRAMECHANGED);
+    } else {
+        int width = m_originalRect.right - m_originalRect.left;
+        int height = m_originalRect.bottom - m_originalRect.top;
+        SetWindowPos(m_targetWindow, HWND_NOTOPMOST, 
+            m_originalRect.left, m_originalRect.top,
+            width, height, 
+            SWP_NOACTIVATE | SWP_FRAMECHANGED);
+    }
+
+    m_originalPlacement.showCmd = m_wasMaximized ? SW_SHOWMAXIMIZED : SW_RESTORE;
+    SetWindowPlacement(m_targetWindow, &m_originalPlacement);
+
+    // Restore standard style just in case we stripped maximize
+    SetWindowLongPtrW(m_targetWindow, GWL_STYLE, m_originalStyle);
+
+    // Detach pointer so we don't restore twice
+    m_targetWindow = nullptr;
 }
 
 void ThumbnailWindow::UpdateThumbnail() {
@@ -358,6 +478,7 @@ LRESULT ThumbnailWindow::MessageHandler(HWND hwnd, UINT msg, WPARAM wParam, LPAR
             m_thumbnail = nullptr;
         }
         m_hostWindow = nullptr;
+        RestoreOriginalState();
         return 0;
     }
     }

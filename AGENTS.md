@@ -84,3 +84,10 @@ ZenCrop is an independent reimplementation of [PowerToys Crop And Lock](https://
 - **裁剪窗口的 Alt+T**: `GetForegroundWindow()` 在 Reparent 模式下返回的是子窗口（原始目标），而非 Host 容器。必须用 `GetAncestor(target, GA_ROOT)` 向上查找根窗口，再通过类名匹配 `ZenCrop.ReparentHost`/`ZenCrop.ThumbnailHost` 定位到 Host。
 - **类名一致性**: 代码中引用窗口类名时必须与注册时一致（如 `ZenCrop.ReparentHost` 而非 `ZenCrop.Reparent`），否则 `wcscmp` 匹配失败。
 
+### Thumbnail 模式的等比例拉伸与隐身渲染
+
+- **严格等比例拉伸**: 为了允许 Thumbnail 随鼠标原生拖拽或 AltSnap 拖拽缩放且不破坏裁剪比例，宿主窗口必须开启 `WS_THICKFRAME` (即使是无边框也要开，靠 `WM_NCCALCSIZE` 返回 0 藏起白边)。必须拦截 `WM_SIZING` 和 `WM_WINDOWPOSCHANGING` 两个消息。在 `WM_WINDOWPOSCHANGING` (AltSnap 使用的底层方法) 中修改尺寸后，**必须利用坐标比较智能推断当前的锚点**，否则缩放时窗口会向左上角“逃跑”。
+- **引擎级隐身渲染 (Invisible Rendering)**: 严禁使用 `SW_HIDE`、`SW_MINIMIZE` 或 `SetLayeredWindowAttributes` 设 Alpha 为 `0` 隐藏目标大窗口。这会触发 Chromium/Electron/WinUI 的遮挡追踪器 (Occlusion Tracker) 瞬间停止 DirectX 交换链渲染，导致 Thumbnail 画面永久卡死变黑。
+- **1 像素续命法**: 正确做法是在启动 Thumbnail 时使用 `ITaskbarList::DeleteTab` 消除其任务栏图标，并将其 `SetWindowPos` 发配至 `X = 屏幕总宽度 - 1` 的边界。仅留 **1 个像素** 驻留在屏幕内，并设置其为 `HWND_TOPMOST` 确保这唯一的 1 个续命像素不被任何窗口覆盖。此时原窗口将在人眼前完美消失，但在渲染引擎眼中它依旧完全可见，从而为你源源不断地提供满血 60FPS 的实时裁剪缩略图！
+- **坐标时序错位问题**: 在应用 `ApplyHiddenState()` (也就是把它发配到屏幕边缘) **之前**，必须先算出裁剪矩形 (`m_sourceRect`) 的偏移量！否则在目标窗口移动到 `X=3000` 之后再算偏移，DWM 底层取景框会被推到负数真空区，导致截出的画面是一片纯白或纯黑。
+

@@ -1,5 +1,7 @@
 #pragma once
 #include "Utils.h"
+#include <shobjidl.h>
+#include <wrl/client.h>
 
 class ThumbnailWindow {
 public:
@@ -16,6 +18,22 @@ private:
     bool m_showTitlebar = false;
 
     RECT m_sourceRect = { 0, 0, 0, 0 };
+
+    // Hack state for hiding target window
+    LONG_PTR m_originalStyle = 0;
+    LONG_PTR m_originalExStyle = 0;
+    RECT m_originalRect = { 0, 0, 0, 0 };
+    WINDOWPLACEMENT m_originalPlacement = { sizeof(WINDOWPLACEMENT) };
+    bool m_wasMaximized = false;
+    bool m_wasLayered = false;
+    COLORREF m_originalColorKey = 0;
+    BYTE m_originalAlpha = 255;
+    DWORD m_originalLayeredFlags = 0;
+    Microsoft::WRL::ComPtr<ITaskbarList> m_taskbarList;
+
+    void SaveOriginalState();
+    void ApplyHiddenState();
+    void RestoreOriginalState();
 
     static const int BorderWidth = 3;
     static const COLORREF BorderColor = RGB(100, 149, 237);

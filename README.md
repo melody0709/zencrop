@@ -1,4 +1,4 @@
-# ZenCrop v2.1.1
+# ZenCrop v2.2.0
 
 [中文文档](doc/README_zh.md)
 
@@ -30,7 +30,8 @@ ZenCrop is rebuilt from scratch, runs completely standalone without PowerToys, a
 ## Features
 
 - **Smart Reparent Mode**: Crops a target window into an independent child window. ZenCrop automatically detects modern UWP/WinUI applications (like Calculator or Settings) and seamlessly falls back to a special **Viewport** mode. This prevents the "all-white" rendering bug associated with standard reparenting, ensuring all apps remain interactive.
-- **Thumbnail Mode**: Displays a live DWM thumbnail of the target window with a cornflower blue border, supports drag-to-move and ESC to close
+- **Thumbnail Mode**: Displays a live DWM thumbnail of the target window with a cornflower blue border. *New in V2.2.0:* the target window is stealthily hidden from the taskbar and screen while keeping Chromium/Electron engines rendering at 60 FPS. Supports strict proportional scaling via native window edge dragging or third-party tools like AltSnap.
+📖 *Deep dive: [ZenCrop Thumbnail Scaling & Hiding Technology](doc/thumbnail_scaling_hiding_technology_en.md)*
 - **Always On Top**: Press `Alt+T` to pin any window on top of all others, with a customizable border (color, opacity, thickness, rounded corners)
 - **Customizable Hotkeys**: All hotkeys can be customized in Settings — click the input field and press your desired key combo
 - **Crop On Top**: Optionally auto-pin cropped windows on top (configurable in Settings)
