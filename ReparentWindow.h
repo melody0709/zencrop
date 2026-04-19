@@ -13,7 +13,12 @@ private:
     HWND m_hostWindow = nullptr;
     HWND m_childWindow = nullptr;
     HWND m_targetWindow = nullptr;
+    HWND m_xamlChildWindow = nullptr; // For WinUI 3 deep reparenting
+    HWND m_xamlOriginalParent = nullptr;
+    POINT m_xamlOriginalPos = { 0, 0 };
     bool m_showTitlebar = false;
+    bool m_isDarkMode = false;
+    bool m_hasModernXAML = false;
 
     // Original state of target window
     HWND m_originalParent = nullptr;
@@ -31,5 +36,6 @@ private:
     void RestoreOriginalState();
 
     static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
+    static LRESULT CALLBACK ChildWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
     LRESULT MessageHandler(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
 };

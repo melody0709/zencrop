@@ -11,15 +11,15 @@ void ReparentWindow::RegisterWindowClass() {
     wcex.lpfnWndProc = WndProc;
     wcex.hInstance = GetModuleHandleW(nullptr);
     wcex.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-    wcex.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
+    wcex.hbrBackground = nullptr; // Handled in WM_ERASEBKGND
     wcex.lpszClassName = ClassName;
     wcex.hIcon = LoadIconW(GetModuleHandleW(nullptr), MAKEINTRESOURCE(1));
     RegisterClassExW(&wcex);
 
-    wcex.lpfnWndProc = DefWindowProcW;
+    wcex.lpfnWndProc = ChildWndProc;
     wcex.lpszClassName = ChildClassName;
     wcex.hIcon = nullptr;
-    wcex.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
+    wcex.hbrBackground = nullptr; // Handled in WM_ERASEBKGND
     RegisterClassExW(&wcex);
 }
 
@@ -27,6 +27,23 @@ ReparentWindow::ReparentWindow(HWND targetWindow, RECT cropRect, bool showTitleb
     : m_targetWindow(targetWindow), m_showTitlebar(showTitlebar) {
 
     std::call_once(s_reparentClassReg, []() { RegisterWindowClass(); });
+
+    // Detect dark mode
+    BOOL isDark = FALSE;
+    if (FAILED(DwmGetWindowAttribute(m_targetWindow, DWMWA_USE_IMMERSIVE_DARK_MODE, &isDark, sizeof(isDark)))) {
+        // Fallback to registry check
+        HKEY hKey;
+        if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize", 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
+            DWORD type;
+            DWORD value;
+            DWORD size = sizeof(value);
+            if (RegQueryValueExW(hKey, L"AppsUseLightTheme", nullptr, &type, (LPBYTE)&value, &size) == ERROR_SUCCESS) {
+                isDark = (value == 0);
+            }
+            RegCloseKey(hKey);
+        }
+    }
+    m_isDarkMode = isDark;
 
     SaveOriginalState();
 
@@ -73,16 +90,129 @@ ReparentWindow::ReparentWindow(HWND targetWindow, RECT cropRect, bool showTitleb
 
     m_childWindow = CreateWindowExW(
         0, ChildClassName, L"", WS_CHILD | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
-        0, 0, width, height, m_hostWindow, nullptr, GetModuleHandleW(nullptr), nullptr
+        0, 0, width, height, m_hostWindow, nullptr, GetModuleHandleW(nullptr), this
     );
 
-    // If window was maximized, its bounds were changed to mi.rcWork, which shifts the window relative to m_originalRect.
-    // We capture its new unmaximized bounds here so the crop offset correctly aligns with the content that was drawn.
-    RECT unmaximizedRect;
-    GetWindowRect(m_targetWindow, &unmaximizedRect);
+    // Apply dark mode styling to the host window
+    if (m_isDarkMode) {
+        BOOL value = TRUE;
+        DwmSetWindowAttribute(m_hostWindow, DWMWA_USE_IMMERSIVE_DARK_MODE, &value, sizeof(value));
+    }
 
-    int offsetX = cropRect.left - unmaximizedRect.left;
-    int offsetY = cropRect.top - unmaximizedRect.top;
+    // We only perform deep reparenting for specific older UWP bridges if absolutely needed.
+    // For modern WinUI 3 (DesktopChildSiteBridge), deep reparenting breaks DWM composition (gray screen).
+    HWND bestXamlChild = nullptr;
+    int maxArea = 0;
+    m_hasModernXAML = false; // Flag for WinUI 3 / modern UWP (Paint, Photos)
+
+    void* enumParams[] = { &bestXamlChild, &maxArea, &m_hasModernXAML };
+
+    EnumChildWindows(m_targetWindow, [](HWND hwnd, LPARAM lParam) -> BOOL {
+        wchar_t childClass[256];
+        if (GetClassNameW(hwnd, childClass, ARRAYSIZE(childClass))) {
+            void** pParams = (void**)lParam;
+            bool* pHasModern = (bool*)pParams[2];
+            
+            // Paint and Photos use DesktopChildSiteBridge
+            if (wcsstr(childClass, L"DesktopChildSiteBridge") != nullptr) {
+                *pHasModern = true;
+            }
+
+            if (wcscmp(childClass, L"DesktopWindowXamlSource") == 0) {
+                
+                RECT rect;
+                if (GetWindowRect(hwnd, &rect)) {
+                    int area = (rect.right - rect.left) * (rect.bottom - rect.top);
+                    HWND* pBestHwnd = (HWND*)pParams[0];
+                    int* pMaxArea = (int*)pParams[1];
+                    
+                    if (area > *pMaxArea) {
+                        *pMaxArea = area;
+                        *pBestHwnd = hwnd;
+                    }
+                }
+            }
+        }
+        return TRUE;
+    }, (LPARAM)enumParams);
+
+    m_xamlChildWindow = bestXamlChild;
+
+    if (m_xamlChildWindow) {
+        // Only reparent the XAML source if it covers the majority of the target window's client area.
+        // We use 50% threshold to accommodate apps with custom titlebars or ribbons.
+        RECT targetClient, xamlRect;
+        GetClientRect(m_targetWindow, &targetClient);
+        GetWindowRect(m_xamlChildWindow, &xamlRect);
+        
+        int targetArea = (targetClient.right - targetClient.left) * (targetClient.bottom - targetClient.top);
+        int xamlArea = (xamlRect.right - xamlRect.left) * (xamlRect.bottom - xamlRect.top);
+        
+        if (targetArea > 0 && (float)xamlArea / targetArea >= 0.5f) {
+            m_xamlOriginalParent = GetParent(m_xamlChildWindow);
+            
+            POINT pt = { xamlRect.left, xamlRect.top };
+            ScreenToClient(m_xamlOriginalParent, &pt);
+            m_xamlOriginalPos = pt;
+        } else {
+            m_xamlChildWindow = nullptr; // Ignore small XAML islands
+        }
+    }
+
+    HWND windowToReparent = m_xamlChildWindow ? m_xamlChildWindow : m_targetWindow;
+
+    int offsetX = 0;
+    int offsetY = 0;
+
+    if (m_xamlChildWindow) {
+        RECT unmaximizedRect;
+        GetWindowRect(windowToReparent, &unmaximizedRect);
+        offsetX = cropRect.left - unmaximizedRect.left;
+        offsetY = cropRect.top - unmaximizedRect.top;
+    } else {
+        // Safe fallback for top-level reparenting
+        if (!m_hasModernXAML) {
+            // We must strip WS_CAPTION and WS_THICKFRAME so Windows doesn't draw a fallback blue child caption.
+            POINT oldClientPt = {0, 0};
+            ClientToScreen(m_targetWindow, &oldClientPt);
+            
+            LONG_PTR targetStyle = GetWindowLongPtrW(m_targetWindow, GWL_STYLE);
+            targetStyle &= ~(WS_CAPTION | WS_THICKFRAME);
+            targetStyle |= WS_CHILD;
+            SetWindowLongPtrW(m_targetWindow, GWL_STYLE, targetStyle);
+            
+            SetWindowPos(m_targetWindow, nullptr, 0, 0, 0, 0, 
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+
+            POINT newClientPt = {0, 0};
+            ClientToScreen(m_targetWindow, &newClientPt);
+            RECT currentRect = {};
+            GetWindowRect(m_targetWindow, &currentRect);
+
+            offsetX = (cropRect.left - oldClientPt.x) + (newClientPt.x - currentRect.left);
+            offsetY = (cropRect.top - oldClientPt.y) + (newClientPt.y - currentRect.top);
+        } else {
+            // For WinUI 3 / modern UWP apps (Paint, Photos), stripping WS_CAPTION completely breaks their DWM composition (gray screen).
+            // We must keep their WS_CAPTION and just add WS_CHILD.
+            POINT oldClientPt = {0, 0};
+            ClientToScreen(m_targetWindow, &oldClientPt);
+            
+            LONG_PTR targetStyle = GetWindowLongPtrW(m_targetWindow, GWL_STYLE);
+            targetStyle |= WS_CHILD;
+            SetWindowLongPtrW(m_targetWindow, GWL_STYLE, targetStyle);
+            
+            SetWindowPos(m_targetWindow, nullptr, 0, 0, 0, 0, 
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+
+            POINT newClientPt = {0, 0};
+            ClientToScreen(m_targetWindow, &newClientPt);
+            RECT currentRect = {};
+            GetWindowRect(m_targetWindow, &currentRect);
+
+            offsetX = (cropRect.left - oldClientPt.x) + (newClientPt.x - currentRect.left);
+            offsetY = (cropRect.top - oldClientPt.y) + (newClientPt.y - currentRect.top);
+        }
+    }
 
     // Show and position host and child before reparenting
     // This is critical for DComp/XAML windows to not disconnect their visual tree
@@ -91,12 +221,18 @@ ReparentWindow::ReparentWindow(HWND targetWindow, RECT cropRect, bool showTitleb
     SetWindowPos(m_childWindow, nullptr, 0, 0, width, height,
         SWP_NOMOVE | SWP_NOZORDER | SWP_SHOWWINDOW | SWP_NOACTIVATE);
 
-    SetParent(m_targetWindow, m_childWindow);
-    LONG_PTR targetStyle = GetWindowLongPtrW(m_targetWindow, GWL_STYLE);
-    targetStyle |= WS_CHILD;
-    SetWindowLongPtrW(m_targetWindow, GWL_STYLE, targetStyle);
+    SetParent(windowToReparent, m_childWindow);
+    
+    if (!m_xamlChildWindow) {
+        LONG_PTR targetStyle = GetWindowLongPtrW(m_targetWindow, GWL_STYLE);
+        targetStyle |= WS_CHILD;
+        SetWindowLongPtrW(m_targetWindow, GWL_STYLE, targetStyle);
+    } else {
+        // Move the original top-level shell to outer space so it's invisible but not hidden
+        SetWindowPos(m_targetWindow, nullptr, -20000, -20000, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+    }
 
-    if (0 == SetWindowPos(m_targetWindow, nullptr, -offsetX, -offsetY, 0, 0,
+    if (0 == SetWindowPos(windowToReparent, nullptr, -offsetX, -offsetY, 0, 0,
         SWP_NOSIZE | SWP_FRAMECHANGED | SWP_NOZORDER)) {
         // Log or handle error if needed
     }
@@ -142,11 +278,24 @@ void ReparentWindow::RestoreOriginalState() {
             width, height, SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
     }
 
-    SetParent(m_targetWindow, nullptr);
+    if (m_xamlChildWindow) {
+        SetParent(m_xamlChildWindow, m_xamlOriginalParent);
+        // The xaml child window needs to be re-positioned.
+        SetWindowPos(m_xamlChildWindow, nullptr, m_xamlOriginalPos.x, m_xamlOriginalPos.y, 0, 0,
+            SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+    } else {
+        SetParent(m_targetWindow, nullptr);
 
-    LONG_PTR currentStyle = GetWindowLongPtrW(m_targetWindow, GWL_STYLE);
-    currentStyle &= ~WS_CHILD;
-    SetWindowLongPtrW(m_targetWindow, GWL_STYLE, currentStyle);
+        LONG_PTR currentStyle = GetWindowLongPtrW(m_targetWindow, GWL_STYLE);
+        currentStyle &= ~WS_CHILD;
+        
+        // Ensure WS_CAPTION and WS_THICKFRAME are restored correctly
+        if (!m_hasModernXAML) {
+            currentStyle |= (m_originalStyle & (WS_CAPTION | WS_THICKFRAME));
+        }
+        
+        SetWindowLongPtrW(m_targetWindow, GWL_STYLE, currentStyle);
+    }
 
     if (m_originalPlacement.showCmd != SW_SHOWMAXIMIZED) {
         m_originalPlacement.showCmd = SW_RESTORE;
@@ -177,8 +326,43 @@ LRESULT CALLBACK ReparentWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
     return DefWindowProcW(hwnd, msg, wParam, lParam);
 }
 
+LRESULT CALLBACK ReparentWindow::ChildWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    ReparentWindow* pThis = nullptr;
+    if (msg == WM_NCCREATE) {
+        CREATESTRUCT* pCreate = (CREATESTRUCT*)lParam;
+        pThis = (ReparentWindow*)pCreate->lpCreateParams;
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, (LONG_PTR)pThis);
+    } else {
+        pThis = (ReparentWindow*)GetWindowLongPtrW(hwnd, GWLP_USERDATA);
+    }
+
+    if (pThis && msg == WM_ERASEBKGND) {
+        HDC hdc = (HDC)wParam;
+        RECT rect;
+        GetClientRect(hwnd, &rect);
+        // Deep gray for dark mode (#202020), light gray for light mode (#F3F3F3)
+        COLORREF bgColor = pThis->m_isDarkMode ? RGB(32, 32, 32) : RGB(243, 243, 243);
+        HBRUSH brush = CreateSolidBrush(bgColor);
+        FillRect(hdc, &rect, brush);
+        DeleteObject(brush);
+        return 1;
+    }
+    return DefWindowProcW(hwnd, msg, wParam, lParam);
+}
+
 LRESULT ReparentWindow::MessageHandler(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
+    case WM_ERASEBKGND: {
+        HDC hdc = (HDC)wParam;
+        RECT rect;
+        GetClientRect(hwnd, &rect);
+        // Deep gray for dark mode (#202020), light gray for light mode (#F3F3F3)
+        COLORREF bgColor = m_isDarkMode ? RGB(32, 32, 32) : RGB(243, 243, 243);
+        HBRUSH brush = CreateSolidBrush(bgColor);
+        FillRect(hdc, &rect, brush);
+        DeleteObject(brush);
+        return 1; // Indicate background is erased
+    }
     case WM_NCCALCSIZE:
         if (!m_showTitlebar && wParam) {
             // Remove the standard window frame by making the client area

@@ -10,12 +10,12 @@ ZenCrop is an independent reimplementation of [PowerToys Crop And Lock](https://
 ## Build Commands
 
 - **构建**: `build.bat` (需要 Visual Studio 2022 + vcvars64，在 cmd.exe 中运行)
-- **Trae IDE 终端注意**: `build.bat` 依赖 `vcvars64.bat` 设置环境变量，但 Trae 终端是 PowerShell 且 `cmd /c` 被安全策略阻止，因此需手动配置 PATH/INCLUDE/LIB 后直接调用 `cl`，具体命令参考 `build.bat` 内容
 
 ## Runtime Controls
 
 - **Ctrl+Alt+X**: Reparent mode (captures window by reparenting it)
 - **Ctrl+Alt+C**: Thumbnail mode (captures window as thumbnail)
+- **Ctrl+Alt+V**: Viewport mode (captures window by setting window region)
 - **Ctrl+Alt+Z**: Close all Reparent windows
 - **Alt+T**: Toggle Always On Top for foreground window
 - **ESC**: Close focused Thumbnail window / cancel crop
@@ -49,7 +49,6 @@ ZenCrop is an independent reimplementation of [PowerToys Crop And Lock](https://
 
 - **现代应用 (UWP/WinUI/XAML) 全白/黑屏 Bug**: 如果对 `ApplicationFrameWindow` 或 `CoreWindow` 直接使用跨进程 `SetParent`，其内部的 DComp 视觉树会彻底断开连接并变成一块全白画刷。**解决方案**：不要对这些现代应用使用 Reparent，改用 Viewport 模式（`SetWindowRgn` 原位裁剪）。
 - **Viewport 裁剪时的标题栏幽灵与坐标偏移**: 对应用了 `SetWindowRgn` 的现代窗口，如果不移除 `WS_CAPTION | WS_THICKFRAME`，DWM 会在裁剪区域的顶部强行合成一个新的假标题栏。而在移除这俩样式后，Client Rect（客户区）原点会向左上角发生跳变。**解决方案**：剥离样式前后各调用一次 `ClientToScreen` 算出 `clientOffsetX/Y` 差值，用以逆向补偿 `CreateRectRgn` 的参数，确保视觉内容严格对齐。
-- **现代应用 (WinUI 3/XAML/Electron) 重父化黑屏**: 必须确保 Host 和 Child 窗口在执行 `SetParent` 前已经调用 `ShowWindow` 显示并完成 `SetWindowPos` 定位。如果目标窗口是被隐藏的，其内部的 DirectComposition (DComp) 视觉树在跨进程挂载时会断开连接，导致大面积黑屏或渲染失效。
 - **防止 DWM 玻璃穿透导致字体重叠**: 严禁在无边框模式的 Host Window 上使用 `DwmExtendFrameIntoClientArea` (传入 `-1` 扩展全屏)。这会将 GDI 的白色/黑色背景强转为全透明玻璃，导致现代应用（如 Win11 资源管理器）在发生悬停或重绘时，因为没有不透明衬底而出现字体反复叠加重影。
 - **最大化窗口 Reparent**: Reparent 前必须移除 `WS_MAXIMIZE` 样式，并用 `SetWindowPos` 设为 `mi.rcWork` (工作区大小)，否则 `WS_MAXIMIZE + WS_CHILD` 组合会导致 Chrome 等窗口尺寸自动撑满、内容错位或出现大块白色；在去除最大化后，必须**重新调用** `GetWindowRect` 捕获真实的未最大化边框，再与选区坐标相减计算精确偏移量。
 - **窗口状态还原**: 必须保存完整的 `WINDOWPLACEMENT` 和 `GWL_EXSTYLE`。还原时的操作顺序非常严苛：`SetWindowPos` (恢复尺寸；最大化窗口必须使用 `rcNormalPosition` 而非 `GetWindowRect` 返回的全屏坐标) → `SetParent(..., nullptr)` (脱离父子关系) → **移除 `WS_CHILD`** (必须在 `SetWindowPlacement` 之前，否则带 `WS_CHILD` 的窗口无法被正确最大化) → `SetWindowPlacement` (一次性恢复位置和最大化状态) → 恢复 `GWL_STYLE` 与 `GWL_EXSTYLE`。末尾须将 `m_targetWindow = nullptr` 以防止 `WM_DESTROY` 触发时被重复调用。
