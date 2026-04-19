@@ -138,6 +138,31 @@ zencrop/
     └── viewport_technology_report_en.md # Tech report on Viewport mode (EN)
 ```
 
+## ☕ Buy Me a Coffee
+
+If this project is helpful to you, please consider supporting it. Your support is the driving force for my continuous updates ❤️
+
+<table>
+<tr>
+<td align="center" width="33%">
+<img src="assets/wechat.png" width="250" alt="WeChat Pay"><br>
+<b>WeChat Pay</b>
+</td>
+<td align="center" width="33%">
+<img src="assets/alipay.jpg" width="250" alt="Alipay"><br>
+<b>Alipay</b>
+</td>
+<td align="center" width="33%">
+<a href="https://buymeacoffee.com/relakkes" target="_blank">
+<img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" width="250" alt="Buy Me a Coffee">
+</a><br>
+<b>Buy Me a Coffee</b>
+</td>
+</tr>
+</table>
+
+---
+
 ## License
 
 MIT License
