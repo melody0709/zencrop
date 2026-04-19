@@ -2,7 +2,7 @@
 
 [中文文档](doc/README_zh.md)
 
-An independent, **enhanced** reimplementation of [PowerToys Crop And Lock](https://github.com/microsoft/PowerToys/tree/main/src/modules/cropandlock/).
+An independent, **enhanced** reimplementation of [PowerToys Crop And Lock](https://github.com/microsoft/PowerToys/tree/main/src/modules/CropAndLock/).
 
 ## 🚀 Why ZenCrop over PowerToys?
 

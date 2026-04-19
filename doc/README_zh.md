@@ -2,7 +2,7 @@
 
 [English](../README.md)
 
-ZenCrop 是对 [PowerToys Crop And Lock](https://github.com/microsoft/PowerToys/tree/main/src/modules/cropandlock/) 的独立、**增强型**重构实现。
+ZenCrop 是对 [PowerToys Crop And Lock](https://github.com/microsoft/PowerToys/tree/main/src/modules/CropAndLock/) 的独立、**增强型**重构实现。
 
 ## 🚀 为什么选择 ZenCrop 胜过官方 PowerToys？
 
