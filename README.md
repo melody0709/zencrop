@@ -1,4 +1,4 @@
-# ZenCrop v2.1.0
+# ZenCrop v2.1.1
 
 [中文文档](doc/README_zh.md)
 
@@ -8,8 +8,13 @@ An independent, **enhanced** reimplementation of [PowerToys Crop And Lock](https
 
 While the official PowerToys module suffers from an ["all-white/black screen" known issue](https://learn.microsoft.com/en-us/windows/powertoys/crop-and-lock#known-issues) when trying to reparent modern Windows applications (UWP/WinUI/XAML apps like Calculator or Settings), **ZenCrop has completely solved this.**
 
-Through our innovative **Native Viewport Cropping Technology**, ZenCrop intelligently detects the app architecture and seamlessly switches rendering engines. This allows you to crop *any* modern app flawlessly without breaking its interactivity. 
-📖 *Deep dive: [Overcoming Modern App Cropping Challenges: ZenCrop Viewport Technology Implementation Report](doc/viewport_technology_report_en.md)*
+ZenCrop successfully supports interactive reparenting of applications that the original PowerToys Crop And Lock explicitly cannot handle, including:
+- **Windows 11 Paint & Photos** (Modern `DesktopChildSiteBridge` WinUI 3 apps)
+- **Windows Calculator, Settings, Microsoft To Do** (Modern UWP apps)
+- **Magpie** and other traditional Win32 apps nesting modern XAML components (`DesktopWindowContentBridge`)
+
+Through our innovative **Native Viewport Cropping Technology** and our newly engineered **Deep Visual Tree Radar**, ZenCrop intelligently detects the exact app architecture and seamlessly switches rendering engines. It safely circumvents fragile DWM composition rules, applies smart dark-mode background camouflage, and utilizes inverse coordinate compensation to allow you to crop *any* modern app flawlessly without breaking its interactivity. 
+📖 *Deep dive: [Overcoming Modern App Cropping Challenges: WinUI 3 Reparenting Technical Report](doc/WinUI3_Reparenting_Fix.md)*
 
 ## Background
 

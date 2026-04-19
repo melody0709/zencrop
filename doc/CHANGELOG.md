@@ -1,5 +1,24 @@
 # Changelog
 
+## V2.1.1 (2026-04-19)
+
+### 🚀 重大突破 (Major Breakthrough)
+
+- **现代应用完美 Reparent 裁剪**: 彻底攻克了官方 PowerToys Crop And Lock **明确无法支持、一剪就崩溃**的现代 WinUI 3 及 UWP 应用！
+  - **Win11 画图 (Paint)、照片 (Photos)** (采用现代 `DesktopChildSiteBridge` 架构)：不再出现全灰/全白崩溃，画面像素级完美对齐！
+  - **Windows 计算器、设置、Microsoft To Do (微软待办)** (现代 UWP 应用)：交互流畅，告别渲染断连。
+  - **Magpie (麦皮)** 及其他内嵌现代 XAML 组件的传统程序 (`DesktopWindowContentBridge`)：移除了恶性的“蓝色幽灵”后备标题栏，视觉完美融合！
+- **智能深色模式伪装 (Dark Mode Camouflage)**: 
+  - 当现代应用被强制转为子窗口并丢失 DWM Mica/Acrylic 玻璃材质时，ZenCrop 现会自动嗅探其主题。
+  - 智能注入极度匹配的 `#202020` 深灰或 `#F3F3F3` 亮灰底色，彻底告别刺眼的白底 Bug。
+- **深度视觉树雷达检测引擎**: 
+  - `ReparentWindow` 引入全新 `EnumChildWindows` 扫描引擎，精准识别底层架构。
+  - 基于架构动态分支：对传统嵌套应用实行“标题栏剥夺术”；对脆弱的纯血 WinUI 3 应用实行“逆向坐标推移补偿算法”，安全绕过 Windows DWM 脆弱的组合机制。
+
+*阅读完整技术解析：[攻克现代应用裁剪难题：WinUI 3 Reparenting 技术实现报告](WinUI3_Reparenting_Fix_zh.md)*
+
+---
+
 ## V2.1.0 (2026-04-18)
 
 ### 重磅更新 (Major Update)
