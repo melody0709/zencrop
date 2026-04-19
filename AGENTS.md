@@ -1,7 +1,7 @@
 # ZenCrop Development Guide
 
 ## Reference Repositories
-`temp_powertoys` 和 `temp_AltSnap` 是其他开源软件的参考源码仓库。**一般情况下不要去读取这些参考文件夹中的内容**，只有在遇到极其刁钻的底层逻辑而我们需要参考官方源码的特殊实现时，才可以去查阅。
+`..\bak\temp\powertoys` 和 `..\bak\AltSnap`和`..\bak\temp\Magpie`  是其他开源软件的参考源码仓库。**一般情况下不要去读取这些参考文件夹中的内容**，只有在遇到极其刁钻的底层逻辑而我们需要参考官方源码的特殊实现时，才可以去查阅。
 
 ## Project Origin
 
