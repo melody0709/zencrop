@@ -1,5 +1,17 @@
 # Changelog
 
+## V2.2.3 (2026-04-22)
+
+### 🐞 核心修复 (Critical Fixes)
+
+- **Reparent 模式鼠标滚轮与输入不稳定彻底修复**: 深度解决了在使用 `Ctrl+Alt+X` 裁剪 Chrome 等应用后，切出再切回来鼠标滚轮失效、输入响应不稳定的现象。
+  - **消息转发加固**: 在 `ReparentWindow` 的宿主窗口和中间子窗口中，同时新增对 `WM_MOUSEWHEEL`、`WM_MOUSEHWHEEL`、`WM_LBUTTON*`、`WM_RBUTTON*`、`WM_MBUTTON*`、`WM_XBUTTON*`、`WM_MOUSEMOVE` 等全系列鼠标消息的捕获和转发机制。
+  - **焦点智能接管**: 新增 `WM_SETFOCUS` 消息处理，当宿主窗口获得焦点时，立刻将焦点传递给实际目标窗口，确保输入链完整。
+  - **坐标转换精准**: 所有鼠标消息转发前，正确执行坐标空间转换（Client-to-Screen），确保目标窗口接收到正确的鼠标位置。
+  - **支持 XAML 架构**: 转发层同时兼容三种 Reparent 模式（A/B/C），能正确识别是否有 XAML 子窗口并相应转发。
+
+---
+
 ## V2.2.2 (2026-04-21)
 
 ### 🐞 核心修复 (Critical Fixes)

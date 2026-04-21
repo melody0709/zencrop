@@ -1,5 +1,6 @@
 #include "ReparentWindow.h"
 #include <dwmapi.h>
+#include <windowsx.h>
 
 const wchar_t* ReparentWindow::ClassName = L"ZenCrop.ReparentHost";
 const wchar_t* ReparentWindow::ChildClassName = L"ZenCrop.ReparentChild";
@@ -353,16 +354,67 @@ LRESULT CALLBACK ReparentWindow::ChildWndProc(HWND hwnd, UINT msg, WPARAM wParam
         pThis = (ReparentWindow*)GetWindowLongPtrW(hwnd, GWLP_USERDATA);
     }
 
-    if (pThis && msg == WM_ERASEBKGND) {
-        HDC hdc = (HDC)wParam;
-        RECT rect;
-        GetClientRect(hwnd, &rect);
-        // Deep gray for dark mode (#202020), light gray for light mode (#F3F3F3)
-        COLORREF bgColor = pThis->m_isDarkMode ? RGB(32, 32, 32) : RGB(243, 243, 243);
-        HBRUSH brush = CreateSolidBrush(bgColor);
-        FillRect(hdc, &rect, brush);
-        DeleteObject(brush);
-        return 1;
+    if (pThis) {
+        HWND targetWnd = pThis->m_xamlChildWindow ? pThis->m_xamlChildWindow : pThis->m_targetWindow;
+        switch (msg) {
+        case WM_ERASEBKGND: {
+            HDC hdc = (HDC)wParam;
+            RECT rect;
+            GetClientRect(hwnd, &rect);
+            // Deep gray for dark mode (#202020), light gray for light mode (#F3F3F3)
+            COLORREF bgColor = pThis->m_isDarkMode ? RGB(32, 32, 32) : RGB(243, 243, 243);
+            HBRUSH brush = CreateSolidBrush(bgColor);
+            FillRect(hdc, &rect, brush);
+            DeleteObject(brush);
+            return 1;
+        }
+        case WM_SETFOCUS:
+            // When child window gets focus, pass it to the target window
+            if (targetWnd && IsWindow(targetWnd)) {
+                SetFocus(targetWnd);
+                return 0;
+            }
+            break;
+        case WM_MOUSEWHEEL:
+        case WM_MOUSEHWHEEL: {
+            // Forward mouse wheel messages to the target window
+            if (targetWnd && IsWindow(targetWnd)) {
+                // First try to set focus to target window
+                if (GetFocus() != targetWnd) {
+                    SetFocus(targetWnd);
+                }
+                // Send the message directly to the target window
+                SendMessageW(targetWnd, msg, wParam, lParam);
+                return 0;
+            }
+            break;
+        }
+        case WM_LBUTTONDOWN:
+        case WM_LBUTTONUP:
+        case WM_LBUTTONDBLCLK:
+        case WM_RBUTTONDOWN:
+        case WM_RBUTTONUP:
+        case WM_RBUTTONDBLCLK:
+        case WM_MBUTTONDOWN:
+        case WM_MBUTTONUP:
+        case WM_MBUTTONDBLCLK:
+        case WM_XBUTTONDOWN:
+        case WM_XBUTTONUP:
+        case WM_XBUTTONDBLCLK:
+        case WM_MOUSEMOVE: {
+            // Forward mouse button messages to the target window
+            if (targetWnd && IsWindow(targetWnd)) {
+                // Convert client coordinates to screen coordinates
+                POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+                ClientToScreen(hwnd, &pt);
+                
+                // Send the message to the target window with screen coordinates
+                SendMessageW(targetWnd, msg, wParam, MAKELPARAM(pt.x, pt.y));
+                return 0;
+            }
+            break;
+        }
+        }
     }
     return DefWindowProcW(hwnd, msg, wParam, lParam);
 }
@@ -409,6 +461,53 @@ LRESULT ReparentWindow::MessageHandler(HWND hwnd, UINT msg, WPARAM wParam, LPARA
             }
         }
         break;
+    case WM_SETFOCUS:
+        // When host window gets focus, pass it to the target window
+        if (m_targetWindow && IsWindow(m_targetWindow)) {
+            SetFocus(m_targetWindow);
+            return 0;
+        }
+        break;
+    case WM_MOUSEWHEEL:
+    case WM_MOUSEHWHEEL: {
+        // Forward mouse wheel messages to the target window
+        if (m_targetWindow && IsWindow(m_targetWindow)) {
+            // First try to set focus to target window
+            if (GetFocus() != m_targetWindow) {
+                SetFocus(m_targetWindow);
+            }
+            // Send the message directly to the target window
+            SendMessageW(m_targetWindow, msg, wParam, lParam);
+            return 0;
+        }
+        break;
+    }
+    case WM_LBUTTONDOWN:
+    case WM_LBUTTONUP:
+    case WM_LBUTTONDBLCLK:
+    case WM_RBUTTONDOWN:
+    case WM_RBUTTONUP:
+    case WM_RBUTTONDBLCLK:
+    case WM_MBUTTONDOWN:
+    case WM_MBUTTONUP:
+    case WM_MBUTTONDBLCLK:
+    case WM_XBUTTONDOWN:
+    case WM_XBUTTONUP:
+    case WM_XBUTTONDBLCLK:
+    case WM_MOUSEMOVE: {
+        // Forward mouse button messages to the target window
+        if (m_targetWindow && IsWindow(m_targetWindow)) {
+            // Convert screen coordinates to target window client coordinates
+            POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+            ClientToScreen(hwnd, &pt);
+            
+            // Send the message to the target window
+            // We need to adjust lParam to be screen coordinates for SendMessage
+            SendMessageW(m_targetWindow, msg, wParam, MAKELPARAM(pt.x, pt.y));
+            return 0;
+        }
+        break;
+    }
     case WM_DPICHANGED:
         break;
     case WM_DESTROY:

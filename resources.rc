@@ -27,8 +27,8 @@ BEGIN
 END
 
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION 2,2,2,0
- PRODUCTVERSION 2,2,2,0
+ FILEVERSION 2,2,3,0
+ PRODUCTVERSION 2,2,3,0
  FILEFLAGSMASK 0x3fL
 #ifdef _DEBUG
  FILEFLAGS 0x1L
@@ -45,12 +45,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "melody0709"
             VALUE "FileDescription", "ZenCrop"
-            VALUE "FileVersion", "2.2.2.0"
+            VALUE "FileVersion", "2.2.3.0"
             VALUE "InternalName", "ZenCrop.exe"
             VALUE "LegalCopyright", "Copyright (C) 2024"
             VALUE "OriginalFilename", "ZenCrop.exe"
             VALUE "ProductName", "ZenCrop"
-            VALUE "ProductVersion", "2.2.2.0"
+            VALUE "ProductVersion", "2.2.3.0"
         END
     END
     BLOCK "VarFileInfo"
