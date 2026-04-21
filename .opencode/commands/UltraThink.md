@@ -1,0 +1,4 @@
+- Ultra Think
+- No guessing 
+- No time limit
+- No output limit
