@@ -82,30 +82,6 @@ ReparentWindow::ReparentWindow(HWND targetWindow, RECT cropRect, bool showTitleb
     windowWidth = adjustedRect.right - adjustedRect.left;
     windowHeight = adjustedRect.bottom - adjustedRect.top;
 
-    const wchar_t* title = L"Reparent-A";
-    if (m_hasModernXAML) {
-        title = L"Reparent-C";
-    } else if (m_hasOldXAML) {
-        title = L"Reparent-B";
-    }
-
-    m_hostWindow = CreateWindowExW(
-        exStyle, ClassName, title, style,
-        cropRect.left, cropRect.top, windowWidth, windowHeight,
-        nullptr, nullptr, GetModuleHandleW(nullptr), this
-    );
-
-    m_childWindow = CreateWindowExW(
-        0, ChildClassName, L"", WS_CHILD | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
-        0, 0, width, height, m_hostWindow, nullptr, GetModuleHandleW(nullptr), this
-    );
-
-    // Apply dark mode styling to the host window
-    if (m_isDarkMode) {
-        BOOL value = TRUE;
-        DwmSetWindowAttribute(m_hostWindow, DWMWA_USE_IMMERSIVE_DARK_MODE, &value, sizeof(value));
-    }
-
     // We only perform deep reparenting for specific older UWP bridges if absolutely needed.
     // For modern WinUI 3 (DesktopChildSiteBridge), deep reparenting breaks DWM composition (gray screen).
     HWND bestXamlChild = nullptr;
@@ -147,6 +123,30 @@ ReparentWindow::ReparentWindow(HWND targetWindow, RECT cropRect, bool showTitleb
         }
         return TRUE;
     }, (LPARAM)enumParams);
+
+    const wchar_t* title = L"Reparent-A";
+    if (m_hasModernXAML) {
+        title = L"Reparent-C";
+    } else if (m_hasOldXAML) {
+        title = L"Reparent-B";
+    }
+
+    m_hostWindow = CreateWindowExW(
+        exStyle, ClassName, title, style,
+        cropRect.left, cropRect.top, windowWidth, windowHeight,
+        nullptr, nullptr, GetModuleHandleW(nullptr), this
+    );
+
+    m_childWindow = CreateWindowExW(
+        0, ChildClassName, L"", WS_CHILD | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
+        0, 0, width, height, m_hostWindow, nullptr, GetModuleHandleW(nullptr), this
+    );
+
+    // Apply dark mode styling to the host window
+    if (m_isDarkMode) {
+        BOOL value = TRUE;
+        DwmSetWindowAttribute(m_hostWindow, DWMWA_USE_IMMERSIVE_DARK_MODE, &value, sizeof(value));
+    }
 
     m_xamlChildWindow = bestXamlChild;
 
