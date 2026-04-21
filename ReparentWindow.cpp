@@ -82,8 +82,15 @@ ReparentWindow::ReparentWindow(HWND targetWindow, RECT cropRect, bool showTitleb
     windowWidth = adjustedRect.right - adjustedRect.left;
     windowHeight = adjustedRect.bottom - adjustedRect.top;
 
+    const wchar_t* title = L"Reparent-A";
+    if (m_hasModernXAML) {
+        title = L"Reparent-C";
+    } else if (m_hasOldXAML) {
+        title = L"Reparent-B";
+    }
+
     m_hostWindow = CreateWindowExW(
-        exStyle, ClassName, L"ZenCrop - Reparent", style,
+        exStyle, ClassName, title, style,
         cropRect.left, cropRect.top, windowWidth, windowHeight,
         nullptr, nullptr, GetModuleHandleW(nullptr), this
     );
@@ -104,18 +111,23 @@ ReparentWindow::ReparentWindow(HWND targetWindow, RECT cropRect, bool showTitleb
     HWND bestXamlChild = nullptr;
     int maxArea = 0;
     m_hasModernXAML = false; // Flag for WinUI 3 / modern UWP (Paint)
+    m_hasOldXAML = false;
 
-    void* enumParams[] = { &bestXamlChild, &maxArea, &m_hasModernXAML };
+    void* enumParams[] = { &bestXamlChild, &maxArea, &m_hasModernXAML, &m_hasOldXAML };
 
     EnumChildWindows(m_targetWindow, [](HWND hwnd, LPARAM lParam) -> BOOL {
         wchar_t childClass[256];
         if (GetClassNameW(hwnd, childClass, ARRAYSIZE(childClass))) {
             void** pParams = (void**)lParam;
             bool* pHasModern = (bool*)pParams[2];
+            bool* pHasOld = (bool*)pParams[3];
             
             // Paint uses DesktopChildSiteBridge
             if (wcsstr(childClass, L"DesktopChildSiteBridge") != nullptr) {
                 *pHasModern = true;
+            }
+            if (wcsstr(childClass, L"DesktopWindowContentBridge") != nullptr) {
+                *pHasOld = true;
             }
 
             if (wcscmp(childClass, L"DesktopWindowXamlSource") == 0) {
@@ -171,8 +183,8 @@ ReparentWindow::ReparentWindow(HWND targetWindow, RECT cropRect, bool showTitleb
         offsetY = cropRect.top - unmaximizedRect.top;
     } else {
         // Safe fallback for top-level reparenting
-        if (!m_hasModernXAML) {
-            // We must strip WS_CAPTION and WS_THICKFRAME so Windows doesn't draw a fallback blue child caption.
+        if (m_hasOldXAML) {
+            // Path B: Old nested XAML (Magpie) - Must strip WS_CAPTION to avoid blue ghost
             POINT oldClientPt = {0, 0};
             ClientToScreen(m_targetWindow, &oldClientPt);
             
@@ -191,9 +203,8 @@ ReparentWindow::ReparentWindow(HWND targetWindow, RECT cropRect, bool showTitleb
 
             offsetX = (cropRect.left - oldClientPt.x) + (newClientPt.x - currentRect.left);
             offsetY = (cropRect.top - oldClientPt.y) + (newClientPt.y - currentRect.top);
-        } else {
-            // For WinUI 3 / modern UWP apps (Paint), stripping WS_CAPTION completely breaks their DWM composition (gray screen).
-            // We must keep their WS_CAPTION and just add WS_CHILD.
+        } else if (m_hasModernXAML) {
+            // Path C: WinUI 3 (Paint) - Must keep WS_CAPTION to avoid grey screen
             POINT oldClientPt = {0, 0};
             ClientToScreen(m_targetWindow, &oldClientPt);
             
@@ -211,6 +222,12 @@ ReparentWindow::ReparentWindow(HWND targetWindow, RECT cropRect, bool showTitleb
 
             offsetX = (cropRect.left - oldClientPt.x) + (newClientPt.x - currentRect.left);
             offsetY = (cropRect.top - oldClientPt.y) + (newClientPt.y - currentRect.top);
+        } else {
+            // Path A: Pure Win32 (Chrome) - Keep WS_CAPTION, no complex offset compensation
+            RECT unmaximizedRect;
+            GetWindowRect(m_targetWindow, &unmaximizedRect);
+            offsetX = cropRect.left - unmaximizedRect.left;
+            offsetY = cropRect.top - unmaximizedRect.top;
         }
     }
 
@@ -290,7 +307,7 @@ void ReparentWindow::RestoreOriginalState() {
         currentStyle &= ~WS_CHILD;
         
         // Ensure WS_CAPTION and WS_THICKFRAME are restored correctly
-        if (!m_hasModernXAML) {
+        if (m_hasOldXAML) {
             currentStyle |= (m_originalStyle & (WS_CAPTION | WS_THICKFRAME));
         }
         

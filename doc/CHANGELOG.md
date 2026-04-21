@@ -1,5 +1,23 @@
 # Changelog
 
+## V2.2.2 (2026-04-21)
+
+### 🐞 核心修复 (Critical Fixes)
+
+- **纯 Win32 应用 (如 Chrome) 滚轮与焦点失效修复**: 
+  彻底修复了在 `v2.1.1` 中为解决 WinUI 3 问题而引入的“提前剥夺 `WS_CAPTION`”逻辑导致 Chrome 等纯传统 Win32 应用在被裁剪后鼠标滚轮失效、内部焦点无法正常分发的严重 Bug。
+- **三路分发 (Three-way Dispatch) 架构重构**:
+  针对 Reparent 模式的底层兼容性，在 `ReparentWindow` 中引入了全新的三路雷达分发机制（可通过 Alt+T 呼出标题栏查看其后缀标识）：
+  - **`Reparent-A` (纯传统 Win32，如 Chrome、VSCode)**：回退至 `v2.0.1` 时代的极简安全逻辑，完全不触碰 `WS_CAPTION`，仅在建立父子关系后赋予 `WS_CHILD`，完美保证原生事件循环和滚轮响应。
+  - **`Reparent-B` (旧式 XAML 嵌套，如 Magpie)**：保持 `v2.1.1` 的优化逻辑，强行剥离 `WS_CAPTION` 并进行复杂坐标补偿，消除“蓝色幽灵”标题栏。
+  - **`Reparent-C` (现代 WinUI 3，如 Paint)**：保持 `v2.1.1` 的优化逻辑，坚决保留 `WS_CAPTION`，通过逆向推算补偿抵消 DWM 内部坐标位移，防止黑屏崩溃。
+  
+### 优化 (Enhancements)
+
+- **Thumbnail 窗口标题纯进化**: 将 Thumbnail 模式下的窗口标题从冗长的 `ZenCrop - Thumbnail` 缩减为清爽的 `Thumbnail`。
+
+---
+
 ## V2.2.1 (2026-04-20)
 
 ### 优化 (Enhancements)

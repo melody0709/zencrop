@@ -19,6 +19,7 @@ private:
     bool m_showTitlebar = false;
     bool m_isDarkMode = false;
     bool m_hasModernXAML = false;
+    bool m_hasOldXAML = false;
 
     // Original state of target window
     HWND m_originalParent = nullptr;
