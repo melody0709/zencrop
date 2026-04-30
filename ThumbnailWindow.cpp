@@ -1,4 +1,5 @@
 #include "ThumbnailWindow.h"
+#include "Strings.h"
 #include <windowsx.h>
 
 const wchar_t* ThumbnailWindow::ClassName = L"ZenCrop.ThumbnailHost";
@@ -60,7 +61,7 @@ ThumbnailWindow::ThumbnailWindow(HWND targetWindow, RECT cropRect, bool showTitl
     }
 
     m_hostWindow = CreateWindowExW(
-        exStyle, ClassName, L"Thumbnail", style,
+        exStyle, ClassName, S::ThumbnailTitle(), style,
         cropRect.left, cropRect.top, windowWidth, windowHeight,
         nullptr, nullptr, GetModuleHandleW(nullptr), this
     );

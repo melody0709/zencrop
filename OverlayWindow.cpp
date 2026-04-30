@@ -1,5 +1,6 @@
 #include "OverlayWindow.h"
 #include "SmartDetector.h"
+#include "Strings.h"
 #include <windowsx.h>
 #include <cmath>
 
@@ -232,7 +233,7 @@ void OverlayWindow::DrawCropLabel(int cropLeft, int cropTop, int cropRight, int 
     int cropH = m_cropRect.bottom - m_cropRect.top;
 
     wchar_t label[128];
-    swprintf_s(label, 128, L"%d, %d \x00B7 %d x %d px",
+    swprintf_s(label, 128, S::CropLabelFormat(),
         (int)m_cropRect.left, (int)m_cropRect.top, cropW, cropH);
 
     HFONT hFont = CreateFontW(-15, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
@@ -266,6 +267,85 @@ void OverlayWindow::DrawCropLabel(int cropLeft, int cropTop, int cropRight, int 
     SetBkMode(m_memDc, TRANSPARENT);
     RECT textRect = { labelX + padX, labelY + padY, labelX + padX + textSize.cx, labelY + padY + textSize.cy };
     DrawTextW(m_memDc, label, -1, &textRect, DT_LEFT | DT_TOP | DT_NOCLIP);
+
+    for (int py = labelY; py < labelY + labelH; py++) {
+        for (int px = labelX; px < labelX + labelW; px++) {
+            if (px >= 0 && px < m_bitmapWidth && py >= 0 && py < m_bitmapHeight) {
+                DWORD& pixel = m_pixels[py * m_bitmapWidth + px];
+                if (pixel & 0x00FFFFFF) {
+                    pixel = 0xFFFFFFFF;
+                } else {
+                    pixel = 0xCC000000;
+                }
+            }
+        }
+    }
+
+    SelectObject(m_memDc, oldFont);
+    DeleteObject(hFont);
+}
+
+void OverlayWindow::DrawHintText() {
+    const wchar_t* hint = nullptr;
+    if (m_state == OverlayState::Hover) {
+        hint = S::OverlayHoverHint();
+    } else if (m_state == OverlayState::Adjust) {
+        hint = S::OverlayAdjustHint();
+    } else {
+        return;
+    }
+
+    HFONT hFont = CreateFontW(-14, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+        DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+        NONANTIALIASED_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+    if (!hFont) return;
+
+    HFONT oldFont = (HFONT)SelectObject(m_memDc, hFont);
+    SIZE textSize;
+    GetTextExtentPoint32W(m_memDc, hint, (int)wcslen(hint), &textSize);
+
+    int padX = 10, padY = 5;
+    int labelW = textSize.cx + padX * 2;
+    int labelH = textSize.cy + padY * 2;
+
+    int labelX, labelY;
+
+    if (m_state == OverlayState::Hover) {
+        int cropLeft = m_hoveredRect.left - m_screenRect.left;
+        int cropTop = m_hoveredRect.top - m_screenRect.top;
+        int cropRight = m_hoveredRect.right - m_screenRect.left;
+
+        labelX = cropRight - labelW;
+        labelY = cropTop - labelH - 2;
+        if (labelY < 0) labelY = cropTop;
+        if (labelX + labelW > m_bitmapWidth) labelX = m_bitmapWidth - labelW;
+        if (labelX < cropLeft) labelX = cropLeft;
+        if (labelX < 0) labelX = 0;
+    } else {
+        int cropLeft = m_cropRect.left - m_screenRect.left;
+        int cropTop = m_cropRect.top - m_screenRect.top;
+        int cropRight = m_cropRect.right - m_screenRect.left;
+
+        labelX = cropRight - labelW;
+        labelY = cropTop - labelH - 2;
+        if (labelY < 0) labelY = cropTop;
+        if (labelX + labelW > m_bitmapWidth) labelX = m_bitmapWidth - labelW;
+        if (labelX < cropLeft) labelX = cropLeft;
+        if (labelX < 0) labelX = 0;
+    }
+
+    for (int py = labelY; py < labelY + labelH; py++) {
+        for (int px = labelX; px < labelX + labelW; px++) {
+            if (px >= 0 && px < m_bitmapWidth && py >= 0 && py < m_bitmapHeight) {
+                m_pixels[py * m_bitmapWidth + px] = 0xFF000000;
+            }
+        }
+    }
+
+    SetTextColor(m_memDc, RGB(255, 255, 255));
+    SetBkMode(m_memDc, TRANSPARENT);
+    RECT textRect = { labelX + padX, labelY + padY, labelX + padX + textSize.cx, labelY + padY + textSize.cy };
+    DrawTextW(m_memDc, hint, -1, &textRect, DT_LEFT | DT_TOP | DT_NOCLIP);
 
     for (int py = labelY; py < labelY + labelH; py++) {
         for (int px = labelX; px < labelX + labelW; px++) {
@@ -464,7 +544,11 @@ void OverlayWindow::UpdateOverlay() {
         drawCircle(cropRight, midY, HandleSize);
 
         DrawCropLabel(cropLeft, cropTop, cropRight, cropBottom);
-    } else {
+    }
+
+    DrawHintText();
+
+    if (m_state != OverlayState::Adjust) {
         if (m_hasSmartRect) {
             int smartLeft = m_smartRect.left - m_screenRect.left;
             int smartTop = m_smartRect.top - m_screenRect.top;

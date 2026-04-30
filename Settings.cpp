@@ -1,5 +1,6 @@
 #include "Settings.h"
 #include "AlwaysOnTop.h"
+#include "Strings.h"
 #include <shlwapi.h>
 #include <shlobj.h>
 #include <commdlg.h>
@@ -119,6 +120,47 @@ static void WriteStringToFile(const std::wstring& path, const std::wstring& cont
     }
 }
 
+GeneralSettings LoadGeneralSettings() {
+    GeneralSettings settings;
+    std::wstring path = GetSettingsFilePath();
+    std::wstring json = ReadFileToString(path);
+    if (json.empty()) return settings;
+
+    std::wstring generalSection = FindJsonValue(json, L"general");
+    if (generalSection.empty()) return settings;
+
+    auto val = FindJsonValue(generalSection, L"language");
+    if (val == L"en") settings.language.value = AppLanguage::English;
+    else if (val == L"zh") settings.language.value = AppLanguage::Chinese;
+    else settings.language.value = AppLanguage::Auto;
+
+    return settings;
+}
+
+void SaveGeneralSettings(const GeneralSettings& settings) {
+    std::wstring path = GetSettingsFilePath();
+    std::wstring json = ReadFileToString(path);
+
+    const wchar_t* langStr = L"auto";
+    if (settings.language.value == AppLanguage::English) langStr = L"en";
+    else if (settings.language.value == AppLanguage::Chinese) langStr = L"zh";
+
+    wchar_t generalJson[128] = {};
+    swprintf_s(generalJson, L"  \"general\": {\n    \"language\": \"%s\"\n  }", langStr);
+
+    std::wstring aotSection = FindJsonValue(json, L"alwaysOnTop");
+    std::wstring overlaySection = FindJsonValue(json, L"overlay");
+    std::wstring hotkeySection = FindJsonValue(json, L"hotkeys");
+
+    std::wstring fullJson = L"{\n" + std::wstring(generalJson);
+    if (!aotSection.empty()) fullJson += L",\n  \"alwaysOnTop\": " + aotSection;
+    if (!overlaySection.empty()) fullJson += L",\n  \"overlay\": " + overlaySection;
+    if (!hotkeySection.empty()) fullJson += L",\n  \"hotkeys\": " + hotkeySection;
+    fullJson += L"\n}";
+
+    WriteStringToFile(path, fullJson);
+}
+
 AotSettings LoadAotSettings() {
     AotSettings settings;
 
@@ -181,20 +223,16 @@ void SaveAotSettings(const AotSettings& settings) {
         settings.thickness,
         settings.roundedCorners ? L"true" : L"false");
 
+    std::wstring generalSection = FindJsonValue(json, L"general");
     std::wstring overlaySection = FindJsonValue(json, L"overlay");
     std::wstring hotkeySection = FindJsonValue(json, L"hotkeys");
-    wchar_t fullJson[1536] = {};
-    if (overlaySection.empty() && hotkeySection.empty()) {
-        OverlaySettings defOv;
-        swprintf_s(fullJson, L"{\n%s,\n  \"overlay\": {\n    \"color\": \"%s\",\n    \"thickness\": %d,\n    \"cropOnTop\": %s\n  }\n}",
-            aotJson, ColorToHex(defOv.color).c_str(), defOv.thickness, defOv.cropOnTop ? L"true" : L"false");
-    } else if (overlaySection.empty()) {
-        swprintf_s(fullJson, L"{\n%s,\n  \"hotkeys\": %s\n}", aotJson, hotkeySection.c_str());
-    } else if (hotkeySection.empty()) {
-        swprintf_s(fullJson, L"{\n%s,\n  \"overlay\": %s\n}", aotJson, overlaySection.c_str());
-    } else {
-        swprintf_s(fullJson, L"{\n%s,\n  \"overlay\": %s,\n  \"hotkeys\": %s\n}", aotJson, overlaySection.c_str(), hotkeySection.c_str());
-    }
+
+    std::wstring fullJson = L"{\n";
+    if (!generalSection.empty()) fullJson += L"  \"general\": " + generalSection + L",\n";
+    fullJson += aotJson;
+    if (!overlaySection.empty()) fullJson += L",\n  \"overlay\": " + overlaySection;
+    if (!hotkeySection.empty()) fullJson += L",\n  \"hotkeys\": " + hotkeySection;
+    fullJson += L"\n}";
 
     WriteStringToFile(path, fullJson);
 }
@@ -230,18 +268,16 @@ void SaveOverlaySettings(const OverlaySettings& settings) {
     swprintf_s(overlayJson, L"  \"overlay\": {\n    \"color\": \"%s\",\n    \"thickness\": %d,\n    \"cropOnTop\": %s\n  }",
         ColorToHex(settings.color).c_str(), settings.thickness, settings.cropOnTop ? L"true" : L"false");
 
+    std::wstring generalSection = FindJsonValue(json, L"general");
     std::wstring aotSection = FindJsonValue(json, L"alwaysOnTop");
     std::wstring hotkeySection = FindJsonValue(json, L"hotkeys");
-    wchar_t fullJson[1536] = {};
-    if (aotSection.empty() && hotkeySection.empty()) {
-        swprintf_s(fullJson, L"{\n  \"alwaysOnTop\": {\n    \"showBorder\": true,\n    \"customColor\": true,\n    \"color\": \"#0078D7\",\n    \"opacity\": 100,\n    \"thickness\": 6,\n    \"roundedCorners\": true\n  },\n%s\n}", overlayJson);
-    } else if (hotkeySection.empty()) {
-        swprintf_s(fullJson, L"{\n  \"alwaysOnTop\": %s,\n%s\n}", aotSection.c_str(), overlayJson);
-    } else if (aotSection.empty()) {
-        swprintf_s(fullJson, L"{\n%s,\n  \"hotkeys\": %s\n}", overlayJson, hotkeySection.c_str());
-    } else {
-        swprintf_s(fullJson, L"{\n  \"alwaysOnTop\": %s,\n%s,\n  \"hotkeys\": %s\n}", aotSection.c_str(), overlayJson, hotkeySection.c_str());
-    }
+
+    std::wstring fullJson = L"{\n";
+    if (!generalSection.empty()) fullJson += L"  \"general\": " + generalSection + L",\n";
+    if (!aotSection.empty()) fullJson += L"  \"alwaysOnTop\": " + aotSection + L",\n";
+    fullJson += overlayJson;
+    if (!hotkeySection.empty()) fullJson += L",\n  \"hotkeys\": " + hotkeySection;
+    fullJson += L"\n}";
 
     WriteStringToFile(path, fullJson);
 }
@@ -317,11 +353,13 @@ void SaveHotkeySettings(const HotkeySettings& settings) {
         L",\n    \"alwaysOnTop\": " + HotkeyConfigToJson(settings.alwaysOnTop) +
         L"\n  }";
 
+    std::wstring generalSection = FindJsonValue(json, L"general");
     std::wstring aotSection = FindJsonValue(json, L"alwaysOnTop");
     std::wstring overlaySection = FindJsonValue(json, L"overlay");
     std::wstring fullJson;
 
     fullJson = L"{\n";
+    if (!generalSection.empty()) fullJson += L"  \"general\": " + generalSection + L",\n";
     if (!aotSection.empty()) fullJson += L"  \"alwaysOnTop\": " + aotSection + L",\n";
     if (!overlaySection.empty()) fullJson += L"  \"overlay\": " + overlaySection + L",\n";
     fullJson += hkJson + L"\n}";
@@ -344,7 +382,7 @@ COLORREF GetSystemAccentColor() {
 }
 
 std::wstring HotkeyConfig::ToString() const {
-    if (IsEmpty()) return L"(None)";
+    if (IsEmpty()) return S::HotkeyNone();
     std::wstring result;
     if (ctrl) result += L"Ctrl + ";
     if (alt) result += L"Alt + ";
@@ -358,15 +396,15 @@ std::wstring HotkeyConfig::ToString() const {
     } else if (key >= VK_F1 && key <= VK_F24) {
         result += L"F" + std::to_wstring(key - VK_F1 + 1);
     } else if (key == VK_SPACE) {
-        result += L"Space";
+        result += S::KeySpace();
     } else if (key == VK_TAB) {
         result += L"Tab";
     } else if (key == VK_RETURN) {
-        result += L"Enter";
+        result += S::KeyEnter();
     } else if (key == VK_ESCAPE) {
         result += L"Esc";
     } else if (key == VK_BACK) {
-        result += L"Backspace";
+        result += S::KeyBackspace();
     } else if (key == VK_DELETE) {
         result += L"Delete";
     } else if (key == VK_INSERT) {
@@ -376,11 +414,11 @@ std::wstring HotkeyConfig::ToString() const {
     } else if (key == VK_END) {
         result += L"End";
     } else if (key == VK_PRIOR) {
-        result += L"Page Up";
+        result += S::KeyPageUp();
     } else if (key == VK_NEXT) {
-        result += L"Page Down";
+        result += S::KeyPageDown();
     } else if (key >= VK_LEFT && key <= VK_DOWN) {
-        const wchar_t* arrows[] = { L"Left", L"Up", L"Right", L"Down" };
+        const wchar_t* arrows[] = { S::KeyLeft(), S::KeyUp(), S::KeyRight(), S::KeyDown() };
         result += arrows[key - VK_LEFT];
     } else {
         wchar_t buf[8];
@@ -398,6 +436,7 @@ static bool IsModifierKey(unsigned char vk) {
 }
 
 struct SharedSettings {
+    GeneralSettings general;
     AotSettings aot;
     OverlaySettings overlay;
     HotkeySettings hotkeys;
@@ -563,7 +602,7 @@ static void RegisterHotkeyEditClass() {
 
             if (state) {
                 std::wstring text = state->capturing && state->hotkey.IsEmpty()
-                    ? L"Press shortcut..." : state->hotkey.ToString();
+                    ? S::HotkeyPrompt() : state->hotkey.ToString();
                 SetBkMode(hdc, TRANSPARENT);
                 SetTextColor(hdc, GetSysColor(COLOR_WINDOWTEXT));
                 HFONT font = (HFONT)SendMessageW(hwnd, WM_GETFONT, 0, 0);
@@ -669,6 +708,15 @@ static void UpdateZcSliderLabels(HWND hPage) {
 static INT_PTR CALLBACK ZenCropPageProc(HWND hPage, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
     case WM_INITDIALOG: {
+        SetDlgItemTextW(hPage, IDC_ZC_COLOR_LABEL, S::ColorLabel());
+        SetDlgItemTextW(hPage, IDC_ZC_CHOOSE_COLOR, S::ChooseButton());
+        SetDlgItemTextW(hPage, IDC_ZC_THICK_LABEL2, S::ThicknessLabel());
+        SetDlgItemTextW(hPage, IDC_ZC_CROP_ON_TOP, S::CropOnTop());
+        SetDlgItemTextW(hPage, IDC_ZC_REPARENT_LABEL, S::ReparentLabel());
+        SetDlgItemTextW(hPage, IDC_ZC_THUMBNAIL_LABEL, S::ThumbnailLabel());
+        SetDlgItemTextW(hPage, IDC_ZC_VIEWPORT_LABEL, S::ViewportLabel());
+        SetDlgItemTextW(hPage, IDC_ZC_CLOSE_LABEL, S::CloseAllLabel());
+
         CheckDlgButton(hPage, IDC_ZC_CROP_ON_TOP, g_sharedSettings.overlay.cropOnTop ? BST_CHECKED : BST_UNCHECKED);
         SendDlgItemMessageW(hPage, IDC_ZC_THICK_SLIDER, TBM_SETRANGE, TRUE, MAKELPARAM(1, 10));
         SendDlgItemMessageW(hPage, IDC_ZC_THICK_SLIDER, TBM_SETPOS, TRUE, g_sharedSettings.overlay.thickness);
@@ -785,8 +833,8 @@ static INT_PTR CALLBACK ZenCropPageProc(HWND hPage, UINT msg, WPARAM wParam, LPA
             g_sharedSettings.hotkeys.closeReparent = GetHotkeyFromEdit(hPage, IDC_HK_CLOSE_EDIT);
 
             if (HasHotkeyConflict(g_sharedSettings.hotkeys)) {
-                MessageBoxW(hPage, L"Duplicate hotkeys detected! Some shortcuts may not work correctly.",
-                    L"ZenCrop - Hotkey Conflict", MB_ICONWARNING);
+                MessageBoxW(hPage, S::HotkeyConflictMsg(),
+                    S::HotkeyConflictTitle(), MB_ICONWARNING);
             }
 
             SaveHotkeySettings(g_sharedSettings.hotkeys);
@@ -801,6 +849,15 @@ static INT_PTR CALLBACK ZenCropPageProc(HWND hPage, UINT msg, WPARAM wParam, LPA
 static INT_PTR CALLBACK AotPageProc(HWND hPage, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
     case WM_INITDIALOG: {
+        SetDlgItemTextW(hPage, IDC_AOT_SHOW_BORDER, S::AotShowBorder());
+        SetDlgItemTextW(hPage, IDC_AOT_COLOR_MODE, S::AotCustomColor());
+        SetDlgItemTextW(hPage, IDC_AOT_COLOR_LABEL, S::ColorLabel());
+        SetDlgItemTextW(hPage, IDC_AOT_CHOOSE_COLOR, S::ChooseButton());
+        SetDlgItemTextW(hPage, IDC_AOT_OPACITY_LABEL2, S::OpacityLabel());
+        SetDlgItemTextW(hPage, IDC_AOT_THICK_LABEL2, S::ThicknessLabel());
+        SetDlgItemTextW(hPage, IDC_AOT_ROUNDED, S::AotRounded());
+        SetDlgItemTextW(hPage, IDC_AOT_HOTKEY_LABEL, S::HotkeyLabel());
+
         CheckDlgButton(hPage, IDC_AOT_SHOW_BORDER, g_sharedSettings.aot.showBorder ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hPage, IDC_AOT_COLOR_MODE, g_sharedSettings.aot.customColor ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hPage, IDC_AOT_ROUNDED, g_sharedSettings.aot.roundedCorners ? BST_CHECKED : BST_UNCHECKED);
@@ -901,8 +958,8 @@ static INT_PTR CALLBACK AotPageProc(HWND hPage, UINT msg, WPARAM wParam, LPARAM 
             g_sharedSettings.hotkeys.alwaysOnTop = GetHotkeyFromEdit(hPage, IDC_HK_AOT_EDIT);
 
             if (HasHotkeyConflict(g_sharedSettings.hotkeys)) {
-                MessageBoxW(hPage, L"Duplicate hotkeys detected! Some shortcuts may not work correctly.",
-                    L"ZenCrop - Hotkey Conflict", MB_ICONWARNING);
+                MessageBoxW(hPage, S::HotkeyConflictMsg(),
+                    S::HotkeyConflictTitle(), MB_ICONWARNING);
             }
 
             SaveHotkeySettings(g_sharedSettings.hotkeys);
@@ -945,30 +1002,80 @@ static int CALLBACK PropSheetProc(HWND hwndDlg, UINT uMsg, LPARAM lParam) {
     return 0;
 }
 
+static INT_PTR CALLBACK GeneralPageProc(HWND hPage, UINT uMsg, WPARAM wParam, LPARAM lParam) {
+    switch (uMsg) {
+    case WM_INITDIALOG: {
+        HWND hCombo = GetDlgItem(hPage, IDC_GEN_LANGUAGE);
+        SendMessageW(hCombo, CB_ADDSTRING, 0, (LPARAM)S::LangAuto());
+        SendMessageW(hCombo, CB_ADDSTRING, 0, (LPARAM)S::LangEnglish());
+        SendMessageW(hCombo, CB_ADDSTRING, 0, (LPARAM)S::LangChinese());
+
+        int sel = 0;
+        switch (g_sharedSettings.general.language.value) {
+        case AppLanguage::English: sel = 1; break;
+        case AppLanguage::Chinese: sel = 2; break;
+        default: sel = 0; break;
+        }
+        SendMessageW(hCombo, CB_SETCURSEL, sel, 0);
+
+        SetDlgItemTextW(hPage, -1, S::LanguageLabel());
+        return TRUE;
+    }
+    case WM_COMMAND:
+        if (LOWORD(wParam) == IDC_GEN_LANGUAGE && HIWORD(wParam) == CBN_SELCHANGE) {
+            int sel = (int)SendDlgItemMessageW(hPage, IDC_GEN_LANGUAGE, CB_GETCURSEL, 0, 0);
+            AppLanguage::Value newLang = AppLanguage::Auto;
+            if (sel == 1) newLang = AppLanguage::English;
+            else if (sel == 2) newLang = AppLanguage::Chinese;
+            g_sharedSettings.general.language.value = newLang;
+
+            S::SetLanguage(newLang == AppLanguage::Chinese ||
+                (newLang == AppLanguage::Auto && S::IsChinese()));
+
+            PropSheet_Changed(GetParent(hPage), hPage);
+        }
+        return TRUE;
+    case WM_NOTIFY: {
+        NMHDR* pnmh = (NMHDR*)lParam;
+        if (pnmh->code == PSN_APPLY) {
+            SaveGeneralSettings(g_sharedSettings.general);
+        }
+        return TRUE;
+    }
+    }
+    return FALSE;
+}
+
 void ShowSettingsDialog(HWND parent) {
+    g_sharedSettings.general = LoadGeneralSettings();
     g_sharedSettings.aot = LoadAotSettings();
     g_sharedSettings.overlay = LoadOverlaySettings();
     g_sharedSettings.hotkeys = LoadHotkeySettings();
 
-    PROPSHEETPAGEW psp[2] = {};
+    PROPSHEETPAGEW psp[3] = {};
 
     psp[0].dwSize = sizeof(PROPSHEETPAGEW);
     psp[0].hInstance = GetModuleHandleW(nullptr);
-    psp[0].pszTemplate = MAKEINTRESOURCEW(IDD_SETTINGS_ZENCROP);
-    psp[0].pfnDlgProc = ZenCropPageProc;
+    psp[0].pszTemplate = MAKEINTRESOURCEW(IDD_SETTINGS_GENERAL);
+    psp[0].pfnDlgProc = GeneralPageProc;
 
     psp[1].dwSize = sizeof(PROPSHEETPAGEW);
     psp[1].hInstance = GetModuleHandleW(nullptr);
-    psp[1].pszTemplate = MAKEINTRESOURCEW(IDD_SETTINGS_AOT);
-    psp[1].pfnDlgProc = AotPageProc;
+    psp[1].pszTemplate = MAKEINTRESOURCEW(IDD_SETTINGS_ZENCROP);
+    psp[1].pfnDlgProc = ZenCropPageProc;
+
+    psp[2].dwSize = sizeof(PROPSHEETPAGEW);
+    psp[2].hInstance = GetModuleHandleW(nullptr);
+    psp[2].pszTemplate = MAKEINTRESOURCEW(IDD_SETTINGS_AOT);
+    psp[2].pfnDlgProc = AotPageProc;
 
     PROPSHEETHEADERW psh = {};
     psh.dwSize = sizeof(PROPSHEETHEADERW);
     psh.dwFlags = PSH_PROPSHEETPAGE | PSH_NOCONTEXTHELP | PSH_USECALLBACK;
     psh.hwndParent = parent;
     psh.hInstance = GetModuleHandleW(nullptr);
-    psh.pszCaption = L"Settings";
-    psh.nPages = 2;
+    psh.pszCaption = S::SettingsTitle();
+    psh.nPages = 3;
     psh.ppsp = psp;
     psh.pfnCallback = PropSheetProc;
 

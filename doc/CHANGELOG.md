@@ -1,5 +1,32 @@
 # Changelog
 
+## V2.2.4 (2026-04-30)
+
+### 🌐 新增 (New Features)
+
+- **中文界面支持**: 新增完整的中文界面本地化，通过 Settings → General 选项卡中的语言下拉框切换
+  - 三种语言选项：自动（跟随系统）、English、中文
+  - 语言切换即时生效，无需重启
+  - 语言偏好保存至 `settings.json`，重启后保持
+  - 托盘菜单、设置对话框、快捷键名称、冲突提示等全部 UI 文本均已本地化
+- **General（常规）设置选项卡**: 在设置对话框中新增第一个选项卡，包含语言选择功能
+- **Overlay 裁剪操作提示**: 在裁剪选区过程中显示操作引导文字
+  - Hover 状态：矩形框右侧顶部显示"点击选择窗口 · 拖拽选择区域 · ESC 取消"
+  - Adjust 状态：矩形框右侧顶部显示"双击或按 Enter 确认 · ESC 取消 · 方向键微调"
+  - 裁剪坐标标签中的 "px" 随语言切换为"像素"
+
+### 修改 (Changes)
+
+- 新增 `Strings.h` / `Strings.cpp`：集中管理所有本地化字符串，基于 `S` 命名空间的函数式 API
+- `Settings.h` / `Settings.cpp`：新增 `AppLanguage` 枚举、`GeneralSettings` 结构体、`LoadGeneralSettings()` / `SaveGeneralSettings()`；修改所有 Save 函数保留 `general` section
+- `resources.rc`：新增 `IDD_SETTINGS_GENERAL` 对话框模板；静态标签控件使用可识别的 ID 以支持动态文本替换
+- `OverlayWindow.h` / `OverlayWindow.cpp`：新增 `DrawHintText()` 方法，在 Hover 和 Adjust 状态下渲染操作提示
+- `ThumbnailWindow.cpp`：窗口标题本地化
+- `main.cpp`：启动时调用 `S::InitLanguage()` 初始化语言；托盘菜单和提示全部本地化
+- `build.bat`：添加 `Strings.cpp` 到编译列表，添加 `/utf-8` 编译选项
+
+---
+
 ## V2.2.3 (2026-04-22)
 
 ### 🐞 核心修复 (Critical Fixes)

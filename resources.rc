@@ -4,31 +4,40 @@
 
 1 24 "app.manifest"
 
+IDD_SETTINGS_GENERAL DIALOGEX 0, 0, 260, 60
+STYLE DS_SHELLFONT | WS_CHILD | WS_VISIBLE | WS_CAPTION
+CAPTION "General"
+FONT 10, "Segoe UI"
+BEGIN
+    LTEXT         "Language:", -1, 14, 20, 80, 12
+    COMBOBOX      IDC_GEN_LANGUAGE, 98, 18, 140, 200, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+END
+
 IDD_SETTINGS_ZENCROP DIALOGEX 0, 0, 260, 210
 STYLE DS_SHELLFONT | WS_CHILD | WS_VISIBLE | WS_CAPTION
 CAPTION "ZenCrop"
 FONT 10, "Segoe UI"
 BEGIN
-    LTEXT         "Color:", -1, 14, 16, 36, 12
+    LTEXT         "Color:", IDC_ZC_COLOR_LABEL, 14, 16, 36, 12
     CONTROL       "", IDC_ZC_COLOR_PREVIEW, "Static", SS_OWNERDRAW, 54, 14, 36, 16
     PUSHBUTTON    "Choose...", IDC_ZC_CHOOSE_COLOR, 96, 12, 70, 18
-    LTEXT         "Thickness (px):", -1, 14, 46, 80, 12
+    LTEXT         "Thickness (px):", IDC_ZC_THICK_LABEL2, 14, 46, 80, 12
     CONTROL       "", IDC_ZC_THICK_SLIDER, "msctls_trackbar32", TBS_AUTOTICKS, 98, 44, 110, 18
     LTEXT         "3", IDC_ZC_THICK_LABEL, 212, 46, 20, 12
     AUTOCHECKBOX  "Enable crop on top", IDC_ZC_CROP_ON_TOP, 14, 76, 200, 14
-    LTEXT         "Reparent:", -1, 14, 102, 90, 12
+    LTEXT         "Reparent:", IDC_ZC_REPARENT_LABEL, 14, 102, 90, 12
     PUSHBUTTON    "X", IDC_HK_REPARENT_CLEAR, 214, 100, 24, 20
-    LTEXT         "Thumbnail:", -1, 14, 130, 90, 12
+    LTEXT         "Thumbnail:", IDC_ZC_THUMBNAIL_LABEL, 14, 130, 90, 12
     PUSHBUTTON    "X", IDC_HK_THUMBNAIL_CLEAR, 214, 128, 24, 20
-    LTEXT         "Viewport:", -1, 14, 158, 90, 12
+    LTEXT         "Viewport:", IDC_ZC_VIEWPORT_LABEL, 14, 158, 90, 12
     PUSHBUTTON    "X", IDC_HK_VIEWPORT_CLEAR, 214, 156, 24, 20
-    LTEXT         "Close All:", -1, 14, 186, 90, 12
+    LTEXT         "Close All:", IDC_ZC_CLOSE_LABEL, 14, 186, 90, 12
     PUSHBUTTON    "X", IDC_HK_CLOSE_CLEAR, 214, 184, 24, 20
 END
 
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION 2,2,3,0
- PRODUCTVERSION 2,2,3,0
+ FILEVERSION 2,2,4,0
+ PRODUCTVERSION 2,2,4,0
  FILEFLAGSMASK 0x3fL
 #ifdef _DEBUG
  FILEFLAGS 0x1L
@@ -45,12 +54,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "melody0709"
             VALUE "FileDescription", "ZenCrop"
-            VALUE "FileVersion", "2.2.3.0"
+            VALUE "FileVersion", "2.2.4.0"
             VALUE "InternalName", "ZenCrop.exe"
             VALUE "LegalCopyright", "Copyright (C) 2024"
             VALUE "OriginalFilename", "ZenCrop.exe"
             VALUE "ProductName", "ZenCrop"
-            VALUE "ProductVersion", "2.2.3.0"
+            VALUE "ProductVersion", "2.2.4.0"
         END
     END
     BLOCK "VarFileInfo"
@@ -66,16 +75,16 @@ FONT 10, "Segoe UI"
 BEGIN
     AUTOCHECKBOX  "Show a border around the pinned window", IDC_AOT_SHOW_BORDER, 14, 12, 230, 14
     AUTOCHECKBOX  "Custom color", IDC_AOT_COLOR_MODE, 14, 34, 100, 14
-    LTEXT         "Color:", -1, 14, 58, 32, 12
+    LTEXT         "Color:", IDC_AOT_COLOR_LABEL, 14, 58, 32, 12
     CONTROL       "", IDC_AOT_COLOR_PREVIEW, "Static", SS_OWNERDRAW, 50, 56, 36, 16
     PUSHBUTTON    "Choose...", IDC_AOT_CHOOSE_COLOR, 92, 54, 70, 18
-    LTEXT         "Opacity (%):", -1, 14, 82, 60, 12
+    LTEXT         "Opacity (%):", IDC_AOT_OPACITY_LABEL2, 14, 82, 60, 12
     CONTROL       "", IDC_AOT_OPACITY_SLIDER, "msctls_trackbar32", TBS_AUTOTICKS, 78, 80, 110, 18
     LTEXT         "100%", IDC_AOT_OPACITY_LABEL, 192, 82, 34, 12
-    LTEXT         "Thickness (px):", -1, 14, 108, 66, 12
+    LTEXT         "Thickness (px):", IDC_AOT_THICK_LABEL2, 14, 108, 66, 12
     CONTROL       "", IDC_AOT_THICK_SLIDER, "msctls_trackbar32", TBS_AUTOTICKS, 84, 106, 104, 18
     LTEXT         "6 px", IDC_AOT_THICK_LABEL, 192, 108, 34, 12
     AUTOCHECKBOX  "Enable rounded corners", IDC_AOT_ROUNDED, 14, 132, 200, 14
-    LTEXT         "Hotkey:", -1, 14, 158, 90, 12
+    LTEXT         "Hotkey:", IDC_AOT_HOTKEY_LABEL, 14, 158, 90, 12
     PUSHBUTTON    "X", IDC_HK_AOT_CLEAR, 214, 156, 24, 20
 END

@@ -61,6 +61,7 @@ private:
     void ClampCropRect();
     void UpdateCursorForPoint(POINT pt);
     void DrawCropLabel(int cropLeft, int cropTop, int cropRight, int cropBottom);
+    void DrawHintText();
 
     static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
     LRESULT MessageHandler(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);

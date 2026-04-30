@@ -35,6 +35,30 @@
 #define IDC_HK_AOT_EDIT         2046
 #define IDC_HK_AOT_CLEAR        2047
 
+#define IDD_SETTINGS_GENERAL   2023
+#define IDC_GEN_LANGUAGE       2050
+
+#define IDC_ZC_COLOR_LABEL     2060
+#define IDC_ZC_THICK_LABEL2    2061
+#define IDC_ZC_REPARENT_LABEL  2062
+#define IDC_ZC_THUMBNAIL_LABEL 2063
+#define IDC_ZC_VIEWPORT_LABEL  2064
+#define IDC_ZC_CLOSE_LABEL     2065
+
+#define IDC_AOT_COLOR_LABEL    2070
+#define IDC_AOT_OPACITY_LABEL2 2071
+#define IDC_AOT_THICK_LABEL2   2072
+#define IDC_AOT_HOTKEY_LABEL   2073
+
+struct AppLanguage {
+    enum Value { Auto, English, Chinese };
+    Value value = Auto;
+};
+
+struct GeneralSettings {
+    AppLanguage language;
+};
+
 struct AotSettings {
     bool showBorder = true;
     bool customColor = true;
@@ -78,6 +102,8 @@ struct HotkeySettings {
     HotkeyConfig alwaysOnTop;
 };
 
+GeneralSettings LoadGeneralSettings();
+void SaveGeneralSettings(const GeneralSettings& settings);
 AotSettings LoadAotSettings();
 void SaveAotSettings(const AotSettings& settings);
 OverlaySettings LoadOverlaySettings();

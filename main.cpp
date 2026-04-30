@@ -6,6 +6,7 @@
 #include "SmartDetector.h"
 #include "AlwaysOnTop.h"
 #include "Settings.h"
+#include "Strings.h"
 #include <shellapi.h>
 #include <windowsx.h>
 #include <algorithm>
@@ -20,7 +21,7 @@
 #define ID_TRAY_RELEASE 1003
 #define ID_TRAY_AOT_SETTINGS 1004
 
-#define ZENCROP_VERSION L"2.2.3"
+#define ZENCROP_VERSION L"2.2.4"
 #define ZENCROP_RELEASE_URL L"https://github.com/melody0709/zencrop/releases"
 #define ZENCROP_MUTEX_NAME L"Global\\ZenCrop"
 
@@ -97,7 +98,7 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
         nid.uCallbackMessage = WM_TRAYICON;
         nid.hIcon = LoadIconW(GetModuleHandleW(nullptr), MAKEINTRESOURCE(1));
-        wcscpy_s(nid.szTip, L"ZenCrop (Right click to exit)");
+        wcscpy_s(nid.szTip, S::TrayTip());
         Shell_NotifyIconW(NIM_ADD, &nid);
 
         g_hotkeys = LoadHotkeySettings();
@@ -154,13 +155,13 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
 
             HMENU hMenu = CreatePopupMenu();
             UINT titlebarFlag = g_showTitlebar ? MF_CHECKED : MF_UNCHECKED;
-            AppendMenuW(hMenu, MF_STRING | titlebarFlag, ID_TRAY_TITLEBAR, L"Show Titlebar");
-            AppendMenuW(hMenu, MF_STRING, ID_TRAY_AOT_SETTINGS, L"Settings");
+            AppendMenuW(hMenu, MF_STRING | titlebarFlag, ID_TRAY_TITLEBAR, S::MenuShowTitlebar());
+            AppendMenuW(hMenu, MF_STRING, ID_TRAY_AOT_SETTINGS, S::MenuSettings());
             AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
-            AppendMenuW(hMenu, MF_STRING, ID_TRAY_RELEASE, L"Open Release Page");
+            AppendMenuW(hMenu, MF_STRING, ID_TRAY_RELEASE, S::MenuOpenRelease());
             AppendMenuW(hMenu, MF_STRING | MF_GRAYED, 0, L"ZenCrop v" ZENCROP_VERSION);
             AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
-            AppendMenuW(hMenu, MF_STRING, ID_TRAY_EXIT, L"Exit ZenCrop");
+            AppendMenuW(hMenu, MF_STRING, ID_TRAY_EXIT, S::MenuExit());
 
             SetForegroundWindow(hwnd);
 
@@ -230,12 +231,13 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
     HANDLE hMutex = CreateMutexW(nullptr, TRUE, ZENCROP_MUTEX_NAME);
     if (GetLastError() == ERROR_ALREADY_EXISTS) {
-        MessageBoxW(nullptr, L"ZenCrop is already running.", L"ZenCrop", MB_OK | MB_ICONINFORMATION);
+        MessageBoxW(nullptr, S::AlreadyRunning(), S::AppName(), MB_OK | MB_ICONINFORMATION);
         CloseHandle(hMutex);
         return 0;
     }
 
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+    S::InitLanguage();
     CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     SmartDetector::Instance().Initialize();
 
