@@ -1,4 +1,4 @@
-# ZenCrop v2.2.4
+# ZenCrop v2.2.5
 
 [English](../README.md)
 
@@ -43,7 +43,7 @@ ZenCrop 从零开始重构，完全独立运行，不依赖 PowerToys，不仅�
 - **智能 Reparent 模式**: 将目标窗口裁剪为独立子窗口。ZenCrop 会自动检测现代 UWP/WinUI 应用（如计算器或设置），并无缝回退到特殊的 **Viewport (视口) 模式**。这彻底解决了传统 Reparent 模式导致的现代应用“全白”渲染 Bug，确保所有应用都能被完美裁剪并保持交互。
 - **Thumbnail 模式**: 使用 Windows DWM 缩略图 API 实时显示目标窗口内容，带浅蓝色边框标识。*在 V2.2.0 和 V2.2.1 中全新升级:* 目标窗口能够自动从屏幕和任务栏完全隐藏，并且保证 Chromium/Electron 等引擎维持满血 60FPS 渲染；同时 Thumbnail 窗口自身拥有了独立的任务栏图标，方便找回。完美支持原生拖拽以及 AltSnap 等工具的严格等比例缩放操作。
 📖 *技术深度解析：[ZenCrop Thumbnail 缩放与隐身技术](thumbnail_scaling_hiding_technology_zh.md)*
-- **Always On Top**: 按 `Alt+T` 将任意窗口置顶，支持自定义边框（颜色、透明度、粗细、圆角）
+- **Always On Top**: 按 `Alt+T` 将任意窗口置顶，支持自定义边框（颜色、透明度、粗细、圆角、内收）
 - **快捷键自定义**: 所有快捷键均可自定义——点击输入框后按下组合键即可录入，支持冲突检测
 - **Crop On Top**: 可在设置中开启，裁剪窗口后自动置顶
 - **智能窗口检测**: 裁剪覆盖层自动跟随鼠标，动态高亮鼠标下方的窗口，支持裁剪屏幕上任意窗口
@@ -99,13 +99,13 @@ ZenCrop 从零开始重构，完全独立运行，不依赖 PowerToys，不仅�
 右键托盘图标 → **Settings** 打开标签式设置对话框：
 
 - **ZenCrop 标签页**: 裁剪覆盖层颜色和粗细、Crop On Top 开关、Reparent/Thumbnail/Close Reparent 快捷键自定义
-- **Always On Top 标签页**: 边框显示开关、颜色（系统强调色或自定义）、透明度、粗细、圆角、AOT 快捷键自定义
+- **Always On Top 标签页**: 边框显示开关、颜色（系统强调色或自定义）、透明度、粗细、圆角、内收、AOT 快捷键自定义
 
 ## 技术栈
 
 - **语言**: C++17
 - **框架**: Native Windows Win32 API
-- **依赖**: user32, gdi32, dwmapi, shcore, shell32, ole32, oleaut32, shlwapi, comctl32, comdlg32, advapi32
+- **依赖**: user32, gdi32, gdiplus, dwmapi, shcore, shell32, ole32, oleaut32, shlwapi, comctl32, comdlg32, advapi32
 
 ## 构建
 

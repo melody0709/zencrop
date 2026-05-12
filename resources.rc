@@ -36,8 +36,8 @@ BEGIN
 END
 
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION 2,2,4,0
- PRODUCTVERSION 2,2,4,0
+ FILEVERSION 2,2,5,0
+ PRODUCTVERSION 2,2,5,0
  FILEFLAGSMASK 0x3fL
 #ifdef _DEBUG
  FILEFLAGS 0x1L
@@ -54,12 +54,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "melody0709"
             VALUE "FileDescription", "ZenCrop"
-            VALUE "FileVersion", "2.2.4.0"
+            VALUE "FileVersion", "2.2.5.0"
             VALUE "InternalName", "ZenCrop.exe"
             VALUE "LegalCopyright", "Copyright (C) 2024"
             VALUE "OriginalFilename", "ZenCrop.exe"
             VALUE "ProductName", "ZenCrop"
-            VALUE "ProductVersion", "2.2.4.0"
+            VALUE "ProductVersion", "2.2.5.0"
         END
     END
     BLOCK "VarFileInfo"
@@ -68,7 +68,7 @@ BEGIN
     END
 END
 
-IDD_SETTINGS_AOT DIALOGEX 0, 0, 260, 190
+IDD_SETTINGS_AOT DIALOGEX 0, 0, 260, 216
 STYLE DS_SHELLFONT | WS_CHILD | WS_VISIBLE | WS_CAPTION
 CAPTION "Always On Top"
 FONT 10, "Segoe UI"
@@ -85,6 +85,9 @@ BEGIN
     CONTROL       "", IDC_AOT_THICK_SLIDER, "msctls_trackbar32", TBS_AUTOTICKS, 84, 106, 104, 18
     LTEXT         "6 px", IDC_AOT_THICK_LABEL, 192, 108, 34, 12
     AUTOCHECKBOX  "Enable rounded corners", IDC_AOT_ROUNDED, 14, 132, 200, 14
-    LTEXT         "Hotkey:", IDC_AOT_HOTKEY_LABEL, 14, 158, 90, 12
-    PUSHBUTTON    "X", IDC_HK_AOT_CLEAR, 214, 156, 24, 20
+    LTEXT         "Inset (px):", IDC_AOT_INSET_LABEL, 14, 156, 52, 12
+    CONTROL       "", IDC_AOT_INSET_SLIDER, "msctls_trackbar32", TBS_AUTOTICKS, 70, 154, 118, 18
+    LTEXT         "0 px", IDC_AOT_INSET_VALUE, 192, 156, 34, 12
+    LTEXT         "Hotkey:", IDC_AOT_HOTKEY_LABEL, 14, 182, 90, 12
+    PUSHBUTTON    "X", IDC_HK_AOT_CLEAR, 214, 180, 24, 20
 END

@@ -1,5 +1,29 @@
 # Changelog
 
+## V2.2.5 (2026-05-12)
+
+### 🌟 新增 (New Features)
+
+- **AOT 边框 GDI+ 抗锯齿圆角**: 使用 GDI+ `GraphicsPath` + `SmoothingModeAntiAlias` 重写了 Always On Top 边框的圆角渲染，彻底解决了旧方案二值像素裁剪导致的锯齿问题
+  - 外角和内角均实现圆角化（内角半径 = 外角半径 - 边框粗细）
+  - 圆角半径从固定的 `max(8, thickness)` 提升至 `max(12, thickness * 2)`，视觉上更接近 Win11 原生风格
+  - 非圆角模式保留原有逐像素渲染逻辑
+- **AOT 边框内收 (Inset) 设置**: 新增「内收 (px)」滑块（0~20px），控制边框向窗口内部收缩的距离
+  - `inset = 0`：边框完全在窗口外围（默认，与之前行为一致）
+  - `inset = 4~6`：边框覆盖 DWM 阴影区域，紧贴可见内容
+  - `inset > thickness`：边框完全嵌入窗口内部
+  - 设置即时生效，持久化保存至 `settings.json`
+
+### 修改 (Changes)
+
+- `AlwaysOnTop.h/cpp`：引入 GDI+（`GdiplusStartup` / `GdiplusShutdown`），新增 `AddRoundedRect` 辅助函数，`DrawBorder` 圆角模式改用 `GraphicsPath` 渲染
+- `Settings.h/cpp`：`AotSettings` 新增 `inset` 字段，设置页新增 Inset 滑块控件及标签
+- `resources.rc`：AOT 设置页新增 Inset 滑块，对话框高度增加
+- `Strings.h/cpp`：新增 `InsetLabel()` 中英文字符串
+- `build.bat`：添加 `gdiplus.lib` 链接
+
+---
+
 ## V2.2.4 (2026-04-30)
 
 ### 🌐 新增 (New Features)

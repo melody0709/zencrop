@@ -40,6 +40,7 @@ const wchar_t* AotShowBorder();
 const wchar_t* AotCustomColor();
 const wchar_t* OpacityLabel();
 const wchar_t* AotRounded();
+const wchar_t* InsetLabel();
 
 const wchar_t* HotkeyNone();
 const wchar_t* HotkeyPrompt();

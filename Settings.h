@@ -12,6 +12,9 @@
 #define IDC_AOT_THICK_SLIDER    2007
 #define IDC_AOT_THICK_LABEL     2008
 #define IDC_AOT_ROUNDED         2009
+#define IDC_AOT_INSET_SLIDER    2011
+#define IDC_AOT_INSET_LABEL     2012
+#define IDC_AOT_INSET_VALUE     2013
 
 #define IDD_SETTINGS            2020
 #define IDD_SETTINGS_ZENCROP    2021
@@ -66,6 +69,7 @@ struct AotSettings {
     int opacity = 100;
     int thickness = 6;
     bool roundedCorners = true;
+    int inset = 0;
 };
 
 struct OverlaySettings {

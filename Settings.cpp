@@ -184,6 +184,8 @@ AotSettings LoadAotSettings() {
         if (!val.empty()) settings.thickness = _wtoi(val.c_str());
         val = FindJsonValue(json, L"roundedCorners");
         if (!val.empty()) settings.roundedCorners = (val == L"true");
+        val = FindJsonValue(json, L"inset");
+        if (!val.empty()) settings.inset = _wtoi(val.c_str());
     } else {
         std::wstring aotSection = FindJsonValue(json, L"alwaysOnTop");
         if (!aotSection.empty()) {
@@ -199,6 +201,8 @@ AotSettings LoadAotSettings() {
             if (!val.empty()) settings.thickness = _wtoi(val.c_str());
             val = FindJsonValue(aotSection, L"roundedCorners");
             if (!val.empty()) settings.roundedCorners = (val == L"true");
+            val = FindJsonValue(aotSection, L"inset");
+            if (!val.empty()) settings.inset = _wtoi(val.c_str());
         }
     }
 
@@ -206,6 +210,8 @@ AotSettings LoadAotSettings() {
     if (settings.opacity > 100) settings.opacity = 100;
     if (settings.thickness < 1) settings.thickness = 1;
     if (settings.thickness > 20) settings.thickness = 20;
+    if (settings.inset < 0) settings.inset = 0;
+    if (settings.inset > 20) settings.inset = 20;
 
     return settings;
 }
@@ -214,14 +220,15 @@ void SaveAotSettings(const AotSettings& settings) {
     std::wstring path = GetSettingsFilePath();
     std::wstring json = ReadFileToString(path);
 
-    wchar_t aotJson[512] = {};
-    swprintf_s(aotJson, L"  \"alwaysOnTop\": {\n    \"showBorder\": %s,\n    \"customColor\": %s,\n    \"color\": \"%s\",\n    \"opacity\": %d,\n    \"thickness\": %d,\n    \"roundedCorners\": %s\n  }",
+    wchar_t aotJson[600] = {};
+    swprintf_s(aotJson, L"  \"alwaysOnTop\": {\n    \"showBorder\": %s,\n    \"customColor\": %s,\n    \"color\": \"%s\",\n    \"opacity\": %d,\n    \"thickness\": %d,\n    \"roundedCorners\": %s,\n    \"inset\": %d\n  }",
         settings.showBorder ? L"true" : L"false",
         settings.customColor ? L"true" : L"false",
         ColorToHex(settings.color).c_str(),
         settings.opacity,
         settings.thickness,
-        settings.roundedCorners ? L"true" : L"false");
+        settings.roundedCorners ? L"true" : L"false",
+        settings.inset);
 
     std::wstring generalSection = FindJsonValue(json, L"general");
     std::wstring overlaySection = FindJsonValue(json, L"overlay");
@@ -685,17 +692,22 @@ static void UpdateAotControls(HWND hPage) {
     EnableWindow(GetDlgItem(hPage, IDC_AOT_THICK_SLIDER), showBorder);
     EnableWindow(GetDlgItem(hPage, IDC_AOT_THICK_LABEL), showBorder);
     EnableWindow(GetDlgItem(hPage, IDC_AOT_ROUNDED), showBorder);
+    EnableWindow(GetDlgItem(hPage, IDC_AOT_INSET_SLIDER), showBorder);
+    EnableWindow(GetDlgItem(hPage, IDC_AOT_INSET_VALUE), showBorder);
     InvalidateRect(GetDlgItem(hPage, IDC_AOT_COLOR_PREVIEW), nullptr, TRUE);
 }
 
 static void UpdateAotSliderLabels(HWND hPage) {
     int opacity = (int)SendDlgItemMessageW(hPage, IDC_AOT_OPACITY_SLIDER, TBM_GETPOS, 0, 0);
     int thickness = (int)SendDlgItemMessageW(hPage, IDC_AOT_THICK_SLIDER, TBM_GETPOS, 0, 0);
+    int inset = (int)SendDlgItemMessageW(hPage, IDC_AOT_INSET_SLIDER, TBM_GETPOS, 0, 0);
     wchar_t buf[16] = {};
     swprintf_s(buf, L"%d%%", opacity);
     SetDlgItemTextW(hPage, IDC_AOT_OPACITY_LABEL, buf);
     swprintf_s(buf, L"%d px", thickness);
     SetDlgItemTextW(hPage, IDC_AOT_THICK_LABEL, buf);
+    swprintf_s(buf, L"%d px", inset);
+    SetDlgItemTextW(hPage, IDC_AOT_INSET_VALUE, buf);
 }
 
 static void UpdateZcSliderLabels(HWND hPage) {
@@ -856,6 +868,7 @@ static INT_PTR CALLBACK AotPageProc(HWND hPage, UINT msg, WPARAM wParam, LPARAM 
         SetDlgItemTextW(hPage, IDC_AOT_OPACITY_LABEL2, S::OpacityLabel());
         SetDlgItemTextW(hPage, IDC_AOT_THICK_LABEL2, S::ThicknessLabel());
         SetDlgItemTextW(hPage, IDC_AOT_ROUNDED, S::AotRounded());
+        SetDlgItemTextW(hPage, IDC_AOT_INSET_LABEL, S::InsetLabel());
         SetDlgItemTextW(hPage, IDC_AOT_HOTKEY_LABEL, S::HotkeyLabel());
 
         CheckDlgButton(hPage, IDC_AOT_SHOW_BORDER, g_sharedSettings.aot.showBorder ? BST_CHECKED : BST_UNCHECKED);
@@ -865,6 +878,8 @@ static INT_PTR CALLBACK AotPageProc(HWND hPage, UINT msg, WPARAM wParam, LPARAM 
         SendDlgItemMessageW(hPage, IDC_AOT_OPACITY_SLIDER, TBM_SETPOS, TRUE, g_sharedSettings.aot.opacity);
         SendDlgItemMessageW(hPage, IDC_AOT_THICK_SLIDER, TBM_SETRANGE, TRUE, MAKELPARAM(1, 20));
         SendDlgItemMessageW(hPage, IDC_AOT_THICK_SLIDER, TBM_SETPOS, TRUE, g_sharedSettings.aot.thickness);
+        SendDlgItemMessageW(hPage, IDC_AOT_INSET_SLIDER, TBM_SETRANGE, TRUE, MAKELPARAM(0, 20));
+        SendDlgItemMessageW(hPage, IDC_AOT_INSET_SLIDER, TBM_SETPOS, TRUE, g_sharedSettings.aot.inset);
         UpdateAotSliderLabels(hPage);
         UpdateAotControls(hPage);
 
@@ -936,7 +951,8 @@ static INT_PTR CALLBACK AotPageProc(HWND hPage, UINT msg, WPARAM wParam, LPARAM 
     case WM_HSCROLL: {
         HWND slider = (HWND)lParam;
         if (slider == GetDlgItem(hPage, IDC_AOT_OPACITY_SLIDER) ||
-            slider == GetDlgItem(hPage, IDC_AOT_THICK_SLIDER)) {
+            slider == GetDlgItem(hPage, IDC_AOT_THICK_SLIDER) ||
+            slider == GetDlgItem(hPage, IDC_AOT_INSET_SLIDER)) {
             UpdateAotSliderLabels(hPage);
             InvalidateRect(GetDlgItem(hPage, IDC_AOT_COLOR_PREVIEW), nullptr, TRUE);
             PropSheet_Changed(GetParent(hPage), hPage);
@@ -952,6 +968,7 @@ static INT_PTR CALLBACK AotPageProc(HWND hPage, UINT msg, WPARAM wParam, LPARAM 
             g_sharedSettings.aot.roundedCorners = IsDlgButtonChecked(hPage, IDC_AOT_ROUNDED) == BST_CHECKED;
             g_sharedSettings.aot.opacity = (int)SendDlgItemMessageW(hPage, IDC_AOT_OPACITY_SLIDER, TBM_GETPOS, 0, 0);
             g_sharedSettings.aot.thickness = (int)SendDlgItemMessageW(hPage, IDC_AOT_THICK_SLIDER, TBM_GETPOS, 0, 0);
+            g_sharedSettings.aot.inset = (int)SendDlgItemMessageW(hPage, IDC_AOT_INSET_SLIDER, TBM_GETPOS, 0, 0);
             SaveAotSettings(g_sharedSettings.aot);
             AlwaysOnTopManager::Instance().UpdateSettings();
 

@@ -68,6 +68,7 @@ const wchar_t* AotShowBorder() { return g_chinese ? L"在置顶窗口周围显�
 const wchar_t* AotCustomColor() { return g_chinese ? L"自定义颜色" : L"Custom color"; }
 const wchar_t* OpacityLabel() { return g_chinese ? L"不透明度 (%)：" : L"Opacity (%):"; }
 const wchar_t* AotRounded() { return g_chinese ? L"启用圆角" : L"Enable rounded corners"; }
+const wchar_t* InsetLabel() { return g_chinese ? L"内收 (px)：" : L"Inset (px):"; }
 
 const wchar_t* HotkeyNone() { return g_chinese ? L"(无)" : L"(None)"; }
 const wchar_t* HotkeyPrompt() { return g_chinese ? L"请按下快捷键..." : L"Press shortcut..."; }

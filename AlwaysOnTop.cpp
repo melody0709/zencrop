@@ -2,6 +2,9 @@
 #include "Utils.h"
 #include <algorithm>
 #include <dwmapi.h>
+#include <gdiplus.h>
+
+#pragma comment(lib, "gdiplus.lib")
 
 const wchar_t* AlwaysOnTopManager::BorderClassName = L"ZenCrop.AlwaysOnTopBorder";
 static std::once_flag s_borderClassReg;
@@ -59,6 +62,10 @@ AlwaysOnTopManager& AlwaysOnTopManager::Instance() {
 
 AlwaysOnTopManager::~AlwaysOnTopManager() {
     UnpinAll();
+    if (m_gdiplusToken) {
+        Gdiplus::GdiplusShutdown(m_gdiplusToken);
+        m_gdiplusToken = 0;
+    }
 }
 
 AlwaysOnTopManager::PinnedWindowInfo* AlwaysOnTopManager::FindByTarget(HWND target) {
@@ -88,6 +95,20 @@ int AlwaysOnTopManager::GetPinnedCount() const {
 
 void AlwaysOnTopManager::PinWindow(HWND target) {
     if (!target || IsPinned(target)) return;
+
+    wchar_t cn[64] = {};
+    GetClassNameW(target, cn, 64);
+    if (wcscmp(cn, L"Progman") == 0 ||
+        wcscmp(cn, L"WorkerW") == 0 ||
+        wcscmp(cn, L"Shell_TrayWnd") == 0 ||
+        wcscmp(cn, L"Shell_SecondaryTrayWnd") == 0) {
+        return;
+    }
+
+    if (!m_gdiplusToken) {
+        Gdiplus::GdiplusStartupInput si;
+        Gdiplus::GdiplusStartup(&m_gdiplusToken, &si, nullptr);
+    }
 
     m_settings = LoadAotSettings();
 
@@ -191,14 +212,15 @@ void AlwaysOnTopManager::CreateBorderWindow(PinnedWindowInfo& info) {
     }
 
     int t = m_settings.thickness;
-    int w = (targetRect.right - targetRect.left) + 2 * t;
-    int h = (targetRect.bottom - targetRect.top) + 2 * t;
+    int ins = m_settings.inset;
+    int w = (targetRect.right - targetRect.left) + 2 * (t - ins);
+    int h = (targetRect.bottom - targetRect.top) + 2 * (t - ins);
 
     info.borderWindow = CreateWindowExW(
         WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW,
         BorderClassName, L"",
         WS_POPUP,
-        targetRect.left - t, targetRect.top - t, w, h,
+        targetRect.left - t + ins, targetRect.top - t + ins, w, h,
         nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
 
     if (info.borderWindow) {
@@ -237,11 +259,12 @@ void AlwaysOnTopManager::UpdateBorderPosition(PinnedWindowInfo& info) {
     targetRect = GetWindowVisibleRect(info.targetWindow);
 
     int t = m_settings.thickness;
-    int w = (targetRect.right - targetRect.left) + 2 * t;
-    int h = (targetRect.bottom - targetRect.top) + 2 * t;
+    int ins = m_settings.inset;
+    int w = (targetRect.right - targetRect.left) + 2 * (t - ins);
+    int h = (targetRect.bottom - targetRect.top) + 2 * (t - ins);
 
     SetWindowPos(info.borderWindow, nullptr,
-        targetRect.left - t, targetRect.top - t, w, h,
+        targetRect.left - t + ins, targetRect.top - t + ins, w, h,
         SWP_NOACTIVATE | SWP_NOZORDER);
 
     DrawBorder(info.borderWindow, targetRect);
@@ -249,6 +272,24 @@ void AlwaysOnTopManager::UpdateBorderPosition(PinnedWindowInfo& info) {
     ShowWindow(info.borderWindow, SW_SHOWNOACTIVATE);
     SetWindowPos(info.borderWindow, info.targetWindow, 0, 0, 0, 0,
         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+}
+
+static void AddRoundedRect(Gdiplus::GraphicsPath& path, int x, int y, int w, int h, int radius) {
+    if (radius <= 0 || w <= 0 || h <= 0) {
+        path.AddRectangle(Gdiplus::Rect(x, y, w, h));
+        return;
+    }
+    int clampedR = (std::min)(radius, (std::min)(w, h) / 2);
+    int d = clampedR * 2;
+    path.AddArc(x, y, d, d, 180, 90);
+    path.AddLine(x + clampedR, y, x + w - clampedR, y);
+    path.AddArc(x + w - d, y, d, d, 270, 90);
+    path.AddLine(x + w, y + clampedR, x + w, y + h - clampedR);
+    path.AddArc(x + w - d, y + h - d, d, d, 0, 90);
+    path.AddLine(x + w - clampedR, y + h, x + clampedR, y + h);
+    path.AddArc(x, y + h - d, d, d, 90, 90);
+    path.AddLine(x, y + h - clampedR, x, y + clampedR);
+    path.CloseFigure();
 }
 
 void AlwaysOnTopManager::DrawBorder(HWND borderWnd, const RECT& targetRect) {
@@ -279,64 +320,52 @@ void AlwaysOnTopManager::DrawBorder(HWND borderWnd, const RECT& targetRect) {
     }
 
     HBITMAP oldBitmap = (HBITMAP)SelectObject(memDc, bitmap);
-    DWORD* pixels = (DWORD*)pBits;
-
-    memset(pixels, 0, (size_t)bw * bh * 4);
 
     int t = m_settings.thickness;
     BYTE alpha = (BYTE)(m_settings.opacity * 255 / 100);
     COLORREF color = m_settings.customColor ? m_settings.color : GetSystemAccentColor();
     BYTE r = GetRValue(color), g = GetGValue(color), b = GetBValue(color);
-    BYTE preR = (BYTE)((r * alpha) / 255);
-    BYTE preG = (BYTE)((g * alpha) / 255);
-    BYTE preB = (BYTE)((b * alpha) / 255);
-    DWORD pixel = (alpha << 24) | (preR << 16) | (preG << 8) | preB;
 
-    for (int y = 0; y < bh; y++) {
-        for (int x = 0; x < bw; x++) {
-            bool inBorder = (x < t || x >= bw - t || y < t || y >= bh - t);
-            if (inBorder) {
-                if (m_settings.roundedCorners) {
-                    int cornerRadius = t * 2;
-                    bool inTopLeft = (x < t + cornerRadius && y < t + cornerRadius);
-                    bool inTopRight = (x >= bw - t - cornerRadius && y < t + cornerRadius);
-                    bool inBottomLeft = (x < t + cornerRadius && y >= bh - t - cornerRadius);
-                    bool inBottomRight = (x >= bw - t - cornerRadius && y >= bh - t - cornerRadius);
+    if (m_settings.roundedCorners && m_gdiplusToken) {
+        memset(pBits, 0, (size_t)bw * bh * 4);
 
-                    bool clipped = false;
-                    if (inTopLeft) {
-                        int cx = t + cornerRadius;
-                        int cy = t + cornerRadius;
-                        int dx = cx - x;
-                        int dy = cy - y;
-                        if (dx * dx + dy * dy > cornerRadius * cornerRadius) clipped = true;
-                    }
-                    if (inTopRight) {
-                        int cx = bw - t - cornerRadius;
-                        int cy = t + cornerRadius;
-                        int dx = x - cx;
-                        int dy = cy - y;
-                        if (dx * dx + dy * dy > cornerRadius * cornerRadius) clipped = true;
-                    }
-                    if (inBottomLeft) {
-                        int cx = t + cornerRadius;
-                        int cy = bh - t - cornerRadius;
-                        int dx = cx - x;
-                        int dy = y - cy;
-                        if (dx * dx + dy * dy > cornerRadius * cornerRadius) clipped = true;
-                    }
-                    if (inBottomRight) {
-                        int cx = bw - t - cornerRadius;
-                        int cy = bh - t - cornerRadius;
-                        int dx = x - cx;
-                        int dy = y - cy;
-                        if (dx * dx + dy * dy > cornerRadius * cornerRadius) clipped = true;
-                    }
+        Gdiplus::Bitmap gdiBitmap(bw, bh, bw * 4, PixelFormat32bppPARGB, (BYTE*)pBits);
+        Gdiplus::Graphics graphics(&gdiBitmap);
+        graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
 
-                    if (!clipped) {
-                        pixels[(size_t)y * bw + x] = pixel;
-                    }
-                } else {
+        int cornerRadius = 10;
+
+        Gdiplus::GraphicsPath outerPath;
+        AddRoundedRect(outerPath, 0, 0, bw, bh, cornerRadius);
+
+        int innerRadius = (std::max)(0, cornerRadius - t);
+        Gdiplus::GraphicsPath innerPath;
+        AddRoundedRect(innerPath, t, t, bw - 2 * t, bh - 2 * t, innerRadius);
+
+        Gdiplus::GraphicsPath framePath;
+        framePath.AddPath(&outerPath, false);
+        innerPath.Reverse();
+        framePath.AddPath(&innerPath, false);
+
+        Gdiplus::SolidBrush brush(Gdiplus::Color(alpha, r, g, b));
+        graphics.FillPath(&brush, &framePath);
+
+        Gdiplus::Pen pen(Gdiplus::Color(alpha, r, g, b), 1.0f);
+        graphics.DrawPath(&pen, &outerPath);
+        graphics.DrawPath(&pen, &innerPath);
+    } else {
+        DWORD* pixels = (DWORD*)pBits;
+        memset(pixels, 0, (size_t)bw * bh * 4);
+
+        BYTE preR = (BYTE)((r * alpha) / 255);
+        BYTE preG = (BYTE)((g * alpha) / 255);
+        BYTE preB = (BYTE)((b * alpha) / 255);
+        DWORD pixel = (alpha << 24) | (preR << 16) | (preG << 8) | preB;
+
+        for (int y = 0; y < bh; y++) {
+            for (int x = 0; x < bw; x++) {
+                bool inBorder = (x < t || x >= bw - t || y < t || y >= bh - t);
+                if (inBorder) {
                     pixels[(size_t)y * bw + x] = pixel;
                 }
             }

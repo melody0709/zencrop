@@ -31,6 +31,8 @@ private:
         HWINEVENTHOOK minimizeHook = nullptr;
     };
 
+    ULONG_PTR m_gdiplusToken = 0;
+
     std::vector<PinnedWindowInfo> m_pinnedWindows;
     AotSettings m_settings;
 
