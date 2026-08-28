@@ -1,0 +1,109 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <?include ProductIdentity.wxi ?>
+  <?include "$(var.GeneratedWixDirectory)\ProductInstance.generated.wxi" ?>
+
+  <Package
+      Name="ZenCrop"
+      Manufacturer="ZenCrop"
+      Version="$(var.ZenCropProductVersion)"
+      ProductCode="$(var.ZenCropProductCode)"
+      UpgradeCode="$(var.ZenCropUpgradeCode)"
+      Scope="perMachine"
+      InstallerVersion="500"
+      Compressed="yes">
+    <!--
+      Early removal stays inside the transaction. This permits substantial
+      feature/component restructuring while preserving rollback to the old MSI.
+    -->
+    <MajorUpgrade
+        Schedule="afterInstallInitialize"
+        AllowSameVersionUpgrades="no"
+        DowngradeErrorMessage="A newer version of ZenCrop is already installed." />
+    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+    <UIRef Id="ZenCropInstallerUi" />
+    <!--
+      This is a deterministic digest of all installer-semantic inputs.  It
+      makes a same-version MSI confirmation fail closed if authoring changed.
+    -->
+    <Property
+        Id="ZENCROP_INSTALLER_INPUT_SHA256"
+        Value="$(var.ZenCropInstallerInputSha256)" />
+
+    <!--
+      AppSearch restores the directory chosen by the last ZenCrop MSI before
+      MajorUpgrade removes that MSI.  INSTALLFOLDER otherwise resolves from
+      the directory tree below to Program Files\ZenCrop.
+    -->
+    <Property Id="INSTALLFOLDER">
+      <RegistrySearch
+          Id="SearchZenCropInstallFolder"
+          Root="HKLM"
+          Key="Software\ZenCrop"
+          Name="InstallFolder"
+          Type="raw"
+          Bitness="always64" />
+    </Property>
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="ZenCrop">
+        <!--
+          Keep the install-root record in its own per-machine Component.  It
+          deliberately has a stable generated GUID and a registry key path;
+          do not fold it into the dedicated Start Menu Component.
+        -->
+        <Component
+            Id="cmp_ZenCropInstallFolderRegistry"
+            Guid="$(var.ZenCropInstallFolderRegistryComponentGuid)"
+            Bitness="always64">
+          <RegistryValue
+              Root="HKLM"
+              Key="Software\ZenCrop"
+              Name="InstallFolder"
+              Type="string"
+              Value="[INSTALLFOLDER]"
+              KeyPath="yes" />
+        </Component>
+      </Directory>
+    </StandardDirectory>
+
+    <!--
+      ProgramMenuFolder is the Windows Installer standard directory property.
+      With this per-machine Package (ALLUSERS=1), Windows resolves it to the
+      All Users Programs folder. Do not replace it with an invented
+      CommonProgramsFolder directory: that is not a Windows Installer target
+      directory and would resolve to TARGETDIR instead of Start Menu.
+    -->
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="ZenCropProgramMenuFolder" Name="ZenCrop">
+        <Component
+            Id="cmp_ZenCropStartMenuShortcut"
+            Guid="$(var.ZenCropStartMenuShortcutComponentGuid)"
+            Bitness="always64">
+          <Shortcut
+              Id="ZenCropStartMenuShortcut"
+              Name="ZenCrop"
+              Target="[INSTALLFOLDER]ZenCrop.exe"
+              WorkingDirectory="INSTALLFOLDER" />
+          <RemoveFolder Id="RemoveZenCropProgramMenuFolder" On="uninstall" />
+          <!-- This HKCU value is the standard MSI key path for a ProgramMenu
+               shortcut Component; it is not product install-root state. -->
+          <RegistryValue
+              Root="HKCU"
+              Key="Software\ZenCrop"
+              Name="StartMenuShortcut"
+              Type="integer"
+              Value="1"
+              KeyPath="yes" />
+        </Component>
+      </Directory>
+    </StandardDirectory>
+
+    <Feature Id="ZenCropFeature" Title="ZenCrop" Level="1">
+      <ComponentGroupRef Id="ZenCropRuntimeFiles" />
+      <ComponentGroupRef Id="ZenCropLegacyCleanup" />
+      <ComponentRef Id="cmp_ZenCropInstallFolderRegistry" />
+      <ComponentRef Id="cmp_ZenCropStartMenuShortcut" />
+    </Feature>
+  </Package>
+</Wix>

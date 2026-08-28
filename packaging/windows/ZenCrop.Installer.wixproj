@@ -1,0 +1,40 @@
+<Project Sdk="WixToolset.Sdk/7.0.0">
+  <PropertyGroup>
+    <!--
+      This project is intentionally SDK-style and resolves WiX only through NuGet.
+      package_zencrop.ps1 supplies every generated/output path under build/cmake.
+    -->
+    <OutputType>Package</OutputType>
+    <InstallerPlatform>x64</InstallerPlatform>
+    <Cultures>en-US</Cultures>
+    <!-- KaTeX ships web-only .ttf assets. ICE60 mistakes their metadata for
+         a Windows font-install declaration; they remain ordinary payload files. -->
+    <SuppressIces>ICE60</SuppressIces>
+    <OutputName Condition="'$(ZenCropMsiOutputName)' != ''">$(ZenCropMsiOutputName)</OutputName>
+    <OutputPath Condition="'$(ZenCropMsiOutputDirectory)' != ''">$(ZenCropMsiOutputDirectory)</OutputPath>
+    <IntermediateOutputPath Condition="'$(ZenCropWixIntermediateDirectory)' != ''">$(ZenCropWixIntermediateDirectory)</IntermediateOutputPath>
+    <DefineConstants>GeneratedWixDirectory=$(GeneratedWixDirectory);CanonicalPayloadRoot=$(CanonicalPayloadRoot);ZenCropInstallerInputSha256=$(ZenCropInstallerInputSha256)</DefineConstants>
+    <EnableDefaultItems>false</EnableDefaultItems>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="WixToolset.UI.wixext" Version="7.0.0" />
+    <Compile Include="Package.wxs" />
+    <Compile Include="InstallerUi.wxs" />
+    <Compile Include="LegacyCleanup.wxs" />
+    <Compile Include="$(GeneratedWixDirectory)\RuntimeFiles.generated.wxs" />
+  </ItemGroup>
+
+  <Target Name="RequireZenCropPackageStaging" BeforeTargets="Build">
+    <Error Condition="'$(GeneratedWixDirectory)' == ''"
+           Text="GeneratedWixDirectory is required; generate WiX sources in build/cmake/package-staging first." />
+    <Error Condition="'$(CanonicalPayloadRoot)' == ''"
+           Text="CanonicalPayloadRoot is required; MSI files must come from the canonical staged payload." />
+    <Error Condition="'$(ZenCropInstallerInputSha256)' == ''"
+           Text="ZenCropInstallerInputSha256 is required; MSI confirmation must bind installer authoring to this build." />
+    <Error Condition="'$(ZenCropMsiOutputDirectory)' == ''"
+           Text="ZenCropMsiOutputDirectory is required; MSI output belongs in build/cmake/package-staging." />
+    <Error Condition="'$(ZenCropWixIntermediateDirectory)' == ''"
+           Text="ZenCropWixIntermediateDirectory is required; WiX intermediates belong in build/cmake/package-staging." />
+  </Target>
+</Project>

@@ -1,0 +1,21 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "lsp": {
+    "clangd": {
+      "command": [
+        "clangd",
+        "--background-index",
+        "--clang-tidy",
+        "--header-insertion=iwyu",
+        "--compile-commands-dir=."
+      ],
+      "extensions": [
+        ".c",
+        ".cpp",
+        ".cc",
+        ".h",
+        ".hpp"
+      ]
+    }
+  }
+}

@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  ZenCrop stable / x64 / per-machine MSI identity.
+  These three UUID values were bootstrapped exactly once before the first MSI
+  release. They are permanent release-contract inputs: no build, CI job, or
+  AI-assisted change may regenerate or replace them.
+-->
+<Include xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <?define ZenCropProductLineKey = "stable|x64|perMachine" ?>
+  <?define ZenCropUpgradeCode = "A7A61016-64CE-4391-AE58-B5397CE3046D" ?>
+  <?define ZenCropProductCodeNamespace = "4F345A15-C37F-407D-9E3B-DF7BEF7E23B3" ?>
+  <?define ZenCropComponentNamespace = "C8957C35-9C53-4EE7-B0CB-BBED61C90CAF" ?>
+</Include>

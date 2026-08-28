@@ -1,0 +1,98 @@
+set(_runtime_root "$ENV{DESTDIR}${CMAKE_INSTALL_PREFIX}")
+set(_executable "${_runtime_root}/ZenCrop.exe")
+set(_manifest "${_runtime_root}/runtime-manifest.json")
+
+if(NOT EXISTS "${_executable}")
+    message(FATAL_ERROR "Cannot write runtime manifest: ${_executable} is missing")
+endif()
+
+file(SHA256 "${_executable}" _executable_sha256)
+file(SIZE "${_executable}" _executable_size)
+file(TIMESTAMP "${_executable}" _executable_timestamp_utc "%Y-%m-%dT%H:%M:%SZ" UTC)
+# Package payloads are immutable per ProductVersion.  A wall-clock install
+# timestamp would make a byte-identical rebuild look like a new release, so
+# use the executable's stable build timestamp for this diagnostic field.
+set(_staged_at_utc "${_executable_timestamp_utc}")
+
+execute_process(
+    COMMAND "@ZENCROP_GIT_EXECUTABLE@" -C "@CMAKE_SOURCE_DIR@" rev-parse HEAD
+    OUTPUT_VARIABLE _git_commit
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET
+    RESULT_VARIABLE _git_commit_result)
+if(NOT _git_commit_result EQUAL 0 OR _git_commit STREQUAL "")
+    set(_git_commit "unknown")
+endif()
+
+execute_process(
+    COMMAND "@ZENCROP_GIT_EXECUTABLE@" -C "@CMAKE_SOURCE_DIR@" status --porcelain
+    OUTPUT_VARIABLE _git_status
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET
+    RESULT_VARIABLE _git_status_result)
+if(_git_status_result EQUAL 0 AND NOT _git_status STREQUAL "")
+    set(_git_dirty true)
+else()
+    set(_git_dirty false)
+endif()
+
+file(GLOB_RECURSE _runtime_files
+    LIST_DIRECTORIES false
+    RELATIVE "${_runtime_root}"
+    "${_runtime_root}/*")
+list(FILTER _runtime_files EXCLUDE REGEX "^runtime-manifest\\.json(\\.tmp)?$")
+list(SORT _runtime_files)
+
+set(_payload_inventory "")
+set(_asset_inventory "")
+set(_asset_count 0)
+foreach(_relative_path IN LISTS _runtime_files)
+    set(_full_path "${_runtime_root}/${_relative_path}")
+    file(SHA256 "${_full_path}" _file_sha256)
+    file(SIZE "${_full_path}" _file_size)
+    string(REPLACE "\\" "/" _normalized_path "${_relative_path}")
+    string(APPEND _payload_inventory
+        "${_normalized_path}\t${_file_size}\t${_file_sha256}\n")
+    if(NOT _normalized_path STREQUAL "ZenCrop.exe")
+        math(EXPR _asset_count "${_asset_count} + 1")
+        string(APPEND _asset_inventory
+            "${_normalized_path}\t${_file_size}\t${_file_sha256}\n")
+    endif()
+endforeach()
+list(LENGTH _runtime_files _file_count)
+string(SHA256 _payload_sha256 "${_payload_inventory}")
+string(SHA256 _assets_sha256 "${_asset_inventory}")
+
+set(_json "{\n")
+string(APPEND _json "  \"schemaVersion\": 2,\n")
+string(APPEND _json "  \"productVersion\": \"@PROJECT_VERSION@\",\n")
+string(APPEND _json "  \"stagedAtUtc\": \"${_staged_at_utc}\",\n")
+string(APPEND _json "  \"sourceCommit\": \"${_git_commit}\",\n")
+string(APPEND _json "  \"sourceDirty\": ${_git_dirty},\n")
+string(APPEND _json "  \"signed\": false,\n")
+string(APPEND _json "  \"executableTimestampUtc\": \"${_executable_timestamp_utc}\",\n")
+string(APPEND _json "  \"executableSize\": ${_executable_size},\n")
+string(APPEND _json "  \"executableSha256\": \"${_executable_sha256}\",\n")
+string(APPEND _json "  \"runtimeFileCount\": ${_file_count},\n")
+string(APPEND _json "  \"assetFileCount\": ${_asset_count},\n")
+string(APPEND _json "  \"runtimePayloadSha256\": \"${_payload_sha256}\",\n")
+string(APPEND _json "  \"runtimeAssetsSha256\": \"${_assets_sha256}\",\n")
+string(APPEND _json "  \"webAssetRoot\": \"webview_assets\",\n")
+string(APPEND _json "  \"webAssetManifestSchemaVersion\": @ZENCROP_WEB_ASSET_MANIFEST_SCHEMA_VERSION@,\n")
+string(APPEND _json "  \"webAssetSetSha256\": \"@ZENCROP_WEB_ASSET_SET_SHA256@\",\n")
+string(APPEND _json "  \"webAssetBuildId\": \"@ZENCROP_WEB_ASSET_BUILD_ID@\"\n")
+string(APPEND _json "}\n")
+
+file(WRITE "${_manifest}.tmp" "${_json}")
+if(EXISTS "${_manifest}")
+    file(SHA256 "${_manifest}" _existing_manifest_sha256)
+    file(SHA256 "${_manifest}.tmp" _temporary_manifest_sha256)
+    if(_existing_manifest_sha256 STREQUAL _temporary_manifest_sha256)
+        file(REMOVE "${_manifest}.tmp")
+    else()
+        file(RENAME "${_manifest}.tmp" "${_manifest}")
+    endif()
+else()
+    file(RENAME "${_manifest}.tmp" "${_manifest}")
+endif()
+message(STATUS "Wrote runtime manifest: ${_manifest}")

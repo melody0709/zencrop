@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'none';
+                 script-src 'self';
+                 style-src 'self' 'unsafe-inline';
+                 img-src 'self' https://zencrop-ocr-images.invalid https://zencrop-preview-output.invalid https: http: data:;
+                 font-src 'self' data:;
+                 connect-src 'none';
+                 object-src 'none';
+                 base-uri 'none';
+                 form-action 'none';
+                 frame-src 'none';
+                 worker-src 'none';">
+  <title>ZenCrop OCR Preview</title>
+  <link rel="stylesheet" href="../vendor/katex/katex.min.css">
+  <link rel="stylesheet" href="preview.css">
+</head>
+<body>
+  <div id="preview-shell">
+    <main id="preview" class="markdown-body empty" aria-live="polite">
+      <div class="empty-state">No OCR record selected.</div>
+    </main>
+    <div id="preview-scrollbar" class="preview-scrollbar" aria-hidden="true">
+      <div id="preview-scrollbar-thumb" class="preview-scrollbar-thumb"></div>
+    </div>
+  </div>
+
+  <script src="../vendor/markdown-it.min.js"></script>
+  <script src="../vendor/purify.min.js"></script>
+  <script src="../vendor/katex/katex.min.js"></script>
+  <script src="../vendor/mermaid/mermaid.min.js"></script>
+  <script src="../vendor/chart.js/chart.umd.min.js"></script>
+  <script src="security.js"></script>
+  <script src="markdown.js"></script>
+  <script src="blocks.js"></script>
+  <script src="editor-markdown.js"></script>
+  <script src="edit-transaction.js"></script>
+  <script src="formula-editor.js"></script>
+  <script src="preview.js"></script>
+</body>
+</html>

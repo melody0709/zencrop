@@ -1,0 +1,115 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  ZenCrop's first-install UI deliberately uses standard WiX dialogs for path
+  browsing, disk checks, progress, errors, and maintenance.  The entry dialog
+  is small and product-specific: Install keeps the resolved default/root from
+  the prior MSI, while Advanced opens the normal folder picker.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Fragment>
+    <UI Id="ZenCropInstallerUi">
+      <TextStyle Id="WixUI_Font_Normal" FaceName="Tahoma" Size="8" />
+      <TextStyle Id="WixUI_Font_Bigger" FaceName="Tahoma" Size="12" />
+      <TextStyle Id="WixUI_Font_Title" FaceName="Tahoma" Size="9" Bold="yes" />
+      <Property Id="DefaultUIFont" Value="WixUI_Font_Normal" />
+      <Property Id="WIXUI_INSTALLDIR" Value="INSTALLFOLDER" />
+      <Property Id="ARPNOMODIFY" Value="1" />
+
+      <DialogRef Id="BrowseDlg" />
+      <DialogRef Id="CancelDlg" />
+      <DialogRef Id="DiskCostDlg" />
+      <DialogRef Id="ErrorDlg" />
+      <DialogRef Id="ExitDialog" />
+      <DialogRef Id="FatalError" />
+      <DialogRef Id="FilesInUse" />
+      <DialogRef Id="InstallDirDlg" />
+      <DialogRef Id="InvalidDirDlg" />
+      <DialogRef Id="MaintenanceTypeDlg" />
+      <DialogRef Id="MaintenanceWelcomeDlg" />
+      <DialogRef Id="MsiRMFilesInUse" />
+      <DialogRef Id="OutOfDiskDlg" />
+      <DialogRef Id="OutOfRbDiskDlg" />
+      <DialogRef Id="PrepareDlg" />
+      <DialogRef Id="ProgressDlg" />
+      <DialogRef Id="ResumeDlg" />
+      <DialogRef Id="UserExit" />
+      <DialogRef Id="VerifyReadyDlg" />
+      <DialogRef Id="WaitForCostingDlg" />
+
+      <Dialog Id="ZenCropWelcomeDlg" Width="370" Height="270" Title="ZenCrop Setup">
+        <Control Id="Title" Type="Text" X="15" Y="15" Width="330" Height="24"
+                 Transparent="yes" NoPrefix="yes" Text="{\WixUI_Font_Bigger}Install ZenCrop" />
+        <Control Id="Description" Type="Text" X="25" Y="55" Width="320" Height="36"
+                 Transparent="yes" NoPrefix="yes"
+                 Text="ZenCrop is ready to install for all users on this computer." />
+        <Control Id="InstallLocationLabel" Type="Text" X="25" Y="105" Width="320" Height="16"
+                 NoPrefix="yes" Text="Installation location:" />
+        <Control Id="InstallLocation" Type="Text" X="25" Y="125" Width="320" Height="18"
+                 NoPrefix="yes" Text="[INSTALLFOLDER]" />
+        <Control Id="AdvancedHint" Type="Text" X="25" Y="158" Width="320" Height="32"
+                 Transparent="yes" NoPrefix="yes"
+                 Text="Choose Advanced to select a different installation folder." />
+        <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="373" Height="0" />
+        <Control Id="Advanced" Type="PushButton" X="123" Y="243" Width="80" Height="17"
+                 Text="Advanced...">
+          <Publish Event="NewDialog" Value="InstallDirDlg" />
+        </Control>
+        <Control Id="Install" Type="PushButton" ElevationShield="yes" X="212" Y="243" Width="80"
+                 Height="17" Default="yes" Text="Install">
+          <Publish Event="SpawnWaitDialog" Value="WaitForCostingDlg"
+                   Condition="!(wix.WixUICostingPopupOptOut) OR CostingComplete = 1" />
+          <Publish Event="EndDialog" Value="Return" Condition="OutOfDiskSpace &lt;&gt; 1" />
+          <Publish Event="SpawnDialog" Value="OutOfRbDiskDlg"
+                   Condition="OutOfDiskSpace = 1 AND OutOfNoRbDiskSpace = 0 AND (PROMPTROLLBACKCOST=&quot;P&quot; OR NOT PROMPTROLLBACKCOST)" />
+          <Publish Event="EndDialog" Value="Return"
+                   Condition="OutOfDiskSpace = 1 AND OutOfNoRbDiskSpace = 0 AND PROMPTROLLBACKCOST=&quot;D&quot;" />
+          <Publish Event="EnableRollback" Value="False"
+                   Condition="OutOfDiskSpace = 1 AND OutOfNoRbDiskSpace = 0 AND PROMPTROLLBACKCOST=&quot;D&quot;" />
+          <Publish Event="SpawnDialog" Value="OutOfDiskDlg"
+                   Condition="(OutOfDiskSpace = 1 AND OutOfNoRbDiskSpace = 1) OR (OutOfDiskSpace = 1 AND PROMPTROLLBACKCOST=&quot;F&quot;)" />
+        </Control>
+        <Control Id="Cancel" Type="PushButton" X="304" Y="243" Width="56" Height="17"
+                 Cancel="yes" Text="Cancel">
+          <Publish Event="SpawnDialog" Value="CancelDlg" />
+        </Control>
+      </Dialog>
+
+      <Publish Dialog="InstallDirDlg" Control="Back" Event="NewDialog" Value="ZenCropWelcomeDlg" />
+      <Publish Dialog="InstallDirDlg" Control="Next" Event="CheckTargetPath"
+               Value="[WIXUI_INSTALLDIR]" Order="1" />
+      <Publish Dialog="InstallDirDlg" Control="Next" Event="SetTargetPath"
+               Value="[WIXUI_INSTALLDIR]" Order="3" />
+      <Publish Dialog="InstallDirDlg" Control="Next" Event="NewDialog"
+               Value="VerifyReadyDlg" Order="4" />
+      <Publish Dialog="InstallDirDlg" Control="ChangeFolder" Property="_BrowseProperty"
+               Value="[WIXUI_INSTALLDIR]" Order="1" />
+      <Publish Dialog="InstallDirDlg" Control="ChangeFolder" Event="SpawnDialog"
+               Value="BrowseDlg" Order="2" />
+      <Publish Dialog="BrowseDlg" Control="OK" Event="CheckTargetPath"
+               Value="[WIXUI_INSTALLDIR]" Order="1" />
+      <Publish Dialog="BrowseDlg" Control="OK" Event="SetTargetPath"
+               Value="[_BrowseProperty]" Order="3" />
+      <Publish Dialog="BrowseDlg" Control="OK" Event="EndDialog" Value="Return" Order="4" />
+
+      <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog"
+               Value="InstallDirDlg" Order="1" Condition="NOT Installed" />
+      <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog"
+               Value="MaintenanceTypeDlg" Order="2" Condition="Installed" />
+      <Publish Dialog="MaintenanceWelcomeDlg" Control="Next" Event="NewDialog"
+               Value="MaintenanceTypeDlg" />
+      <Publish Dialog="MaintenanceTypeDlg" Control="RepairButton" Event="NewDialog"
+               Value="VerifyReadyDlg" />
+      <Publish Dialog="MaintenanceTypeDlg" Control="RemoveButton" Event="NewDialog"
+               Value="VerifyReadyDlg" />
+      <Publish Dialog="MaintenanceTypeDlg" Control="Back" Event="NewDialog"
+               Value="MaintenanceWelcomeDlg" />
+      <Publish Dialog="ExitDialog" Control="Finish" Event="EndDialog" Value="Return" Order="999" />
+
+      <InstallUISequence>
+        <Show Dialog="ZenCropWelcomeDlg" Before="ProgressDlg" Condition="NOT Installed" />
+      </InstallUISequence>
+    </UI>
+
+    <UIRef Id="WixUI_Common" />
+  </Fragment>
+</Wix>

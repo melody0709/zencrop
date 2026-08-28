@@ -1,0 +1,57 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 20,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "x64-release",
+      "displayName": "x64 Release (Ninja, OpenCV required)",
+      "description": "Canonical product build. OpenCV is mandatory; matches build.bat release policy.",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/cmake",
+      "architecture": {
+        "value": "x64",
+        "strategy": "external"
+      },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "ZENCROP_ENABLE_OPENCV_DBPOST": "ON",
+        "ZENCROP_REQUIRE_OPENCV": "ON"
+      }
+    },
+    {
+      "name": "x64-release-msvc",
+      "displayName": "x64 Release (Visual Studio generator)",
+      "description": "Fallback when Ninja is unavailable. Still requires OpenCV.",
+      "generator": "Visual Studio 17 2022",
+      "architecture": "x64",
+      "binaryDir": "${sourceDir}/build/cmake-msvc",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "ZENCROP_ENABLE_OPENCV_DBPOST": "ON",
+        "ZENCROP_REQUIRE_OPENCV": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "x64-release",
+      "configurePreset": "x64-release",
+      "configuration": "Release",
+      "targets": [
+        "ZenCrop"
+      ]
+    },
+    {
+      "name": "x64-release-msvc",
+      "configurePreset": "x64-release-msvc",
+      "configuration": "Release",
+      "targets": [
+        "ZenCrop"
+      ]
+    }
+  ]
+}

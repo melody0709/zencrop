@@ -1,0 +1,10 @@
+--driver-mode=cl
+/std:c++17
+/DUNICODE
+/D_UNICODE
+/EHsc
+-D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH
+-Isrc
+-Isrc/ocr
+-Isrc/net
+-Iocr/onnxruntime/include

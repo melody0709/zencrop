@@ -1,0 +1,5 @@
+#pragma once
+
+// Generated from project(ZenCrop VERSION ...). Do not hand-edit.
+#define ZENCROP_PRODUCT_VERSION_A "@PROJECT_VERSION@"
+#define ZENCROP_PRODUCT_VERSION_W L"@PROJECT_VERSION@"

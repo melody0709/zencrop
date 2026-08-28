@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Exact historical orphan cleanup belongs here only after an affected released
+  MSI is documented in UPGRADE_CONTRACT.md. There are no known ZenCrop orphan
+  files at the first-MSI baseline, so this component group is intentionally
+  empty. Do not add wildcard or recursive cleanup, Program Files root cleanup,
+  or any LocalAppData ownership here.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Fragment>
+    <ComponentGroup Id="ZenCropLegacyCleanup" />
+  </Fragment>
+</Wix>
