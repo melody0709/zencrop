@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.15)
-project(ZenCrop VERSION 2.9.15)
+project(ZenCrop VERSION 2.9.18)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -85,6 +85,7 @@ add_executable(ZenCrop WIN32
     src/core/AppDataPaths.h src/core/AppDataPaths.cpp
     src/core/StartupRegistration.h src/core/StartupRegistration.cpp
     src/core/Settings.h src/core/Settings.cpp
+    src/core/SettingsHotkeyDraft.h
     src/core/TranslationSettingsCodec.h src/core/TranslationSettingsCodec.cpp
     src/core/SettingsDialog.h src/core/SettingsDialog.cpp
     src/image/BitmapCodec.h src/image/BitmapCodec.cpp
@@ -195,13 +196,24 @@ add_executable(ZenCrop WIN32
     src/ocr/ui/OcrMarkdownPreviewHost.h src/ocr/ui/OcrMarkdownPreviewHost.cpp
     src/ocr/ui/OcrMarkdownPreviewProtocol.h src/ocr/ui/OcrMarkdownPreviewProtocol.cpp
     src/core/HttpTransport.h src/net/Network.cpp
+    src/selection/SelectionTypes.h src/selection/SelectionTypes.cpp
+    src/selection/ClipboardCopyPolicy.h src/selection/ClipboardCopyPolicy.cpp
+    src/selection/ClipboardDataSnapshot.h src/selection/ClipboardDataSnapshot.cpp
+    src/selection/ClipboardCopyTransaction.h src/selection/ClipboardCopyTransaction.cpp
+    src/selection/SelectionTextAcquirer.h src/selection/SelectionTextAcquirer.cpp
+    src/selection/SelectionTranslationToastWindow.h src/selection/SelectionTranslationToastWindow.cpp
+    src/selection/SelectionTranslationController.h src/selection/SelectionTranslationController.cpp
     src/translation/TranslationTypes.h
+    src/translation/TranslationLaunchContext.h
+    src/translation/TranslationPreflight.h src/translation/TranslationPreflight.cpp
     src/translation/TranslationEngine.h
     src/translation/TranslationCredentialStore.h src/translation/TranslationCredentialStore.cpp
     src/translation/AsyncHttpTransport.h src/translation/AsyncHttpTransport.cpp
+    src/translation/LlmModelPolicy.h src/translation/LlmModelPolicy.cpp
     src/translation/TranslationProviderCatalog.h src/translation/TranslationProviderCatalog.cpp
     src/translation/TranslationPromptComposer.h src/translation/TranslationPromptComposer.cpp
     src/translation/OpenAICompatibleTranslationEngine.h src/translation/OpenAICompatibleTranslationEngine.cpp
+    src/translation/MachineTranslationEngine.h src/translation/MachineTranslationEngine.cpp
     src/translation/TranslationEngineFactory.h src/translation/TranslationEngineFactory.cpp
     src/translation/DeepSeekTranslationEngine.h src/translation/DeepSeekTranslationEngine.cpp
     src/translation/TranslationSettingsPage.h src/translation/TranslationSettingsPage.cpp
@@ -324,6 +336,7 @@ target_link_libraries(ZenCrop PRIVATE
     ole32
     oleaut32
     oleacc
+    uiautomationcore
     shlwapi
     comdlg32
     advapi32

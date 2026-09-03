@@ -247,15 +247,19 @@ zencrop_add_simple_hermetic(test_translation_contract
     SOURCES
         ${CMAKE_SOURCE_DIR}/src/core/Settings.cpp
         ${CMAKE_SOURCE_DIR}/src/core/TranslationSettingsCodec.cpp
+        ${CMAKE_SOURCE_DIR}/src/core/HotkeyEdit.cpp
         ${CMAKE_SOURCE_DIR}/src/core/AppDataPaths.cpp
         ${CMAKE_SOURCE_DIR}/src/core/Strings.cpp
         ${CMAKE_SOURCE_DIR}/src/core/JsonUtils.cpp
         ${CMAKE_SOURCE_DIR}/src/core/ClipboardUtils.cpp
         ${CMAKE_SOURCE_DIR}/src/translation/TranslationCredentialStore.cpp
+        ${CMAKE_SOURCE_DIR}/src/translation/TranslationPreflight.cpp
         ${CMAKE_SOURCE_DIR}/src/translation/AsyncHttpTransport.cpp
+        ${CMAKE_SOURCE_DIR}/src/translation/LlmModelPolicy.cpp
         ${CMAKE_SOURCE_DIR}/src/translation/TranslationProviderCatalog.cpp
         ${CMAKE_SOURCE_DIR}/src/translation/TranslationPromptComposer.cpp
         ${CMAKE_SOURCE_DIR}/src/translation/OpenAICompatibleTranslationEngine.cpp
+        ${CMAKE_SOURCE_DIR}/src/translation/MachineTranslationEngine.cpp
         ${CMAKE_SOURCE_DIR}/src/translation/TranslationEngineFactory.cpp
         ${CMAKE_SOURCE_DIR}/src/translation/DeepSeekTranslationEngine.cpp
         ${CMAKE_SOURCE_DIR}/src/translation/TranslationSettingsPage.cpp
@@ -269,6 +273,11 @@ zencrop_add_simple_hermetic(test_translation_contract
         ${CMAKE_SOURCE_DIR}/src/ocr/ui/WebAssetGuard.cpp
         ${CMAKE_SOURCE_DIR}/src/core/Sha256.cpp
         ${CMAKE_SOURCE_DIR}/src/window/AlwaysOnTop.cpp
+        ${CMAKE_SOURCE_DIR}/src/selection/SelectionTypes.cpp
+        ${CMAKE_SOURCE_DIR}/src/selection/ClipboardCopyPolicy.cpp
+        ${CMAKE_SOURCE_DIR}/src/selection/ClipboardDataSnapshot.cpp
+        ${CMAKE_SOURCE_DIR}/src/selection/ClipboardCopyTransaction.cpp
+        ${CMAKE_SOURCE_DIR}/src/selection/SelectionTextAcquirer.cpp
     INCLUDES ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/src/core
              ${CMAKE_SOURCE_DIR}/src/ocr ${CMAKE_SOURCE_DIR}/src/ocr/engine
              ${CMAKE_SOURCE_DIR}/src/ocr/ui ${CMAKE_SOURCE_DIR}/src/ocr/ui/dashboard
@@ -277,7 +286,7 @@ zencrop_add_simple_hermetic(test_translation_contract
              ${CMAKE_SOURCE_DIR}/third_party/webview2/include
              ${CMAKE_BINARY_DIR}/generated
     LIBS user32 shell32 shlwapi comctl32 advapi32 gdiplus dwmapi shcore uxtheme
-         ole32 oleaut32 bcrypt
+         ole32 oleaut32 bcrypt uiautomationcore
          ${CMAKE_SOURCE_DIR}/third_party/webview2/x64/WebView2Loader.dll.lib
 )
 
@@ -286,6 +295,7 @@ zencrop_add_simple_hermetic(test_deepseek_protocol_contract
         ${CMAKE_SOURCE_DIR}/src/translation/DeepSeekTranslationEngine.cpp
         ${CMAKE_SOURCE_DIR}/src/translation/AsyncHttpTransport.cpp
         ${CMAKE_SOURCE_DIR}/src/translation/TranslationCredentialStore.cpp
+        ${CMAKE_SOURCE_DIR}/src/translation/LlmModelPolicy.cpp
         ${CMAKE_SOURCE_DIR}/src/translation/TranslationProviderCatalog.cpp
         ${CMAKE_SOURCE_DIR}/src/translation/TranslationPromptComposer.cpp
         ${CMAKE_SOURCE_DIR}/src/translation/OpenAICompatibleTranslationEngine.cpp

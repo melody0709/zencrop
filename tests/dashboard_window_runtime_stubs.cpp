@@ -90,7 +90,7 @@ void SaveAotSettings(const AotSettings&) {}
 OverlaySettings LoadOverlaySettings() { return OverlaySettings{}; }
 void SaveOverlaySettings(const OverlaySettings&) {}
 HotkeySettings LoadHotkeySettings() { return HotkeySettings{}; }
-void SaveHotkeySettings(const HotkeySettings&) {}
+bool SaveHotkeySettings(const HotkeySettings&, std::wstring*) { return true; }
 OcrSettings LoadOcrSettings() {
     OcrSettings settings;
     settings.mode = L"paddle_local";

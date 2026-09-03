@@ -111,10 +111,54 @@ std::wstring NewProfileId() {
         std::to_wstring(counter.fetch_add(1));
 }
 
+std::wstring SelectProviderPreset(
+    HWND page, const TranslationSettings& settings) {
+    const auto presets = ListAddableTranslationProviderPresets(settings);
+    if (presets.empty()) return {};
+    HMENU menu = CreatePopupMenu();
+    if (!menu) return {};
+    constexpr UINT kFirstPresetCommand = 0x5200;
+    for (size_t index = 0; index < presets.size(); ++index) {
+        std::wstring label = presets[index].displayName;
+        if (presets[index].capabilities.maturity ==
+            ProviderMaturity::Experimental) {
+            label += L" (Experimental)";
+        } else if (presets[index].capabilities.maturity ==
+                   ProviderMaturity::SelfHosted) {
+            label += L" (Self-hosted)";
+        }
+        if (presets[index].capabilities.authModes.count(
+                TranslationAuthMode::None)) {
+            label += presets[index].capabilities.authModes.size() > 1
+                ? L" — API key optional" : L" — No API key";
+        } else {
+            label += L" — API key";
+        }
+        if (presets[index].adapterKind ==
+            TranslationAdapterKind::OpenAIChatCompletions) {
+            label += presets[index].kind == L"custom-openai-compatible"
+                ? L" (Compatibility)" : L" (Chat Completions)";
+        }
+        AppendMenuW(menu, MF_STRING,
+            kFirstPresetCommand + static_cast<UINT>(index), label.c_str());
+    }
+    RECT anchor = {};
+    GetWindowRect(GetDlgItem(page, IDC_PROVIDER_ADD), &anchor);
+    const UINT command = TrackPopupMenu(menu,
+        TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN | TPM_RIGHTBUTTON,
+        anchor.left, anchor.bottom, 0, page, nullptr);
+    DestroyMenu(menu);
+    if (command < kFirstPresetCommand ||
+        command >= kFirstPresetCommand + presets.size()) {
+        return {};
+    }
+    return presets[command - kFirstPresetCommand].kind;
+}
+
 std::wstring CredentialTargetForPreset(
     const TranslationProviderProfile& profile,
     const std::wstring& presetKind) {
-    if (profile.id == kDefaultTranslationProviderId &&
+    if (profile.id == kLegacyDeepSeekTranslationProviderId &&
         presetKind == L"deepseek") {
         // Preserve the original DeepSeek credential target so an existing
         // DeepSeek key becomes visible again when the built-in profile is
@@ -229,7 +273,7 @@ void NormalizeProfileDisplayDefaults(TranslationProviderProfile& profile) {
              preset->models.end())) {
         profile.model = preset->models.front();
     }
-    if (profile.id == kDefaultTranslationProviderId &&
+    if (profile.id == kLegacyDeepSeekTranslationProviderId &&
         profile.presetKind == L"deepseek" &&
         profile.reasoningMode == TranslationReasoningMode::ProviderDefault) {
         profile.reasoningMode = TranslationReasoningMode::Off;
@@ -255,7 +299,9 @@ void NormalizeBuiltInProfileForDisplay(TranslationProviderProfile& profile) {
     profile.authMode = fixedPreset->capabilities.authModes.count(
             TranslationAuthMode::BearerApiKey)
         ? TranslationAuthMode::BearerApiKey
-        : TranslationAuthMode::None;
+        : (fixedPreset->capabilities.authModes.count(TranslationAuthMode::ApiKey)
+            ? TranslationAuthMode::ApiKey
+            : TranslationAuthMode::None);
     if (profile.model.empty()) {
         if (!fixedPreset->models.empty()) {
             profile.model = fixedPreset->models.front();
@@ -275,7 +321,7 @@ void NormalizeBuiltInProfileForDisplay(TranslationProviderProfile& profile) {
         L"ZenCrop/Translation/provider/" + profile.id;
     if (profile.authMode == TranslationAuthMode::None) {
         profile.credentialRef.clear();
-    } else if (profile.id == kDefaultTranslationProviderId &&
+    } else if (profile.id == kLegacyDeepSeekTranslationProviderId &&
                profile.presetKind == L"deepseek" &&
                (profile.credentialRef.empty() ||
                 profile.credentialRef == kLegacyTranslationCredentialTarget)) {
@@ -349,13 +395,23 @@ TranslationProviderProfile* ProfileById(
     return it == state.pending.providerProfiles.end() ? nullptr : &*it;
 }
 
+std::wstring ProviderComboLabel(const TranslationProviderProfile& profile) {
+    std::wstring label = profile.displayName;
+    const auto capabilities = GetCapabilities(profile);
+    if (capabilities.maturity == ProviderMaturity::Experimental) {
+        label += L" (Experimental)";
+    } else if (capabilities.maturity == ProviderMaturity::SelfHosted) {
+        label += L" (Self-hosted)";
+    }
+    if (!profile.enabled) label += L" (Disabled)";
+    return label;
+}
+
 void FillProfiles(HWND page, ProviderPageState& state) {
     HWND combo = GetDlgItem(page, IDC_PROVIDER_PROFILE);
     ClearCombo(combo, state.profileIds);
     for (const auto& profile : state.pending.providerProfiles) {
-        const std::wstring label = profile.enabled
-            ? profile.displayName : profile.displayName + L" (Disabled)";
-        AddCombo(combo, label, profile.id, state.profileIds);
+        AddCombo(combo, ProviderComboLabel(profile), profile.id, state.profileIds);
     }
     SelectCombo(combo, state.selectedProviderId);
     state.selectedProviderId = ComboValue(combo);
@@ -419,8 +475,7 @@ void UpdateProfileComboLabel(
         if (!value || *value != profile.id) continue;
         const LRESULT selected = SendMessageW(combo, CB_GETCURSEL, 0, 0);
         SendMessageW(combo, CB_DELETESTRING, index, 0);
-        const std::wstring label = profile.enabled
-            ? profile.displayName : profile.displayName + L" (Disabled)";
+        const std::wstring label = ProviderComboLabel(profile);
         const LRESULT inserted = SendMessageW(
             combo, CB_INSERTSTRING, index,
             reinterpret_cast<LPARAM>(label.c_str()));
@@ -437,7 +492,9 @@ void FillAuthMode(HWND page, const TranslationProviderProfile& profile) {
     SendMessageW(auth, CB_RESETCONTENT, 0, 0);
     const auto caps = GetCapabilities(profile);
     const struct AuthOption { const wchar_t* label; TranslationAuthMode mode; } options[] = {
-        {L"Bearer API key", TranslationAuthMode::BearerApiKey}, {L"No authentication", TranslationAuthMode::None},
+        {L"Bearer API key", TranslationAuthMode::BearerApiKey},
+        {L"API key", TranslationAuthMode::ApiKey},
+        {L"No authentication", TranslationAuthMode::None},
     };
     for (const auto& option : options) {
         if (!caps.authModes.count(option.mode)) continue;
@@ -508,13 +565,27 @@ void RenderProfile(HWND page, ProviderPageState& state) {
     NormalizeProfileDisplayDefaults(*profile);
     UpdateProfileComboLabel(page, *profile);
     const auto* preset = FindTranslationProviderPreset(profile->presetKind);
+    const ProviderCapabilities capabilities = GetCapabilities(*profile);
     SetText(page, IDC_PROVIDER_NAME, profile->displayName);
     CheckDlgButton(page, IDC_PROVIDER_ENABLED,
         profile->enabled ? BST_CHECKED : BST_UNCHECKED);
-    const bool builtIn = FindBuiltInProviderPreset(profile->id) != nullptr;
-    EnableWindow(GetDlgItem(page, IDC_PROVIDER_NAME), !builtIn);
+    const bool systemDefault = profile->id == kDefaultTranslationProviderId;
+    EnableWindow(GetDlgItem(page, IDC_PROVIDER_NAME), !systemDefault);
     SetText(page, IDC_PROVIDER_TEST_STATUS, L"");
     FillAuthMode(page, *profile);
+    const bool llm = capabilities.family == TranslationProviderFamily::Llm;
+    for (const int id : {IDC_PROVIDER_MODEL_LABEL, IDC_PROVIDER_MODEL,
+                         IDC_PROVIDER_CUSTOM_MODEL,
+                         IDC_PROVIDER_REASONING_LABEL, IDC_PROVIDER_REASONING,
+                         IDC_PROVIDER_TEMPERATURE_LABEL, IDC_PROVIDER_TEMPERATURE,
+                         IDC_PROVIDER_ADVANCED_LABEL, IDC_PROVIDER_ADVANCED}) {
+        ShowWindow(GetDlgItem(page, id), llm ? SW_SHOW : SW_HIDE);
+    }
+    ShowWindow(GetDlgItem(page, IDC_PROVIDER_REGION_LABEL),
+        capabilities.acceptsRegion ? SW_SHOW : SW_HIDE);
+    ShowWindow(GetDlgItem(page, IDC_PROVIDER_REGION),
+        capabilities.acceptsRegion ? SW_SHOW : SW_HIDE);
+    SetText(page, IDC_PROVIDER_REGION, profile->region);
     if (const HWND model = GetDlgItem(page, IDC_PROVIDER_MODEL)) {
         SendMessageW(model, CB_RESETCONTENT, 0, 0);
         if (preset) {
@@ -556,7 +627,7 @@ void RenderProfile(HWND page, ProviderPageState& state) {
     } else {
         SetText(page, IDC_PROVIDER_TEMPERATURE, L"");
     }
-    const bool storedKey = profile->authMode == TranslationAuthMode::BearerApiKey &&
+    const bool storedKey = TranslationAuthUsesCredential(profile->authMode) &&
         TranslationCredentialStore::HasKeyAtTarget(profile->credentialRef);
     if (const HWND key = GetDlgItem(page, IDC_PROVIDER_KEY)) {
         if (state.keyRevealed) {
@@ -588,17 +659,24 @@ void RenderProfile(HWND page, ProviderPageState& state) {
                         : (storedKey ? L"Stored securely" : L"Not configured")))));
     SendMessageW(GetDlgItem(page, IDC_PROVIDER_CUSTOM_MODEL), BM_SETCHECK,
         profile->customModel ? BST_CHECKED : BST_UNCHECKED, 0);
-    const ProviderCapabilities capabilities = GetCapabilities(*profile);
     EnableWindow(GetDlgItem(page, IDC_PROVIDER_CUSTOM_MODEL),
         capabilities.allowsCustomModel);
     EnableWindow(GetDlgItem(page, IDC_PROVIDER_ENDPOINT),
         capabilities.allowsCustomBaseUrl);
     EnableWindow(GetDlgItem(page, IDC_PROVIDER_AUTH_MODE),
         capabilities.authModes.size() > 1);
+    EnableWindow(GetDlgItem(page, IDC_PROVIDER_TEMPERATURE),
+        capabilities.supportsTemperature);
     FillReasoning(page, *profile);
     const std::wstring host = preset && !preset->dataHost.empty()
         ? preset->dataHost : L"custom endpoint";
-    SetText(page, IDC_PROVIDER_DATA_ROUTE, L"Data destination: " + host);
+    const std::wstring compatibility = preset &&
+            preset->adapterKind == TranslationAdapterKind::OpenAIChatCompletions
+        ? (preset->kind == L"custom-openai-compatible"
+            ? L" (Compatibility adapter)" : L" (Chat Completions)")
+        : L"";
+    SetText(page, IDC_PROVIDER_DATA_ROUTE,
+        L"Data destination: " + host + compatibility);
     const std::wstring keyAction = state.keyRevealed
         ? L"Hide"
         : (state.credentialIntent == CredentialIntent::Replace
@@ -606,10 +684,10 @@ void RenderProfile(HWND page, ProviderPageState& state) {
             : (storedKey ? L"Show" : L"Set"));
     SetText(page, IDC_PROVIDER_KEY_ACTION, keyAction);
     EnableWindow(GetDlgItem(page, IDC_PROVIDER_KEY_ACTION),
-        profile->authMode == TranslationAuthMode::BearerApiKey);
+        TranslationAuthUsesCredential(profile->authMode));
     EnableWindow(GetDlgItem(page, IDC_PROVIDER_KEY_CLEAR),
-        profile->authMode == TranslationAuthMode::BearerApiKey);
-    EnableWindow(GetDlgItem(page, IDC_PROVIDER_DELETE), !builtIn);
+        TranslationAuthUsesCredential(profile->authMode));
+    EnableWindow(GetDlgItem(page, IDC_PROVIDER_DELETE), !systemDefault);
 }
 
 void ReadControlsIntoProfile(
@@ -627,21 +705,31 @@ void ReadControlsIntoProfile(
     profile.enabled = IsDlgButtonChecked(
         page, IDC_PROVIDER_ENABLED) == BST_CHECKED;
     UpdateProfileComboLabel(page, profile);
-    const bool customModel = IsDlgButtonChecked(
+    const auto* preset = FindTranslationProviderPreset(profile.presetKind);
+    const auto currentCapabilities = GetCapabilities(profile);
+    const bool customModel = currentCapabilities.requiresModel &&
+        IsDlgButtonChecked(
         page, IDC_PROVIDER_CUSTOM_MODEL) == BST_CHECKED;
-    profile.model = customModel
-        ? ReadText(page, IDC_PROVIDER_MODEL)
-        : ReadComboText(page, IDC_PROVIDER_MODEL);
+    profile.model = currentCapabilities.requiresModel
+        ? (customModel ? ReadText(page, IDC_PROVIDER_MODEL)
+                       : ReadComboText(page, IDC_PROVIDER_MODEL))
+        : L"";
     TrimWhitespace(profile.model);
     auto* auth = GetDlgItem(page, IDC_PROVIDER_AUTH_MODE);
     const LRESULT authIndex = SendMessageW(auth, CB_GETCURSEL, 0, 0);
     if (authIndex != CB_ERR) profile.authMode = static_cast<TranslationAuthMode>(SendMessageW(auth, CB_GETITEMDATA, authIndex, 0));
+    if (TranslationAuthUsesCredential(profile.authMode) &&
+        profile.credentialRef.empty()) {
+        profile.credentialRef = CredentialTargetForPreset(profile, profile.presetKind);
+    }
     const std::wstring endpoint = ReadText(page, IDC_PROVIDER_ENDPOINT);
     std::wstring normalizedEndpoint = endpoint;
     TrimWhitespace(normalizedEndpoint);
-    const auto* preset = FindTranslationProviderPreset(profile.presetKind);
     profile.baseUrlOverride = (preset && preset->capabilities.allowsCustomBaseUrl)
         ? normalizedEndpoint : L"";
+    profile.region = currentCapabilities.acceptsRegion
+        ? ReadText(page, IDC_PROVIDER_REGION) : L"";
+    TrimWhitespace(profile.region);
     profile.customModel = customModel;
     const auto capabilities = GetCapabilities(profile);
     if (!capabilities.allowsCustomModel) {
@@ -657,11 +745,15 @@ void ReadControlsIntoProfile(
         SendMessageW(GetDlgItem(page, IDC_PROVIDER_CUSTOM_MODEL), BM_SETCHECK,
             BST_CHECKED, 0);
     }
-    profile.reasoningMode = ReadReasoning(page);
+    profile.reasoningMode = currentCapabilities.family == TranslationProviderFamily::Llm
+        ? ReadReasoning(page) : TranslationReasoningMode::Off;
     NormalizeProfileDisplayDefaults(profile);
-    profile.advancedOptionsJson = ReadText(page, IDC_PROVIDER_ADVANCED);
+    profile.advancedOptionsJson = currentCapabilities.family == TranslationProviderFamily::Llm
+        ? ReadText(page, IDC_PROVIDER_ADVANCED) : L"{}";
     const std::wstring temperature = ReadText(page, IDC_PROVIDER_TEMPERATURE);
-    if (temperature.empty()) profile.temperature.reset();
+    if (!currentCapabilities.supportsTemperature || temperature.empty()) {
+        profile.temperature.reset();
+    }
     else {
         try { profile.temperature = std::stod(temperature); }
         catch (...) { profile.temperature.reset(); }
@@ -693,7 +785,7 @@ bool ValidateState(HWND page, ProviderPageState& state) {
                 MB_OK | MB_ICONWARNING);
             return false;
         }
-        if (profile.authMode == TranslationAuthMode::BearerApiKey &&
+        if (TranslationAuthUsesCredential(profile.authMode) &&
             state.pending.enabled && profile.id == state.pending.activeProviderId) {
             const bool editingActive = profile.id == state.selectedProviderId;
             if (editingActive &&
@@ -741,7 +833,10 @@ void ResetCurrentProfileToDefaults(HWND page, ProviderPageState& state) {
     if (!capabilities.allowsCustomBaseUrl) {
         profile->baseUrlOverride.clear();
     }
-    if (!preset->models.empty()) {
+    if (!capabilities.requiresModel) {
+        profile->model.clear();
+        profile->customModel = false;
+    } else if (!preset->models.empty()) {
         profile->model = preset->models.front();
         profile->customModel = false;
     } else {
@@ -750,18 +845,15 @@ void ResetCurrentProfileToDefaults(HWND page, ProviderPageState& state) {
         // erasing the user's required model identifier.
         profile->customModel = true;
     }
-    profile->reasoningMode = profile->presetKind == L"deepseek"
-        ? TranslationReasoningMode::Off
-        : TranslationReasoningMode::ProviderDefault;
-    profile->temperature = profile->presetKind == L"deepseek"
-        ? std::optional<double>(1.3)
-        : (profile->adapterKind == TranslationAdapterKind::OpenAIChatCompletions &&
-           profile->presetKind != L"openrouter" &&
-           profile->presetKind != L"custom-openai-compatible"
-            ? std::optional<double>(0.3) : std::nullopt);
+    profile->reasoningMode = capabilities.defaultReasoning;
+    profile->temperature.reset();
     profile->advancedOptionsJson = L"{}";
+    profile->region.clear();
     profile->authMode = capabilities.authModes.count(TranslationAuthMode::BearerApiKey)
-        ? TranslationAuthMode::BearerApiKey : TranslationAuthMode::None;
+        ? TranslationAuthMode::BearerApiKey
+        : (capabilities.authModes.count(TranslationAuthMode::ApiKey)
+            ? TranslationAuthMode::ApiKey
+            : TranslationAuthMode::None);
     if (profile->authMode == TranslationAuthMode::None) {
         profile->credentialRef.clear();
     } else if (profile->credentialRef.empty()) {
@@ -875,7 +967,7 @@ void BeginTest(HWND page, ProviderPageState& state) {
     auto* profile = CurrentProfile(page, state);
     if (!profile) return;
     std::wstring pendingKey = state.pendingKey;
-    if (profile->authMode == TranslationAuthMode::BearerApiKey &&
+    if (TranslationAuthUsesCredential(profile->authMode) &&
         state.credentialIntent != CredentialIntent::Replace) {
         std::wstring ignoredError;
         TranslationCredentialStore::ReadKeyAtTarget(profile->credentialRef, pendingKey,
@@ -950,7 +1042,7 @@ void CommitCredential(
     bool& mutationAttempted,
     std::wstring& error) {
     mutationAttempted = false;
-    if (profile.authMode != TranslationAuthMode::BearerApiKey) {
+    if (!TranslationAuthUsesCredential(profile.authMode)) {
         ResetCredentialIntent(state);
         return;
     }
@@ -1055,16 +1147,12 @@ INT_PTR CALLBACK TranslationProviderSettingsPageProc(
             RenderProfile(page, *state);
         } else if (control == IDC_PROVIDER_ADD && notification == BN_CLICKED) {
             CancelProviderTest(page, *state);
-            TranslationProviderProfile profile;
-            profile.id = NewProfileId();
-            profile.displayName = L"New provider";
-            profile.presetKind = L"custom-openai-compatible";
-            profile.adapterKind = TranslationAdapterKind::OpenAIChatCompletions;
-            profile.authMode = TranslationAuthMode::BearerApiKey;
-            profile.enabled = false;
-            profile.model.clear();
-            profile.customModel = true;
-            profile.credentialRef = L"ZenCrop/Translation/provider/" + profile.id;
+            const std::wstring presetKind = SelectProviderPreset(
+                page, state->pending);
+            const auto* preset = FindTranslationProviderPreset(presetKind);
+            if (!preset) return TRUE;
+            TranslationProviderProfile profile =
+                CreateTranslationProviderProfile(*preset, NewProfileId());
             state->pending.providerProfiles.push_back(profile);
             state->selectedProviderId = profile.id;
             ResetCredentialIntent(*state);
@@ -1092,7 +1180,7 @@ INT_PTR CALLBACK TranslationProviderSettingsPageProc(
             CancelProviderTest(page, *state);
             auto* current = CurrentProfile(page, *state);
             if (!current) return TRUE;
-            if (FindBuiltInProviderPreset(current->id)) {
+            if (current->id == kDefaultTranslationProviderId) {
                 MessageBoxW(page,
                     L"Built-in provider profiles cannot be deleted.\n\n"
                     L"Use Add or Copy to create a removable custom profile.",
@@ -1130,7 +1218,7 @@ INT_PTR CALLBACK TranslationProviderSettingsPageProc(
         } else if (control == IDC_PROVIDER_KEY_ACTION && notification == BN_CLICKED) {
             CancelProviderTest(page, *state);
             auto* profile = CurrentProfile(page, *state);
-            if (!profile || profile->authMode != TranslationAuthMode::BearerApiKey) return TRUE;
+            if (!profile || !TranslationAuthUsesCredential(profile->authMode)) return TRUE;
             if (state->keyRevealed) {
                 ClearRevealedKey(*state);
                 state->credentialIntent = CredentialIntent::None;

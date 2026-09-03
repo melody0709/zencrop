@@ -1,8 +1,17 @@
-# ZenCrop v2.9.15
+# ZenCrop v2.9.18
 
 [中文文档](doc/README_zh.md)
 
 An independent, **enhanced** reimplementation of [PowerToys Crop And Lock](https://github.com/microsoft/PowerToys/tree/main/src/modules/CropAndLock/), with rich screenshot annotation, long screenshot, multi-engine OCR, and OCR Dashboard.
+
+## What's new in v2.9.18
+
+- **Selection Translation**: Press `Shift+A` in another application to translate selected text. ZenCrop first reads accessible text and can optionally use a clipboard-copy fallback while restoring the previous clipboard contents.
+- **Expanded Translation Providers**: Direct machine-translation adapters cover Google Translate Community, Microsoft Translator Community, Google Cloud Translation, Azure Translator, DeepL API, and custom DeepLX endpoints. LLM providers use provider-specific OpenAI Responses, Chat Completions, Gemini, xAI, Ollama, and DeepSeek protocols.
+- **Safer Translation Settings**: Translation and hotkey changes are validated as one settings transaction, including duplicate-hotkey and `Ctrl+C` fallback conflicts.
+- **Stable Result Placement**: Refreshing or replacing a selection translation keeps the result window at the position chosen by the user while automatic content sizing continues.
+
+See [CHANGELOG](doc/CHANGELOG.md) for the complete release notes.
 
 ---
 ## 🔥 V2.2.0 & V2.2.1 Massive Update: The Ultimate Thumbnail Mode
@@ -52,6 +61,7 @@ ZenCrop is rebuilt from scratch, runs completely standalone without PowerToys, a
 - **Long Screenshot**: Auto-scroll scrolling capture for web pages, documents, and chat history. Supports vertical and horizontal stitching, manual scroll mode, real-time cumulative preview, and export/copy.
 - **OCR & Document Parsing**: Four OCR engines — Windows OCR (built-in WinRT), **PP-OCRv6 Local** (ONNX Runtime CPU, small/medium models), **PaddleOCR-VL 1.6 Local** (llama.cpp VLM for complex layouts, formulas, tables, charts), and PaddleOCR Cloud (official API). Dual OCR hotkeys let you assign two engines to separate shortcuts. Includes PP-DocLayout layout detection, table/formula/chart/seal recognition, header/footer/footnote control, built-in model download manager (HuggingFace/ModelScope, resume, SHA-256 verification), idle auto-exit for local VLM, optional Recursive XY-Cut physical sorting for multi-column documents, and result-on-top floating window.
 - **OCR Dashboard**: Full-featured OCR workbench opened from the tray menu — persistent history with search/filter, image preview with zoom/pan and block highlighting, drag-and-drop image/folder import, PDF batch OCR with page range selection, batch queue monitoring with retry/recovery, Markdown/TXT/JSON output artifacts, WebView2 Markdown preview with KaTeX math, Mermaid diagrams, Chart.js, and HTML tables, Source/Preview toggle, and detected text/layout block overlay on source images.
+- **Selection Translation**: Translate text selected in other applications with the customizable `Shift+A` hotkey. Accessible-text acquisition is preferred; an optional simulated-copy fallback restores the previous clipboard contents. Results support direct machine-translation services and LLM providers.
 - **Click to Accept**: Single-click accepts the smart suggestion; drag to manually draw a rectangle
 - **Crop Area Adjustment**: After drawing the crop rectangle, you can resize it by dragging edges/corners, move it by dragging inside, and double-click to confirm — no more accidental crops
   - **Arrow Key Control**: Fine-tune the crop box with keyboard in adjust mode — Arrow keys move 1px, Ctrl+Arrow expands, Shift+Arrow shrinks, Enter confirms
@@ -72,6 +82,7 @@ ZenCrop is rebuilt from scratch, runs completely standalone without PowerToys, a
 | `Alt+Shift+S` | Start screenshot |
 | `Shift+X` | OCR with primary engine (Enter confirms → result window / history) |
 | `Alt+Shift+X` | OCR with alternate engine (configurable) |
+| `Shift+A` | Translate text selected in the foreground application (configurable) |
 | `Shift+C` | In screenshot or OCR adjust mode: OCR selection and copy text only (toast, no result window / history). Same engine route as the session (`Shift+X` → primary, `Alt+Shift+X` → alternate). |
 | `ESC` | Cancel current crop rectangle / cancel entire crop mode / close focused Thumbnail window |
 | Right-click tray icon | Open menu (toggle titlebar / OCR Dashboard / settings / exit) |
@@ -112,6 +123,7 @@ Right-click the tray icon → **Settings** to open the tabbed settings dialog:
 - **Screenshot tab**: Output format (PNG/JPEG/BMP), JPEG quality, cursor inclusion, quick-save directory, filename template, annotation defaults (active tool, colors, pen widths, arrow style, text/font/watermark settings), toolbar layout (Always Show / More Tools / Always Hide), post-processing (rounded corners, shadow, border)
 - **Always On Top tab**: Border visibility, color (system accent or custom), opacity, thickness, rounded corners, inset, AOT hotkey customization
 - **OCR tab**: OCR font size, result-on-top, OCR mode (Windows OCR / PP-OCRv6 Local / PaddleOCR-VL 1.6 Local / PaddleOCR Cloud), model directory with "Manage Models..." download button (HuggingFace/ModelScope, resume, SHA-256 verify), PP-OCRv6 variant (small/medium) & threads, PaddleOCR Cloud settings (PaddleOCR-VL-1.6, API URL/token, timeout), document parsing options (layout threshold profile, chart/image/seal recognition, header/footer/footnote control), dual OCR hotkey customization
+- **Translate tab**: Enable selection translation, configure the `Shift+A` hotkey and clipboard fallback, choose direct machine-translation or LLM providers, manage provider endpoints/models/credentials, and control result-window behavior
 
 Local OCR engines require model files. Use the **Manage Models...** button in Settings → OCR to download them in-app. See [docs/03_ocr_system/00_OCR_MODEL_DOWNLOAD.md](docs/03_ocr_system/00_OCR_MODEL_DOWNLOAD.md) for manual download instructions.
 

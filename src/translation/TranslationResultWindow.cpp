@@ -464,9 +464,10 @@ void TranslationResultWindow::RegisterClass() {
 
 TranslationResultWindow::TranslationResultWindow(
     const TranslationRequest& request,
-    const RECT& sourceRect,
+    const TranslationLaunchContext& context,
     CommandCallback callback)
-    : layoutDpi_(kTranslationDesignDpi), sourceRect_(sourceRect), callback_(std::move(callback)) {
+    : layoutDpi_(kTranslationDesignDpi), sourceMode_(context.mode),
+      sourceRect_(context.anchorRect), callback_(std::move(callback)) {
     RegisterClass();
     const TranslationSettings initialSettings = LoadTranslationSettings();
     sourcePreviewZoomFactor_ = (std::clamp)(initialSettings.sourcePreviewZoomFactor,
@@ -484,7 +485,10 @@ TranslationResultWindow::TranslationResultWindow(
         // durable application window as its owner.
         WS_EX_APPWINDOW,
         ClassName(),
-        S::IsChinese() ? L"ZenCrop \u7ffb\u8bd1" : L"ZenCrop Translate",
+        sourceMode_ == TranslationSourceMode::SelectedText
+            ? (S::IsChinese() ? L"ZenCrop \u5212\u8bcd\u7ffb\u8bd1" :
+                L"ZenCrop Selection Translate")
+            : (S::IsChinese() ? L"ZenCrop \u7ffb\u8bd1" : L"ZenCrop Translate"),
         // A frameless popup needs these styles for standard taskbar
         // click-to-minimize behavior.
         WS_POPUP | WS_THICKFRAME | WS_CLIPCHILDREN | WS_SYSMENU | WS_MINIMIZEBOX,
@@ -513,63 +517,68 @@ TranslationResultWindow::TranslationResultWindow(
             }
             SaveTranslationSettings(settings);
         };
-        sourcePreview_ = std::make_unique<OcrMarkdownPreviewHost>();
-        OcrMarkdownPreviewHost::Callbacks sourcePreviewCallbacks;
-        sourcePreviewCallbacks.onZoomFactorChanged =
-            [persistPreviewZoomFactor](double zoomFactor) {
-                persistPreviewZoomFactor(true, zoomFactor);
+        // Both OCR and selected-text launches use the same source preview.
+        // Selected text still keeps the editable Source mode so users can
+        // correct the text before translating again.
+        {
+            sourcePreview_ = std::make_unique<OcrMarkdownPreviewHost>();
+            OcrMarkdownPreviewHost::Callbacks sourcePreviewCallbacks;
+            sourcePreviewCallbacks.onZoomFactorChanged =
+                [persistPreviewZoomFactor](double zoomFactor) {
+                    persistPreviewZoomFactor(true, zoomFactor);
+                };
+            sourcePreviewCallbacks.onReady = [this]() {
+                sourcePreviewFailed_ = false;
+                if (sourcePreview_) {
+                    sourcePreview_->SetBounds(sourceContentRect_);
+                    sourcePreview_->RenderMarkdown(-1, sourceMarkdownText_, true);
+                }
+                UpdateSourceModeButton();
+                UpdateSourcePreviewVisibility();
             };
-        sourcePreviewCallbacks.onReady = [this]() {
-            sourcePreviewFailed_ = false;
-            if (sourcePreview_) {
-                sourcePreview_->SetBounds(sourceContentRect_);
-                sourcePreview_->RenderMarkdown(-1, sourceMarkdownText_, true);
+            sourcePreviewCallbacks.onContentMetrics = [this](
+                const OcrMarkdownPreviewHost::PreviewContentMetrics& metrics) {
+                sourcePreviewMetricsValid_ = true;
+                sourcePreviewContentHeight_ = metrics.scrollHeight;
+                sourcePreviewContentWidth_ = metrics.scrollWidth;
+                sourcePreviewClientWidth_ = metrics.clientWidth;
+                ResizeToAutomaticWindowSize();
+                LayoutControls();
+            };
+            sourcePreviewCallbacks.onUnavailable = [this](const std::wstring&) {
+                sourcePreviewFailed_ = true;
+                sourcePreviewMetricsValid_ = false;
+                sourceDisplayMode_ = SourceDisplayMode::Source;
+                UpdateSourceModeButton();
+                UpdateSourcePreviewVisibility();
+            };
+            sourcePreviewCallbacks.onRenderError = [this](int, const std::wstring&) {
+                sourcePreviewFailed_ = true;
+                sourcePreviewMetricsValid_ = false;
+                sourceDisplayMode_ = SourceDisplayMode::Source;
+                UpdateSourceModeButton();
+                UpdateSourcePreviewVisibility();
+            };
+            sourcePreviewCallbacks.onProcessFailed = [this]() {
+                sourcePreviewFailed_ = true;
+                sourcePreviewMetricsValid_ = false;
+                sourceDisplayMode_ = SourceDisplayMode::Source;
+                UpdateSourceModeButton();
+                UpdateSourcePreviewVisibility();
+            };
+            sourcePreviewCallbacks.onPreviewDocumentEdit = [this]() {
+                SetSourceDisplayMode(SourceDisplayMode::Source, true);
+            };
+            if (!sourcePreview_->Create(window_, sourceContentRect_,
+                std::move(sourcePreviewCallbacks))) {
+                sourcePreviewFailed_ = true;
+                sourceDisplayMode_ = SourceDisplayMode::Source;
+                sourcePreview_.reset();
+            } else {
+                sourcePreview_->SetZoomFactor(sourcePreviewZoomFactor_);
+                sourcePreview_->SetTextFontSize(sourceFontSize_);
+                sourcePreview_->Show(false);
             }
-            UpdateSourceModeButton();
-            UpdateSourcePreviewVisibility();
-        };
-        sourcePreviewCallbacks.onContentMetrics = [this](
-            const OcrMarkdownPreviewHost::PreviewContentMetrics& metrics) {
-            sourcePreviewMetricsValid_ = true;
-            sourcePreviewContentHeight_ = metrics.scrollHeight;
-            sourcePreviewContentWidth_ = metrics.scrollWidth;
-            sourcePreviewClientWidth_ = metrics.clientWidth;
-            ResizeToAutomaticWindowSize();
-            LayoutControls();
-        };
-        sourcePreviewCallbacks.onUnavailable = [this](const std::wstring&) {
-            sourcePreviewFailed_ = true;
-            sourcePreviewMetricsValid_ = false;
-            sourceDisplayMode_ = SourceDisplayMode::Source;
-            UpdateSourceModeButton();
-            UpdateSourcePreviewVisibility();
-        };
-        sourcePreviewCallbacks.onRenderError = [this](int, const std::wstring&) {
-            sourcePreviewFailed_ = true;
-            sourcePreviewMetricsValid_ = false;
-            sourceDisplayMode_ = SourceDisplayMode::Source;
-            UpdateSourceModeButton();
-            UpdateSourcePreviewVisibility();
-        };
-        sourcePreviewCallbacks.onProcessFailed = [this]() {
-            sourcePreviewFailed_ = true;
-            sourcePreviewMetricsValid_ = false;
-            sourceDisplayMode_ = SourceDisplayMode::Source;
-            UpdateSourceModeButton();
-            UpdateSourcePreviewVisibility();
-        };
-        sourcePreviewCallbacks.onPreviewDocumentEdit = [this]() {
-            SetSourceDisplayMode(SourceDisplayMode::Source, true);
-        };
-        if (!sourcePreview_->Create(window_, sourceContentRect_,
-            std::move(sourcePreviewCallbacks))) {
-            sourcePreviewFailed_ = true;
-            sourceDisplayMode_ = SourceDisplayMode::Source;
-            sourcePreview_.reset();
-        } else {
-            sourcePreview_->SetZoomFactor(sourcePreviewZoomFactor_);
-            sourcePreview_->SetTextFontSize(sourceFontSize_);
-            sourcePreview_->Show(false);
         }
         UpdateSourceModeButton();
         translationPreview_ = std::make_unique<OcrMarkdownPreviewHost>();
@@ -749,9 +758,14 @@ void TranslationResultWindow::CreateControls(const TranslationRequest& request) 
     const DWORD buttonStyle = WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW;
 
     stageLabel_ = create(0, L"STATIC",
-        S::IsChinese() ? L"\u6b63\u5728\u8bc6\u522b\u6587\u5b57\u2026" : L"Recognizing text...",
+        sourceMode_ == TranslationSourceMode::SelectedText
+            ? (S::IsChinese() ? L"\u6b63\u5728\u7ffb\u8bd1\u2026" : L"Translating...")
+            : (S::IsChinese() ? L"\u6b63\u5728\u8bc6\u522b\u6587\u5b57\u2026" :
+                L"Recognizing text..."),
         staticStyle, kStageLabel);
-    engineLabel_ = create(0, L"BUTTON", L"", buttonStyle, kEngineLabel);
+    if (sourceMode_ == TranslationSourceMode::OcrImage) {
+        engineLabel_ = create(0, L"BUTTON", L"", buttonStyle, kEngineLabel);
+    }
     targetLabel_ = create(0, L"STATIC", L"\u2192", staticStyle | SS_CENTER,
         kTargetLabel);
     showSourceToggle_ = create(0, L"BUTTON",
@@ -796,9 +810,11 @@ void TranslationResultWindow::CreateControls(const TranslationRequest& request) 
         S::IsChinese() ? L"\u590d\u5236" : L"Copy", buttonStyle, kCopySource);
     copyTranslationButton_ = create(0, L"BUTTON",
         S::IsChinese() ? L"\u590d\u5236" : L"Copy", buttonStyle, kCopyTranslation);
-    recognizeButton_ = create(0, L"BUTTON",
-        S::IsChinese() ? L"\u91cd\u65b0\u8bc6\u522b" : L"Recognize again",
-        buttonStyle, kRecognizeAgain);
+    if (sourceMode_ == TranslationSourceMode::OcrImage) {
+        recognizeButton_ = create(0, L"BUTTON",
+            S::IsChinese() ? L"\u91cd\u65b0\u8bc6\u522b" : L"Recognize again",
+            buttonStyle, kRecognizeAgain);
+    }
     retranslateButton_ = create(0, L"BUTTON",
         S::IsChinese() ? L"\u91cd\u65b0\u7ffb\u8bd1" : L"Translate again",
         buttonStyle, kRetranslate);
@@ -806,7 +822,8 @@ void TranslationResultWindow::CreateControls(const TranslationRequest& request) 
         S::IsChinese() ? L"\u53d6\u6d88" : L"Cancel", buttonStyle, kCancel);
     pinButton_ = create(0, L"BUTTON", L"", buttonStyle, kPin);
     sourceModeButton_ = create(0, L"BUTTON",
-        S::IsChinese() ? L"\u539f\u6587" : L"Source", buttonStyle, kSourceMode);
+        S::IsChinese() ? L"\u539f\u6587" : L"Source", buttonStyle,
+        kSourceMode);
     minimizeButton_ = create(0, L"BUTTON",
         S::IsChinese() ? L"最小化" : L"Minimize", buttonStyle, kMinimize);
     closeButton_ = create(0, L"BUTTON",
@@ -861,17 +878,20 @@ void TranslationResultWindow::CreateControls(const TranslationRequest& request) 
     AddLanguage(targetLanguages_, L"\u65e5\u672c\u8a9e", L"ja");
     AddLanguage(targetLanguages_, L"\ud55c\uad6d\uc5b4", L"ko");
 
-    AddOcrRoute(S::IsChinese() ? L"\u5f53\u524d\u8bbe\u7f6e" : L"Current settings", L"current");
-    AddOcrRoute(L"Windows OCR", L"local");
-    AddOcrRoute(S::IsChinese()
-        ? L"PaddleOCR \u672c\u5730\u00b7\u56fe\u50cf" : L"PaddleOCR Local · Image",
-        L"paddle_local");
-    AddOcrRoute(S::IsChinese()
-        ? L"PaddleOCR \u672c\u5730\u00b7\u6587\u6863" : L"PaddleOCR Local · Document",
-        L"paddle_local_doc");
-    AddOcrRoute(S::IsChinese() ? L"PaddleOCR \u4e91\u7aef" : L"PaddleOCR Cloud",
-        L"paddle_cloud");
-    AddOcrRoute(L"PP-OCRv6 · ONNX", L"ppocrv6_onnx");
+    if (sourceMode_ == TranslationSourceMode::OcrImage) {
+        AddOcrRoute(S::IsChinese() ? L"\u5f53\u524d\u8bbe\u7f6e" :
+            L"Current settings", L"current");
+        AddOcrRoute(L"Windows OCR", L"local");
+        AddOcrRoute(S::IsChinese()
+            ? L"PaddleOCR \u672c\u5730\u00b7\u56fe\u50cf" :
+                L"PaddleOCR Local · Image", L"paddle_local");
+        AddOcrRoute(S::IsChinese()
+            ? L"PaddleOCR \u672c\u5730\u00b7\u6587\u6863" :
+                L"PaddleOCR Local · Document", L"paddle_local_doc");
+        AddOcrRoute(S::IsChinese() ? L"PaddleOCR \u4e91\u7aef" :
+            L"PaddleOCR Cloud", L"paddle_cloud");
+        AddOcrRoute(L"PP-OCRv6 · ONNX", L"ppocrv6_onnx");
+    }
 
     const TranslationSettings providerSettings = LoadTranslationSettings();
     for (const auto& profile : providerSettings.providerProfiles) {
@@ -948,7 +968,8 @@ void TranslationResultWindow::AddOcrRoute(const wchar_t* label, const wchar_t* v
 }
 
 void TranslationResultWindow::ShowOcrRouteMenu() {
-    if (!engineLabel_ || ocrRoutes_.empty() || busy_) return;
+    if (sourceMode_ != TranslationSourceMode::OcrImage ||
+        !engineLabel_ || ocrRoutes_.empty() || busy_) return;
     HMENU menu = CreatePopupMenu();
     if (!menu) return;
     ConfigureCompactPopupMenu(menu);
@@ -1038,11 +1059,19 @@ std::wstring TranslationResultWindow::SelectedProvider() const {
     return providerOptions_[providerIndex_].value;
 }
 
-void TranslationResultWindow::Show(HWND owner) {
+void TranslationResultWindow::Show(
+    HWND owner, const POINT* retainedPosition) {
     if (!window_) return;
     if (owner && IsWindow(owner)) SetWindowLongPtrW(window_, GWLP_HWNDPARENT,
         reinterpret_cast<LONG_PTR>(owner));
-    PositionNearSourceRect();
+    autoPositionNearSource_ = retainedPosition == nullptr;
+    if (retainedPosition) {
+        SetWindowPos(window_, nullptr,
+            retainedPosition->x, retainedPosition->y, 0, 0,
+            SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+    } else {
+        PositionNearSourceRect();
+    }
     ShowWindow(window_, SW_SHOWNORMAL);
     SetForegroundWindow(window_);
 }
@@ -1229,7 +1258,9 @@ void TranslationResultWindow::ResizeToAutomaticWindowSize() {
     }
     SetWindowPos(window_, nullptr, 0, 0, desired.cx, desired.cy,
         SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
-    PositionNearSourceRect();
+    if (autoPositionNearSource_) {
+        PositionNearSourceRect();
+    }
 }
 
 void TranslationResultWindow::SetStage(const std::wstring& stage) {
@@ -1237,7 +1268,8 @@ void TranslationResultWindow::SetStage(const std::wstring& stage) {
 }
 
 void TranslationResultWindow::BeginOcrElapsed() {
-    if (!window_ || !IsWindow(window_)) return;
+    if (sourceMode_ != TranslationSourceMode::OcrImage ||
+        !window_ || !IsWindow(window_)) return;
     showOcrElapsed_ = true;
     ocrStartedTick_ = GetTickCount64();
     SetTimer(window_, kOcrElapsedTimer, 250, nullptr);
@@ -1245,6 +1277,7 @@ void TranslationResultWindow::BeginOcrElapsed() {
 }
 
 void TranslationResultWindow::EndOcrElapsed() {
+    if (sourceMode_ != TranslationSourceMode::OcrImage) return;
     showOcrElapsed_ = false;
     ocrStartedTick_ = 0;
     if (window_ && IsWindow(window_)) KillTimer(window_, kOcrElapsedTimer);
@@ -1260,12 +1293,14 @@ void TranslationResultWindow::UpdateOcrElapsedStage() {
 }
 
 void TranslationResultWindow::SetOcrEngineLabel(const std::wstring& label) {
+    if (sourceMode_ != TranslationSourceMode::OcrImage) return;
     // A pending route change temporarily shows the selected route here;
     // recognition restores the actual engine label supplied by the coordinator.
     if (engineLabel_) SetWindowTextW(engineLabel_, label.c_str());
 }
 
 void TranslationResultWindow::SetOcrRouteSelection(const std::wstring& route) {
+    if (sourceMode_ != TranslationSourceMode::OcrImage) return;
     for (size_t index = 0; index < ocrRoutes_.size(); ++index) {
         if (ocrRoutes_[index].value == route) {
             ocrRouteIndex_ = static_cast<int>(index);
@@ -1453,7 +1488,7 @@ void TranslationResultWindow::SetShowSourceText(bool show) {
 }
 
 void TranslationResultWindow::SetRetryOcrMode(bool retryOcr) {
-    retryOcrMode_ = retryOcr;
+    retryOcrMode_ = sourceMode_ == TranslationSourceMode::OcrImage && retryOcr;
     UpdateActionAvailability();
     LayoutControls();
 }
@@ -1724,16 +1759,24 @@ void TranslationResultWindow::LayoutControls() {
 
     const int metadataLeft = ScaleForDpi(kTranslationMetadataTextInset, dpi);
     const int minimumStageWidth = ScaleForDpi(48, dpi);
-    const int minimumEngineWidth = ScaleForDpi(128, dpi);
-    const int minimumRecognizeWidth = ScaleForDpi(132, dpi);
-    int recognizeWidth = ScaleForDpi(150, dpi);
+    const bool showOcrControls =
+        sourceMode_ == TranslationSourceMode::OcrImage;
+    const int minimumEngineWidth = showOcrControls
+        ? ScaleForDpi(128, dpi) : 0;
+    const int minimumRecognizeWidth = showOcrControls
+        ? ScaleForDpi(132, dpi) : 0;
+    int recognizeWidth = showOcrControls ? ScaleForDpi(150, dpi) : 0;
     const int recognizeTop = headerButtonTop +
         (headerButtonWidth - actionHeight) / 2;
-    int engineWidth = (std::min)(ScaleForDpi(232, dpi),
-        (std::max)(ScaleForDpi(128, dpi), contentWidth / 3));
-    const int topGapCount = showSourceText_ ? 4 : 2;
+    int engineWidth = showOcrControls
+        ? (std::min)(ScaleForDpi(232, dpi),
+            (std::max)(ScaleForDpi(128, dpi), contentWidth / 3))
+        : 0;
+    const bool showSourceMode = sourceModeButton_ && showSourceText_;
+    const int topGapCount = (showOcrControls ? 3 : 1) +
+        (showSourceMode ? 1 : 0);
     int topShortfall = minimumStageWidth + rowGap * topGapCount + engineWidth +
-        (showSourceText_ ? sourceModeWidth : 0) + recognizeWidth -
+        (showSourceMode ? sourceModeWidth : 0) + recognizeWidth -
         (pinX - metadataLeft);
     if (topShortfall > 0) {
         const int recognizeReduction = (std::min)(topShortfall,
@@ -1746,22 +1789,32 @@ void TranslationResultWindow::LayoutControls() {
             engineWidth - minimumEngineWidth);
         engineWidth -= engineReduction;
     }
-    const int recognizeX = pinX - rowGap - recognizeWidth;
-    const int engineX = recognizeX - rowGap - engineWidth;
-    const int sourceModeX = engineX - rowGap - sourceModeWidth;
-    const int engineAnchor = showSourceText_ ? sourceModeX : engineX;
-    ShowWindow(sourceModeButton_, showSourceText_ ? SW_SHOW : SW_HIDE);
-    if (showSourceText_) {
+    const int recognizeX = showOcrControls
+        ? pinX - rowGap - recognizeWidth : pinX;
+    const int engineX = showOcrControls
+        ? recognizeX - rowGap - engineWidth : pinX;
+    const int sourceModeX = (showOcrControls ? engineX : pinX) -
+        rowGap - sourceModeWidth;
+    const int engineAnchor = showSourceMode
+        ? sourceModeX : (showOcrControls ? engineX : pinX);
+    if (sourceModeButton_) {
+        ShowWindow(sourceModeButton_, showSourceMode ? SW_SHOW : SW_HIDE);
+    }
+    if (showSourceMode) {
         MoveWindow(sourceModeButton_, sourceModeX, sourceModeTop,
             sourceModeWidth, sourceModeHeight, TRUE);
     }
-    MoveWindow(recognizeButton_, recognizeX, recognizeTop,
-        recognizeWidth, actionHeight, TRUE);
+    if (showOcrControls) {
+        MoveWindow(recognizeButton_, recognizeX, recognizeTop,
+            recognizeWidth, actionHeight, TRUE);
+    }
     MoveWindow(stageLabel_, metadataLeft, metadataTop,
         (std::max)(minimumStageWidth, engineAnchor - metadataLeft - rowGap),
         metadataHeight, TRUE);
-    MoveWindow(engineLabel_, engineX, metadataTop,
-        engineWidth, metadataHeight, TRUE);
+    if (showOcrControls) {
+        MoveWindow(engineLabel_, engineX, metadataTop,
+            engineWidth, metadataHeight, TRUE);
+    }
 
     const int bodyTop = headerHeight + ScaleForDpi(3, dpi);
     const int showSourceWidth = ScaleForDpi(124, dpi);
@@ -2044,7 +2097,11 @@ void TranslationResultWindow::Paint() {
         SetTextColor(hdc, kTextPrimary);
         RECT titleRect = { logoRect.right + ScaleForDpi(8, dpi), titleTop,
             client.right - headerIconInset - ScaleForDpi(76, dpi), titleTop + titleHeight };
-        DrawTextW(hdc, S::IsChinese() ? L"ZenCrop \u7ffb\u8bd1" : L"ZenCrop Translate", -1,
+        const wchar_t* title = sourceMode_ == TranslationSourceMode::SelectedText
+            ? (S::IsChinese() ? L"ZenCrop \u5212\u8bcd\u7ffb\u8bd1" :
+                L"ZenCrop Selection Translate")
+            : (S::IsChinese() ? L"ZenCrop \u7ffb\u8bd1" : L"ZenCrop Translate");
+        DrawTextW(hdc, title, -1,
             &titleRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
         if (oldFont) SelectObject(hdc, oldFont);
     }
@@ -2477,6 +2534,10 @@ LRESULT TranslationResultWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wPara
         if (windowSizeMoveActive_) {
             RECT current = {};
             GetWindowRect(hwnd, &current);
+            if (current.left != windowSizeMoveStartRect_.left ||
+                current.top != windowSizeMoveStartRect_.top) {
+                autoPositionNearSource_ = false;
+            }
             if (current.right - current.left !=
                     windowSizeMoveStartRect_.right - windowSizeMoveStartRect_.left ||
                 current.bottom - current.top !=
@@ -2504,7 +2565,9 @@ LRESULT TranslationResultWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wPara
         ApplyDarkWindowChrome();
         LayoutControls();
         ResizeToAutomaticWindowSize();
-        ClampToCurrentMonitorWorkArea();
+        if (autoPositionNearSource_) {
+            ClampToCurrentMonitorWorkArea();
+        }
         return 0;
     }
     case WM_GETMINMAXINFO: {
@@ -2537,7 +2600,8 @@ LRESULT TranslationResultWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wPara
             ShowLanguageMenu(targetCombo_, false);
             return 0;
         }
-        if (LOWORD(wParam) == kEngineLabel && HIWORD(wParam) == BN_CLICKED) {
+        if (sourceMode_ == TranslationSourceMode::OcrImage &&
+            LOWORD(wParam) == kEngineLabel && HIWORD(wParam) == BN_CLICKED) {
             ShowOcrRouteMenu();
             return 0;
         }
@@ -2553,7 +2617,8 @@ LRESULT TranslationResultWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wPara
             CopyControlText(translationEdit_);
             return 0;
         }
-        if (LOWORD(wParam) == kRecognizeAgain && HIWORD(wParam) == BN_CLICKED) {
+        if (sourceMode_ == TranslationSourceMode::OcrImage &&
+            LOWORD(wParam) == kRecognizeAgain && HIWORD(wParam) == BN_CLICKED) {
             InvokeCommandSafely(Command::RecognizeAgain);
             return 0;
         }

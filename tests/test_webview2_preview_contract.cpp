@@ -482,6 +482,24 @@ int wmain() {
         std::wcerr << L"Preview runtime did not render a trusted payload\n";
         return 1;
     }
+    host.SetTextFontSize(22);
+    if (!WaitForScriptInt(
+            host,
+            LR"JS((function(){
+              var preview=document.querySelector("#preview");
+              if(!preview)return 0;
+              var style=window.getComputedStyle(preview);
+              return preview.style.getPropertyValue("--preview-font-size").trim()==="22px"&&
+                style.fontSize==="22px"?1:0;
+            })())JS",
+            1)) {
+        host.Destroy();
+        DestroyWindow(hwnd);
+        CoUninitialize();
+        std::wcerr << L"Preview runtime did not apply the configured source font size\n";
+        return 1;
+    }
+    host.SetTextFontSize(14);
     if (!PumpUntil([&]() { return contentMetricsReceived; }, 2000) ||
         contentMetrics.scrollHeight <= 0 || contentMetrics.scrollWidth <= 0 ||
         contentMetrics.clientWidth <= 0 || contentMetrics.renderToken != L"1") {

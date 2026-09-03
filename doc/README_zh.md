@@ -1,8 +1,17 @@
-# ZenCrop v2.9.15
+# ZenCrop v2.9.18
 
 [English](../README.md)
 
 ZenCrop 是对 [PowerToys Crop And Lock](https://github.com/microsoft/PowerToys/tree/main/src/modules/CropAndLock/) 的独立、**增强型**重构实现，并融合了丰富的截图标注、长截图、多引擎 OCR 和 OCR 工作台。
+
+## v2.9.18 更新重点
+
+- **划词翻译**：在其他应用中选中文字后按 `Shift+A` 即可翻译。ZenCrop 优先读取无障碍文本，也可启用模拟复制兜底，并在完成后恢复原剪贴板内容。
+- **翻译提供商扩展**：直接机器翻译支持 Google Translate Community、Microsoft Translator Community、Google Cloud Translation、Azure Translator、DeepL API 和自定义 DeepLX；LLM 翻译按提供商使用 OpenAI Responses、Chat Completions、Gemini、xAI、Ollama 与 DeepSeek 协议。
+- **设置事务更安全**：翻译选项和全部快捷键在同一次设置事务中校验和保存，能够阻止重复快捷键以及与 `Ctrl+C` 模拟复制兜底冲突的配置。
+- **结果窗口位置保持**：刷新或替换划词翻译时，结果窗口保留用户移动后的位置，同时继续根据内容自动调整大小。
+
+完整变更请参阅 [CHANGELOG](CHANGELOG.md)。
 
 ---
 ## 🔥 V2.2.0 & V2.2.1 震撼更新：终极 Thumbnail 缩略图模式
@@ -52,6 +61,7 @@ ZenCrop 从零开始重构，完全独立运行，不依赖 PowerToys，不仅�
 - **长截图**: 对网页、文档、聊天记录等可滚动窗口自动滚动截取。支持纵向和横向拼接、手动滚动模式、实时累计预览、导出和复制。
 - **OCR 与文档解析**: 四种 OCR 引擎——Windows OCR（内置 WinRT）、**PP-OCRv6 Local**（ONNX Runtime CPU，小/中模型）、**PaddleOCR-VL 1.6 Local**（llama.cpp VLM，适用复杂版面、公式、表格、图表）、PaddleOCR Cloud（官方 API）。双 OCR 快捷键可分别绑定不同引擎。内置 PP-DocLayout 版面检测、表格/公式/图表/印章识别、页眉页脚/脚注控制、应用内模型下载管理器（HuggingFace/ModelScope，断点续传、SHA-256 校验）、本地 VLM 空闲自动释放、可选 Recursive XY-Cut 多栏物理排序以及结果置顶浮动窗口。
 - **OCR 工作台**: 从托盘菜单打开的全功能 OCR 工作台——持久化历史记录（搜索/过滤/复制/删除）、图片预览（缩放/平移/文字块高亮）、拖拽导入图片/文件夹、PDF 批量 OCR（可选页码范围）、批量队列监控（重试/恢复）、Markdown/TXT/JSON 输出产物、WebView2 Markdown 预览（KaTeX 公式、Mermaid 图表、Chart.js、HTML 表格）、源码/预览切换以及源图文字/布局块叠加可视化。
+- **划词翻译**: 在其他应用中选中文字后使用可自定义的 `Shift+A` 快捷键直接翻译。优先通过无障碍接口读取文本，可选模拟复制兜底并恢复原剪贴板；结果支持直接机器翻译与 LLM 提供商。
 - **单击接受建议**: 单击即可接受智能建议，拖拽仍可手动绘制矩形
 - **裁剪区域调整**: 绘制裁剪矩形后可拖拽边/角拉伸、拖拽内部移动、双击确认，避免误操作
   - **方向键控制**: 调整模式下支持键盘精确操控裁剪框
@@ -76,6 +86,7 @@ ZenCrop 从零开始重构，完全独立运行，不依赖 PowerToys，不仅�
 | `Alt+Shift+S` | 启动截图 |
 | `Shift+X` | OCR 识别（主引擎；Enter 确认 → 结果窗 / 历史） |
 | `Alt+Shift+X` | OCR 识别（备用引擎，可配置） |
+| `Shift+A` | 翻译前台应用中当前选中的文字（可自定义） |
 | `Shift+C` | 截图或 OCR 调整模式：识别选区并仅复制文本（toast，不弹结果窗、不写历史）。引擎路由与本次会话一致（`Shift+X` → 主引擎，`Alt+Shift+X` → 备用引擎） |
 | `ESC` | 取消当前裁剪矩形 / 取消整个裁剪模式 / 关闭当前 Thumbnail 窗口 |
 | 右键托盘图标 | 打开菜单 (切换标题栏 / OCR 工作台 / 设置 / 退出) |
@@ -116,6 +127,7 @@ ZenCrop 从零开始重构，完全独立运行，不依赖 PowerToys，不仅�
 - **Screenshot 标签页**: 输出格式（PNG/JPEG/BMP）、JPEG 质量、包含光标、快速保存目录、文件名模板、标注默认值（当前工具、颜色、线宽、箭头样式、文字/字体/水印设置）、工具栏布局（始终显示 / 更多工具 / 始终隐藏）、后处理（圆角、阴影、边框）
 - **Always On Top 标签页**: 边框显示开关、颜色（系统强调色或自定义）、透明度、粗细、圆角、内收、AOT 快捷键自定义
 - **OCR 标签页**: OCR 字体大小、结果置顶、OCR 模式（Windows OCR / PP-OCRv6 Local / PaddleOCR-VL 1.6 Local / PaddleOCR Cloud）、模型目录及"Manage Models..."下载按钮（HuggingFace/ModelScope、断点续传、SHA-256 校验）、PP-OCRv6 模型变体（small/medium）与线程数、PaddleOCR Cloud 设置（固定 PaddleOCR-VL-1.6、API 地址/Token/超时）、文档解析选项（版面阈值档位、图表/图片/印章识别、页眉页脚/脚注控制）、双 OCR 快捷键自定义
+- **Translate 标签页**: 启用划词翻译、配置 `Shift+A` 快捷键和模拟复制兜底、选择直接机器翻译或 LLM 提供商、管理 endpoint/model/凭据以及结果窗口行为
 
 本地 OCR 引擎需要模型文件。通过设置 → OCR 中的 **Manage Models...** 按钮在应用内下载。手动下载说明参见 [docs/03_ocr_system/00_OCR_MODEL_DOWNLOAD.md](../docs/03_ocr_system/00_OCR_MODEL_DOWNLOAD.md)。
 

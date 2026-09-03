@@ -1,5 +1,6 @@
 #include "SettingsDialog.h"
 #include "Settings.h"
+#include "SettingsHotkeyDraft.h"
 #include "StartupRegistration.h"
 #include "AlwaysOnTop.h"
 #include "JsonUtils.h"       // TrimString
@@ -19,7 +20,39 @@
 #include <shobjidl.h>        // IFileOpenDialog for BrowseFolderForSettings
 #include <shellapi.h>
 #include <algorithm>
+#include <new>
 #include <string>
+
+namespace {
+
+constexpr wchar_t kSettingsHotkeyDraftProperty[] =
+    L"ZenCrop.SettingsHotkeyDraft";
+thread_local SettingsHotkeyDraft* g_callbackHotkeyDraft = nullptr;
+
+SettingsHotkeyDraft* AttachHotkeyDraft(HWND page, LPARAM initParam) {
+    const auto* propertyPage =
+        reinterpret_cast<const PROPSHEETPAGEW*>(initParam);
+    auto* draft = propertyPage
+        ? reinterpret_cast<SettingsHotkeyDraft*>(propertyPage->lParam)
+        : nullptr;
+    if (draft) {
+        SetPropW(page, kSettingsHotkeyDraftProperty,
+            reinterpret_cast<HANDLE>(draft));
+    }
+    return draft;
+}
+
+SettingsHotkeyDraft* HotkeyDraftForPage(HWND page) {
+    return reinterpret_cast<SettingsHotkeyDraft*>(
+        GetPropW(page, kSettingsHotkeyDraftProperty));
+}
+
+const HotkeySettings& DraftHotkeysOrShared(
+    const SettingsHotkeyDraft* draft) {
+    return draft ? draft->hotkeys : GetSharedSettings().hotkeys;
+}
+
+} // namespace
 
 // OWN-74/76: thin wrappers over pure WideStringUtils / JsonUtils helpers.
 static bool IsPaddleOcrJobsUrl(const std::wstring& url) {
@@ -75,6 +108,8 @@ static void UpdateZcSliderLabels(HWND hPage) {
 static INT_PTR CALLBACK ZenCropPageProc(HWND hPage, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
     case WM_INITDIALOG: {
+        SettingsHotkeyDraft* hotkeyDraft = AttachHotkeyDraft(hPage, lParam);
+        const HotkeySettings& hotkeys = DraftHotkeysOrShared(hotkeyDraft);
         SetDlgItemTextW(hPage, IDC_ZC_COLOR_LABEL, S::ColorLabel());
         SetDlgItemTextW(hPage, IDC_ZC_CHOOSE_COLOR, S::ChooseButton());
         SetDlgItemTextW(hPage, IDC_ZC_THICK_LABEL2, S::ThicknessLabel());
@@ -89,10 +124,10 @@ static INT_PTR CALLBACK ZenCropPageProc(HWND hPage, UINT msg, WPARAM wParam, LPA
         SendDlgItemMessageW(hPage, IDC_ZC_THICK_SLIDER, TBM_SETPOS, TRUE, GetSharedSettings().overlay.thickness);
         UpdateZcSliderLabels(hPage);
 
-        CreateHotkeyEdit(hPage, IDC_HK_REPARENT_EDIT, GetSharedSettings().hotkeys.reparent);
-        CreateHotkeyEdit(hPage, IDC_HK_THUMBNAIL_EDIT, GetSharedSettings().hotkeys.thumbnail);
-        CreateHotkeyEdit(hPage, IDC_HK_VIEWPORT_EDIT, GetSharedSettings().hotkeys.viewport);
-        CreateHotkeyEdit(hPage, IDC_HK_CLOSE_EDIT, GetSharedSettings().hotkeys.closeReparent);
+        CreateHotkeyEdit(hPage, IDC_HK_REPARENT_EDIT, hotkeys.reparent);
+        CreateHotkeyEdit(hPage, IDC_HK_THUMBNAIL_EDIT, hotkeys.thumbnail);
+        CreateHotkeyEdit(hPage, IDC_HK_VIEWPORT_EDIT, hotkeys.viewport);
+        CreateHotkeyEdit(hPage, IDC_HK_CLOSE_EDIT, hotkeys.closeReparent);
 
         HFONT pageFont = (HFONT)SendMessageW(hPage, WM_GETFONT, 0, 0);
         SendDlgItemMessageW(hPage, IDC_HK_REPARENT_EDIT, WM_SETFONT, (WPARAM)pageFont, 0);
@@ -139,6 +174,31 @@ static INT_PTR CALLBACK ZenCropPageProc(HWND hPage, UINT msg, WPARAM wParam, LPA
     }
 
     case WM_COMMAND: {
+        if (HIWORD(wParam) == EN_CHANGE) {
+            SettingsHotkeyDraft* draft = HotkeyDraftForPage(hPage);
+            switch (LOWORD(wParam)) {
+            case IDC_HK_REPARENT_EDIT:
+                UpdateSettingsHotkeyDraft(draft,
+                    &HotkeySettings::reparent,
+                    GetHotkeyFromEdit(hPage, IDC_HK_REPARENT_EDIT));
+                return TRUE;
+            case IDC_HK_THUMBNAIL_EDIT:
+                UpdateSettingsHotkeyDraft(draft,
+                    &HotkeySettings::thumbnail,
+                    GetHotkeyFromEdit(hPage, IDC_HK_THUMBNAIL_EDIT));
+                return TRUE;
+            case IDC_HK_VIEWPORT_EDIT:
+                UpdateSettingsHotkeyDraft(draft,
+                    &HotkeySettings::viewport,
+                    GetHotkeyFromEdit(hPage, IDC_HK_VIEWPORT_EDIT));
+                return TRUE;
+            case IDC_HK_CLOSE_EDIT:
+                UpdateSettingsHotkeyDraft(draft,
+                    &HotkeySettings::closeReparent,
+                    GetHotkeyFromEdit(hPage, IDC_HK_CLOSE_EDIT));
+                return TRUE;
+            }
+        }
         if (LOWORD(wParam) == IDC_ZC_CHOOSE_COLOR) {
             static COLORREF customColors[16] = {};
             CHOOSECOLORW cc = { sizeof(cc) };
@@ -160,18 +220,26 @@ static INT_PTR CALLBACK ZenCropPageProc(HWND hPage, UINT msg, WPARAM wParam, LPA
         switch (LOWORD(wParam)) {
         case IDC_HK_REPARENT_CLEAR:
             ClearHotkeyEdit(hPage, IDC_HK_REPARENT_EDIT);
+            UpdateSettingsHotkeyDraft(HotkeyDraftForPage(hPage),
+                &HotkeySettings::reparent, {});
             PropSheet_Changed(GetParent(hPage), hPage);
             return TRUE;
         case IDC_HK_THUMBNAIL_CLEAR:
             ClearHotkeyEdit(hPage, IDC_HK_THUMBNAIL_EDIT);
+            UpdateSettingsHotkeyDraft(HotkeyDraftForPage(hPage),
+                &HotkeySettings::thumbnail, {});
             PropSheet_Changed(GetParent(hPage), hPage);
             return TRUE;
         case IDC_HK_VIEWPORT_CLEAR:
             ClearHotkeyEdit(hPage, IDC_HK_VIEWPORT_EDIT);
+            UpdateSettingsHotkeyDraft(HotkeyDraftForPage(hPage),
+                &HotkeySettings::viewport, {});
             PropSheet_Changed(GetParent(hPage), hPage);
             return TRUE;
         case IDC_HK_CLOSE_CLEAR:
             ClearHotkeyEdit(hPage, IDC_HK_CLOSE_EDIT);
+            UpdateSettingsHotkeyDraft(HotkeyDraftForPage(hPage),
+                &HotkeySettings::closeReparent, {});
             PropSheet_Changed(GetParent(hPage), hPage);
             return TRUE;
         }
@@ -194,17 +262,15 @@ static INT_PTR CALLBACK ZenCropPageProc(HWND hPage, UINT msg, WPARAM wParam, LPA
             GetSharedSettings().overlay.cropOnTop = IsDlgButtonChecked(hPage, IDC_ZC_CROP_ON_TOP) == BST_CHECKED;
             SaveOverlaySettings(GetSharedSettings().overlay);
 
-            GetSharedSettings().hotkeys.reparent = GetHotkeyFromEdit(hPage, IDC_HK_REPARENT_EDIT);
-            GetSharedSettings().hotkeys.thumbnail = GetHotkeyFromEdit(hPage, IDC_HK_THUMBNAIL_EDIT);
-            GetSharedSettings().hotkeys.viewport = GetHotkeyFromEdit(hPage, IDC_HK_VIEWPORT_EDIT);
-            GetSharedSettings().hotkeys.closeReparent = GetHotkeyFromEdit(hPage, IDC_HK_CLOSE_EDIT);
-
-            if (HasHotkeyConflict(GetSharedSettings().hotkeys)) {
-                MessageBoxW(hPage, S::HotkeyConflictMsg(),
-                    S::HotkeyConflictTitle(), MB_ICONWARNING);
-            }
-
-            SaveHotkeySettings(GetSharedSettings().hotkeys);
+            SettingsHotkeyDraft* draft = HotkeyDraftForPage(hPage);
+            UpdateSettingsHotkeyDraft(draft, &HotkeySettings::reparent,
+                GetHotkeyFromEdit(hPage, IDC_HK_REPARENT_EDIT));
+            UpdateSettingsHotkeyDraft(draft, &HotkeySettings::thumbnail,
+                GetHotkeyFromEdit(hPage, IDC_HK_THUMBNAIL_EDIT));
+            UpdateSettingsHotkeyDraft(draft, &HotkeySettings::viewport,
+                GetHotkeyFromEdit(hPage, IDC_HK_VIEWPORT_EDIT));
+            UpdateSettingsHotkeyDraft(draft, &HotkeySettings::closeReparent,
+                GetHotkeyFromEdit(hPage, IDC_HK_CLOSE_EDIT));
             return TRUE;
         }
         break;
@@ -216,6 +282,8 @@ static INT_PTR CALLBACK ZenCropPageProc(HWND hPage, UINT msg, WPARAM wParam, LPA
 static INT_PTR CALLBACK AotPageProc(HWND hPage, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
     case WM_INITDIALOG: {
+        SettingsHotkeyDraft* hotkeyDraft = AttachHotkeyDraft(hPage, lParam);
+        const HotkeySettings& hotkeys = DraftHotkeysOrShared(hotkeyDraft);
         SetDlgItemTextW(hPage, IDC_AOT_SHOW_BORDER, S::AotShowBorder());
         SetDlgItemTextW(hPage, IDC_AOT_COLOR_MODE, S::AotCustomColor());
         SetDlgItemTextW(hPage, IDC_AOT_COLOR_LABEL, S::ColorLabel());
@@ -238,7 +306,7 @@ static INT_PTR CALLBACK AotPageProc(HWND hPage, UINT msg, WPARAM wParam, LPARAM 
         UpdateAotSliderLabels(hPage);
         UpdateAotControls(hPage);
 
-        CreateHotkeyEdit(hPage, IDC_HK_AOT_EDIT, GetSharedSettings().hotkeys.alwaysOnTop);
+        CreateHotkeyEdit(hPage, IDC_HK_AOT_EDIT, hotkeys.alwaysOnTop);
         HFONT pageFont = (HFONT)SendMessageW(hPage, WM_GETFONT, 0, 0);
         SendDlgItemMessageW(hPage, IDC_HK_AOT_EDIT, WM_SETFONT, (WPARAM)pageFont, 0);
 
@@ -273,6 +341,13 @@ static INT_PTR CALLBACK AotPageProc(HWND hPage, UINT msg, WPARAM wParam, LPARAM 
     }
 
     case WM_COMMAND: {
+        if (LOWORD(wParam) == IDC_HK_AOT_EDIT &&
+            HIWORD(wParam) == EN_CHANGE) {
+            UpdateSettingsHotkeyDraft(HotkeyDraftForPage(hPage),
+                &HotkeySettings::alwaysOnTop,
+                GetHotkeyFromEdit(hPage, IDC_HK_AOT_EDIT));
+            return TRUE;
+        }
         switch (LOWORD(wParam)) {
         case IDC_AOT_SHOW_BORDER:
         case IDC_AOT_COLOR_MODE:
@@ -297,6 +372,8 @@ static INT_PTR CALLBACK AotPageProc(HWND hPage, UINT msg, WPARAM wParam, LPARAM 
         }
         case IDC_HK_AOT_CLEAR:
             ClearHotkeyEdit(hPage, IDC_HK_AOT_EDIT);
+            UpdateSettingsHotkeyDraft(HotkeyDraftForPage(hPage),
+                &HotkeySettings::alwaysOnTop, {});
             PropSheet_Changed(GetParent(hPage), hPage);
             return TRUE;
         }
@@ -327,14 +404,9 @@ static INT_PTR CALLBACK AotPageProc(HWND hPage, UINT msg, WPARAM wParam, LPARAM 
             SaveAotSettings(GetSharedSettings().aot);
             AlwaysOnTopManager::Instance().UpdateSettings();
 
-            GetSharedSettings().hotkeys.alwaysOnTop = GetHotkeyFromEdit(hPage, IDC_HK_AOT_EDIT);
-
-            if (HasHotkeyConflict(GetSharedSettings().hotkeys)) {
-                MessageBoxW(hPage, S::HotkeyConflictMsg(),
-                    S::HotkeyConflictTitle(), MB_ICONWARNING);
-            }
-
-            SaveHotkeySettings(GetSharedSettings().hotkeys);
+            UpdateSettingsHotkeyDraft(HotkeyDraftForPage(hPage),
+                &HotkeySettings::alwaysOnTop,
+                GetHotkeyFromEdit(hPage, IDC_HK_AOT_EDIT));
             return TRUE;
         }
         break;
@@ -440,6 +512,8 @@ static void UpdateScreenshotControls(HWND hPage) {
 static INT_PTR CALLBACK ScreenshotPageProc(HWND hPage, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
     case WM_INITDIALOG: {
+        SettingsHotkeyDraft* hotkeyDraft = AttachHotkeyDraft(hPage, lParam);
+        const HotkeySettings& hotkeys = DraftHotkeysOrShared(hotkeyDraft);
         SetDlgItemTextW(hPage, IDC_SS_FORMAT_LABEL, L"Format:");
         SetDlgItemTextW(hPage, IDC_SS_QUALITY_LABEL, L"Save Quality:");
         SetDlgItemTextW(hPage, IDC_SS_QUICK_SAVE_LABEL, L"Quick Save:");
@@ -482,7 +556,7 @@ static INT_PTR CALLBACK ScreenshotPageProc(HWND hPage, UINT msg, WPARAM wParam, 
         CheckDlgButton(hPage, IDC_SS_LONGSHOT_AUTOCROP,
             GetSharedSettings().screenshot.longShotAutoCrop ? BST_CHECKED : BST_UNCHECKED);
 
-        CreateHotkeyEdit(hPage, IDC_HK_SCREENSHOT_EDIT, GetSharedSettings().hotkeys.screenshot);
+        CreateHotkeyEdit(hPage, IDC_HK_SCREENSHOT_EDIT, hotkeys.screenshot);
         HFONT pageFont = (HFONT)SendMessageW(hPage, WM_GETFONT, 0, 0);
         SendDlgItemMessageW(hPage, IDC_HK_SCREENSHOT_EDIT, WM_SETFONT, (WPARAM)pageFont, 0);
 
@@ -500,6 +574,13 @@ static INT_PTR CALLBACK ScreenshotPageProc(HWND hPage, UINT msg, WPARAM wParam, 
     }
 
     case WM_COMMAND: {
+        if (LOWORD(wParam) == IDC_HK_SCREENSHOT_EDIT &&
+            HIWORD(wParam) == EN_CHANGE) {
+            UpdateSettingsHotkeyDraft(HotkeyDraftForPage(hPage),
+                &HotkeySettings::screenshot,
+                GetHotkeyFromEdit(hPage, IDC_HK_SCREENSHOT_EDIT));
+            return TRUE;
+        }
         switch (LOWORD(wParam)) {
         case IDC_SS_FORMAT:
             if (HIWORD(wParam) == CBN_SELCHANGE) {
@@ -534,6 +615,8 @@ static INT_PTR CALLBACK ScreenshotPageProc(HWND hPage, UINT msg, WPARAM wParam, 
             return TRUE;
         case IDC_HK_SCREENSHOT_CLEAR:
             ClearHotkeyEdit(hPage, IDC_HK_SCREENSHOT_EDIT);
+            UpdateSettingsHotkeyDraft(HotkeyDraftForPage(hPage),
+                &HotkeySettings::screenshot, {});
             PropSheet_Changed(GetParent(hPage), hPage);
             return TRUE;
         }
@@ -579,14 +662,9 @@ static INT_PTR CALLBACK ScreenshotPageProc(HWND hPage, UINT msg, WPARAM wParam, 
             GetSharedSettings().screenshot.quickSaveDir = TrimString(quickDir);
             SaveScreenshotSettings(GetSharedSettings().screenshot);
 
-            GetSharedSettings().hotkeys.screenshot = GetHotkeyFromEdit(hPage, IDC_HK_SCREENSHOT_EDIT);
-
-            if (HasHotkeyConflict(GetSharedSettings().hotkeys)) {
-                MessageBoxW(hPage, S::HotkeyConflictMsg(),
-                    S::HotkeyConflictTitle(), MB_ICONWARNING);
-            }
-
-            SaveHotkeySettings(GetSharedSettings().hotkeys);
+            UpdateSettingsHotkeyDraft(HotkeyDraftForPage(hPage),
+                &HotkeySettings::screenshot,
+                GetHotkeyFromEdit(hPage, IDC_HK_SCREENSHOT_EDIT));
             return TRUE;
         }
         break;
@@ -1072,6 +1150,8 @@ static INT_PTR CALLBACK OcrPPOcrV6OptionsProc(HWND hDlg, UINT msg, WPARAM wParam
 static INT_PTR CALLBACK OcrPageProc(HWND hPage, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
     case WM_INITDIALOG: {
+        SettingsHotkeyDraft* hotkeyDraft = AttachHotkeyDraft(hPage, lParam);
+        const HotkeySettings& hotkeys = DraftHotkeysOrShared(hotkeyDraft);
         g_ocrSettings = LoadOcrSettings();
         
         // OCR Mode combo
@@ -1168,8 +1248,8 @@ static INT_PTR CALLBACK OcrPageProc(HWND hPage, UINT msg, WPARAM wParam, LPARAM 
         SendDlgItemMessageW(hPage, IDC_OCR_ALT_IDLE_TIMEOUT, EM_SETLIMITTEXT, 3, 0);
         SetDlgItemInt(hPage, IDC_OCR_ALT_IDLE_TIMEOUT, g_ocrSettings.altHotkeyIdleTimeoutMin, FALSE);
 
-        CreateHotkeyEdit(hPage, IDC_HK_OCR_EDIT, GetSharedSettings().hotkeys.ocr);
-        CreateHotkeyEdit(hPage, IDC_HK_OCR_ALT_EDIT, GetSharedSettings().hotkeys.ocrAlt);
+        CreateHotkeyEdit(hPage, IDC_HK_OCR_EDIT, hotkeys.ocr);
+        CreateHotkeyEdit(hPage, IDC_HK_OCR_ALT_EDIT, hotkeys.ocrAlt);
 
         HFONT pageFont = (HFONT)SendMessageW(hPage, WM_GETFONT, 0, 0);
         SendDlgItemMessageW(hPage, IDC_HK_OCR_EDIT, WM_SETFONT, (WPARAM)pageFont, 0);
@@ -1198,6 +1278,20 @@ static INT_PTR CALLBACK OcrPageProc(HWND hPage, UINT msg, WPARAM wParam, LPARAM 
     }
 
     case WM_COMMAND:
+        if (LOWORD(wParam) == IDC_HK_OCR_EDIT &&
+            HIWORD(wParam) == EN_CHANGE) {
+            UpdateSettingsHotkeyDraft(HotkeyDraftForPage(hPage),
+                &HotkeySettings::ocr,
+                GetHotkeyFromEdit(hPage, IDC_HK_OCR_EDIT));
+            return TRUE;
+        }
+        if (LOWORD(wParam) == IDC_HK_OCR_ALT_EDIT &&
+            HIWORD(wParam) == EN_CHANGE) {
+            UpdateSettingsHotkeyDraft(HotkeyDraftForPage(hPage),
+                &HotkeySettings::ocrAlt,
+                GetHotkeyFromEdit(hPage, IDC_HK_OCR_ALT_EDIT));
+            return TRUE;
+        }
         if (LOWORD(wParam) == IDC_OCR_MODE && HIWORD(wParam) == CBN_SELCHANGE) {
             ApplyOcrModeFields(hPage);
             UpdateOcrControls(hPage);
@@ -1479,10 +1573,14 @@ static INT_PTR CALLBACK OcrPageProc(HWND hPage, UINT msg, WPARAM wParam, LPARAM 
         }
         if (LOWORD(wParam) == IDC_HK_OCR_CLEAR) {
             ClearHotkeyEdit(hPage, IDC_HK_OCR_EDIT);
+            UpdateSettingsHotkeyDraft(HotkeyDraftForPage(hPage),
+                &HotkeySettings::ocr, {});
             PropSheet_Changed(GetParent(hPage), hPage);
         }
         if (LOWORD(wParam) == IDC_HK_OCR_ALT_CLEAR) {
             ClearHotkeyEdit(hPage, IDC_HK_OCR_ALT_EDIT);
+            UpdateSettingsHotkeyDraft(HotkeyDraftForPage(hPage),
+                &HotkeySettings::ocrAlt, {});
             PropSheet_Changed(GetParent(hPage), hPage);
         }
         return TRUE;
@@ -1574,18 +1672,16 @@ static INT_PTR CALLBACK OcrPageProc(HWND hPage, UINT msg, WPARAM wParam, LPARAM 
             g_ocrSettings.altHotkeyIdleTimeoutMin =
                 ReadDlgIntClamped(hPage, IDC_OCR_ALT_IDLE_TIMEOUT, 10, 0, 240);
 
-            GetSharedSettings().hotkeys.ocr = GetHotkeyFromEdit(hPage, IDC_HK_OCR_EDIT);
-            GetSharedSettings().hotkeys.ocrAlt = GetHotkeyFromEdit(hPage, IDC_HK_OCR_ALT_EDIT);
-
-            if (HasHotkeyConflict(GetSharedSettings().hotkeys)) {
-                MessageBoxW(hPage, S::HotkeyConflictMsg(),
-                    S::HotkeyConflictTitle(), MB_ICONWARNING);
-            }
-
-            SaveHotkeySettings(GetSharedSettings().hotkeys);
+            SettingsHotkeyDraft* hotkeyDraft = HotkeyDraftForPage(hPage);
+            UpdateSettingsHotkeyDraft(hotkeyDraft, &HotkeySettings::ocr,
+                GetHotkeyFromEdit(hPage, IDC_HK_OCR_EDIT));
+            UpdateSettingsHotkeyDraft(hotkeyDraft, &HotkeySettings::ocrAlt,
+                GetHotkeyFromEdit(hPage, IDC_HK_OCR_ALT_EDIT));
             SaveOcrSettings(g_ocrSettings);
 
-            if (!OcrSettingsUsesLlama(g_ocrSettings, GetSharedSettings().hotkeys)) {
+            const HotkeySettings& effectiveHotkeys = hotkeyDraft
+                ? hotkeyDraft->hotkeys : GetSharedSettings().hotkeys;
+            if (!OcrSettingsUsesLlama(g_ocrSettings, effectiveHotkeys)) {
                 OutputDebugStringA("[OCR] No configured OCR route uses llama; shutting down local OCR resources\n");
                 LlamaServerManager::Instance().GlobalShutdown();
             } else if (LlamaServerManager::Instance().IsServerRunning()) {
@@ -1615,6 +1711,155 @@ static VOID CALLBACK CenterTimerProc(HWND hwnd, UINT, UINT_PTR id, DWORD) {
     ShowWindow(hwnd, SW_SHOWNORMAL);
 }
 
+namespace {
+
+constexpr wchar_t kSettingsSheetStateProperty[] =
+    L"ZenCrop.SettingsSheetState";
+// The common-controls property sheet template uses this command id for its
+// Apply button. It is public in the legacy dialog headers but not emitted by
+// every Windows SDK header combination used by this target.
+constexpr int kPropertySheetApplyNowId = 0x3021;
+
+struct SettingsSheetState {
+    SettingsHotkeyDraft* hotkeyDraft = nullptr;
+    WNDPROC originalProc = nullptr;
+    bool applying = false;
+};
+
+void SyncHotkeyControl(
+    HWND page, int controlId, SettingsHotkeyDraft& draft,
+    HotkeyConfig HotkeySettings::*member) {
+    if (!page || !GetDlgItem(page, controlId)) return;
+    UpdateSettingsHotkeyDraft(
+        &draft, member, GetHotkeyFromEdit(page, controlId));
+}
+
+void SyncCreatedHotkeyPages(HWND sheet, SettingsHotkeyDraft& draft) {
+    if (HWND page = PropSheet_IndexToHwnd(sheet, 1)) {
+        SyncHotkeyControl(page, IDC_HK_REPARENT_EDIT, draft,
+            &HotkeySettings::reparent);
+        SyncHotkeyControl(page, IDC_HK_THUMBNAIL_EDIT, draft,
+            &HotkeySettings::thumbnail);
+        SyncHotkeyControl(page, IDC_HK_VIEWPORT_EDIT, draft,
+            &HotkeySettings::viewport);
+        SyncHotkeyControl(page, IDC_HK_CLOSE_EDIT, draft,
+            &HotkeySettings::closeReparent);
+    }
+    if (HWND page = PropSheet_IndexToHwnd(sheet, 2)) {
+        SyncHotkeyControl(page, IDC_HK_AOT_EDIT, draft,
+            &HotkeySettings::alwaysOnTop);
+    }
+    if (HWND page = PropSheet_IndexToHwnd(sheet, 3)) {
+        SyncHotkeyControl(page, IDC_HK_OCR_EDIT, draft,
+            &HotkeySettings::ocr);
+        SyncHotkeyControl(page, IDC_HK_OCR_ALT_EDIT, draft,
+            &HotkeySettings::ocrAlt);
+    }
+    if (HWND page = PropSheet_IndexToHwnd(sheet, 4)) {
+        SyncHotkeyControl(page, IDC_HK_SCREENSHOT_EDIT, draft,
+            &HotkeySettings::screenshot);
+    }
+    if (HWND page = PropSheet_IndexToHwnd(sheet, 5)) {
+        SyncHotkeyControl(page, IDC_TRANSLATE_SELECTION_HOTKEY_EDIT, draft,
+            &HotkeySettings::selectionTranslate);
+        if (GetDlgItem(page, IDC_TRANSLATE_SELECTION_COPY_FALLBACK)) {
+            UpdateSelectionCopyFallbackDraft(&draft,
+                IsDlgButtonChecked(page,
+                    IDC_TRANSLATE_SELECTION_COPY_FALLBACK) == BST_CHECKED);
+        }
+    }
+}
+
+bool ValidateHotkeyDraft(HWND sheet, const SettingsHotkeyDraft& draft) {
+    if (HasHotkeyConflict(draft.hotkeys)) {
+        MessageBoxW(sheet, S::HotkeyConflictMsg(),
+            S::HotkeyConflictTitle(), MB_OK | MB_ICONWARNING);
+        return false;
+    }
+    if (draft.selectionCopyFallbackEnabled &&
+        HasExactCtrlCHotkey(draft.hotkeys)) {
+        MessageBoxW(sheet,
+            S::IsChinese()
+                ? L"启用模拟复制兜底时，Ctrl+C 不能同时分配给 ZenCrop 快捷键。请更换该快捷键，或关闭 Translate 页的模拟复制兜底。"
+                : L"While copy fallback is enabled, Ctrl+C cannot also be assigned to a ZenCrop hotkey. Change that hotkey or disable copy fallback on the Translate page.",
+            S::HotkeyConflictTitle(), MB_OK | MB_ICONWARNING);
+        return false;
+    }
+    return true;
+}
+
+void KeepSheetDirty(HWND sheet) {
+    for (int index = 0; index < 6; ++index) {
+        if (HWND page = PropSheet_IndexToHwnd(sheet, index)) {
+            PropSheet_Changed(sheet, page);
+            return;
+        }
+    }
+}
+
+LRESULT CALLBACK SettingsSheetWindowProc(
+    HWND sheet, UINT message, WPARAM wParam, LPARAM lParam) {
+    auto* state = reinterpret_cast<SettingsSheetState*>(
+        GetPropW(sheet, kSettingsSheetStateProperty));
+    if (!state || !state->originalProc) {
+        return DefWindowProcW(sheet, message, wParam, lParam);
+    }
+
+    if (message == WM_COMMAND && !state->applying &&
+        (LOWORD(wParam) == kPropertySheetApplyNowId ||
+         LOWORD(wParam) == IDOK)) {
+        SettingsHotkeyDraft* draft = state->hotkeyDraft;
+        if (!draft) return 0;
+        SyncCreatedHotkeyPages(sheet, *draft);
+        if (!ValidateHotkeyDraft(sheet, *draft)) {
+            KeepSheetDirty(sheet);
+            return 0;
+        }
+
+        state->applying = true;
+        const bool pagesApplied = SendMessageW(
+            sheet, PSM_APPLY, 0, 0) != FALSE;
+        state->applying = false;
+        if (!pagesApplied) return 0;
+
+        std::wstring saveError;
+        if (!SaveHotkeySettings(draft->hotkeys, &saveError)) {
+            if (saveError.empty()) {
+                saveError = S::IsChinese()
+                    ? L"保存快捷键设置失败。"
+                    : L"Failed to save hotkey settings.";
+            }
+            MessageBoxW(sheet, saveError.c_str(),
+                S::IsChinese() ? L"设置" : L"Settings",
+                MB_OK | MB_ICONERROR);
+            KeepSheetDirty(sheet);
+            return 0;
+        }
+        GetSharedSettings().hotkeys = draft->hotkeys;
+        draft->appliedRevision = draft->revision;
+
+        if (LOWORD(wParam) == kPropertySheetApplyNowId) return 0;
+        // PSM_APPLY has already committed every page. End the modal sheet as
+        // an accepted dialog instead of routing through Cancel, which would
+        // send PSN_RESET after the successful apply.
+        EndDialog(sheet, IDOK);
+        return 0;
+    }
+
+    if (message == WM_NCDESTROY) {
+        WNDPROC original = state->originalProc;
+        RemovePropW(sheet, kSettingsSheetStateProperty);
+        SetWindowLongPtrW(sheet, GWLP_WNDPROC,
+            reinterpret_cast<LONG_PTR>(original));
+        delete state;
+        return CallWindowProcW(original, sheet, message, wParam, lParam);
+    }
+    return CallWindowProcW(
+        state->originalProc, sheet, message, wParam, lParam);
+}
+
+} // namespace
+
 static int CALLBACK PropSheetProc(HWND hwndDlg, UINT uMsg, LPARAM lParam) {
     if (uMsg == PSCB_PRECREATE) {
         WORD* pWord = (WORD*)lParam;
@@ -1627,6 +1872,25 @@ static int CALLBACK PropSheetProc(HWND hwndDlg, UINT uMsg, LPARAM lParam) {
         }
     } else if (uMsg == PSCB_INITIALIZED) {
         SetTimer(hwndDlg, 1, 0, CenterTimerProc);
+        if (g_callbackHotkeyDraft) {
+            auto* state = new (std::nothrow) SettingsSheetState();
+            if (state) {
+                state->hotkeyDraft = g_callbackHotkeyDraft;
+                state->originalProc = reinterpret_cast<WNDPROC>(
+                    SetWindowLongPtrW(hwndDlg, GWLP_WNDPROC,
+                        reinterpret_cast<LONG_PTR>(SettingsSheetWindowProc)));
+                if (state->originalProc) {
+                    if (!SetPropW(hwndDlg, kSettingsSheetStateProperty,
+                            reinterpret_cast<HANDLE>(state))) {
+                        SetWindowLongPtrW(hwndDlg, GWLP_WNDPROC,
+                            reinterpret_cast<LONG_PTR>(state->originalProc));
+                        delete state;
+                    }
+                } else {
+                    delete state;
+                }
+            }
+        }
     }
     return 0;
 }
@@ -1701,6 +1965,11 @@ void ShowSettingsDialog(HWND parent) {
     GetSharedSettings().hotkeys = LoadHotkeySettings();
     GetSharedSettings().translation = LoadTranslationSettings();
 
+    SettingsHotkeyDraft hotkeyDraft;
+    hotkeyDraft.hotkeys = GetSharedSettings().hotkeys;
+    hotkeyDraft.selectionCopyFallbackEnabled =
+        GetSharedSettings().translation.selectionCopyFallbackEnabled;
+
     PROPSHEETPAGEW psp[6] = {};
 
     psp[0].dwSize = sizeof(PROPSHEETPAGEW);
@@ -1735,6 +2004,10 @@ void ShowSettingsDialog(HWND parent) {
     psp[5].pszTemplate = MAKEINTRESOURCEW(IDD_SETTINGS_TRANSLATE);
     psp[5].pfnDlgProc = translation::TranslationSettingsPageProc;
 
+    for (PROPSHEETPAGEW& page : psp) {
+        page.lParam = reinterpret_cast<LPARAM>(&hotkeyDraft);
+    }
+
     PROPSHEETHEADERW psh = {};
     psh.dwSize = sizeof(PROPSHEETHEADERW);
     psh.dwFlags = PSH_PROPSHEETPAGE | PSH_NOCONTEXTHELP | PSH_USECALLBACK;
@@ -1745,5 +2018,7 @@ void ShowSettingsDialog(HWND parent) {
     psh.ppsp = psp;
     psh.pfnCallback = PropSheetProc;
 
+    g_callbackHotkeyDraft = &hotkeyDraft;
     PropertySheetW(&psh);
+    g_callbackHotkeyDraft = nullptr;
 }

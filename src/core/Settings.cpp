@@ -510,6 +510,7 @@ static HotkeySettings GetDefaultHotkeys() {
     hs.screenshot = { false, false, true, true, 'S' };
     hs.ocr = { false, false, true, false, 'X' };
     hs.ocrAlt = {};
+    hs.selectionTranslate = { false, false, true, false, 'A' };
     return hs;
 }
 
@@ -539,6 +540,8 @@ HotkeySettings LoadHotkeySettings() {
     if (!sub.empty()) settings.ocr = ParseHotkeySection(sub);
     sub = FindJsonValue(hotkeySection, L"ocrAlt");
     if (!sub.empty()) settings.ocrAlt = ParseHotkeySection(sub);
+    sub = FindJsonValue(hotkeySection, L"selectionTranslate");
+    if (!sub.empty()) settings.selectionTranslate = ParseHotkeySection(sub);
 
     return settings;
 }
@@ -553,7 +556,9 @@ static std::wstring HotkeyConfigToJson(const HotkeyConfig& hk) {
         (int)hk.key);
 }
 
-void SaveHotkeySettings(const HotkeySettings& settings) {
+bool SaveHotkeySettings(
+    const HotkeySettings& settings,
+    std::wstring* error) {
     std::lock_guard<std::mutex> settingsLock(SettingsWriteMutex());
     std::wstring path = GetSettingsFilePath();
     std::wstring json = ReadFileToString(path);
@@ -566,6 +571,8 @@ void SaveHotkeySettings(const HotkeySettings& settings) {
         L",\n    \"screenshot\": " + HotkeyConfigToJson(settings.screenshot) +
         L",\n    \"ocr\": " + HotkeyConfigToJson(settings.ocr) +
         L",\n    \"ocrAlt\": " + HotkeyConfigToJson(settings.ocrAlt) +
+        L",\n    \"selectionTranslate\": " +
+            HotkeyConfigToJson(settings.selectionTranslate) +
         L"\n  }";
 
     std::wstring generalSection = FindTopLevelJsonValue(json, L"general");
@@ -585,7 +592,7 @@ void SaveHotkeySettings(const HotkeySettings& settings) {
 
     PreserveTranslationSection(fullJson, json);
 
-    WriteStringToFile(path, fullJson);
+    return WriteStringToFile(path, fullJson, error);
 }
 
 std::wstring NormalizeOcrRoute(const std::wstring& route) {

@@ -22,6 +22,7 @@
 #include "AppMessages.h"
 #include "image/BitmapCodec.h"
 #include "screenshot/ScreenshotUtils.h"
+#include "selection/SelectionTranslationController.h"
 #include "core/WideJsonUtils.h"
 #include "core/WideStringUtils.h"
 #include "core/NarrowStringUtils.h"
@@ -62,6 +63,8 @@ std::vector<std::shared_ptr<ThumbnailWindow>> g_thumbnails;
 std::vector<std::shared_ptr<ViewportWindow>> g_viewports;
 std::vector<std::shared_ptr<OcrResultWindow>> g_ocrResults;
 std::shared_ptr<OverlayWindow> g_overlay;
+std::unique_ptr<selection::SelectionTranslationController>
+    g_selectionTranslation;
 
 HWND g_mainHwnd = nullptr;
 
@@ -458,16 +461,18 @@ void StartCrop(CropMode mode, const std::wstring& ocrRoute = L"current") {
     g_overlay->Show();
 }
 
-void RegisterOneHotkey(HWND hwnd, int id, const HotkeyConfig& hotkey) {
-    if (hotkey.IsEmpty()) return;
+bool RegisterOneHotkey(HWND hwnd, int id, const HotkeyConfig& hotkey) {
+    if (hotkey.IsEmpty()) return true;
     if (!RegisterHotKey(hwnd, id, hotkey.Modifiers(), hotkey.key)) {
         // OWN-116: pure narrow debug (NarrowStringUtils).
         OutputDebugStringA(NarrowFormatHotkeyRegisterFailed(id).c_str());
+        return false;
     }
+    return true;
 }
 
 void UnregisterAppHotkeys(HWND hwnd) {
-    for (int id = 1; id <= 8; id++) {
+    for (int id = 1; id <= 9; id++) {
         UnregisterHotKey(hwnd, id);
     }
 }
@@ -482,6 +487,11 @@ void RegisterAppHotkeys(HWND hwnd) {
     RegisterOneHotkey(hwnd, 6, g_hotkeys.screenshot);
     RegisterOneHotkey(hwnd, 7, g_hotkeys.ocr);
     RegisterOneHotkey(hwnd, 8, g_hotkeys.ocrAlt);
+    if (!RegisterOneHotkey(hwnd, 9, g_hotkeys.selectionTranslate) &&
+        g_selectionTranslation) {
+        g_selectionTranslation->NotifyHotkeyRegistrationFailed(
+            g_hotkeys.selectionTranslate);
+    }
 }
 
 static void StartAltOcrCrop() {
@@ -525,6 +535,8 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
 
         AddTrayIcon(hwnd);
 
+        g_selectionTranslation =
+            std::make_unique<selection::SelectionTranslationController>(hwnd);
         RegisterAppHotkeys(hwnd);
 
         return 0;
@@ -565,6 +577,8 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
             StartCrop(CropMode::Ocr);
         } else if (wParam == 8) {
             StartAltOcrCrop();
+        } else if (wParam == 9 && g_selectionTranslation) {
+            g_selectionTranslation->Start(g_hotkeys.selectionTranslate);
         }
         return 0;
     }
@@ -747,6 +761,28 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
             reinterpret_cast<translation::TranslationResult*>(lParam));
         return 0;
     }
+    case WM_APP_SELECTION_TEXT_ACQUIRED: {
+        if (g_selectionTranslation) {
+            g_selectionTranslation->HandleAcquisitionResult(
+                static_cast<uint64_t>(wParam),
+                reinterpret_cast<selection::SelectionAcquisitionResult*>(
+                    lParam));
+        } else {
+            delete reinterpret_cast<selection::SelectionAcquisitionResult*>(
+                lParam);
+        }
+        return 0;
+    }
+    case WM_APP_SELECTION_TRANSLATION_DONE: {
+        if (g_selectionTranslation) {
+            g_selectionTranslation->HandleTranslationResult(
+                static_cast<uint64_t>(wParam),
+                reinterpret_cast<translation::TranslationResult*>(lParam));
+        } else {
+            delete reinterpret_cast<translation::TranslationResult*>(lParam);
+        }
+        return 0;
+    }
     case WM_APP_OVERLAY_RESET: {
         // Deferred overlay destruction: the crop callback (m_onCropped) used to call
         // g_overlay.reset() inline, which destroyed the OverlayWindow while its
@@ -763,6 +799,11 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         return 0;
     }
     case WM_DESTROY: {
+        UnregisterAppHotkeys(hwnd);
+        if (g_selectionTranslation) {
+            g_selectionTranslation->Shutdown();
+            g_selectionTranslation.reset();
+        }
         ScreenshotSession::Instance().Shutdown();
         // Shutdown drains the translation WM_APP payloads while this HWND is
         // still valid. Publish null immediately afterwards so a late worker
@@ -870,6 +911,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
             g_ocrResults.end());
 
         ScreenshotSession::Instance().CleanupInvalid();
+        if (g_selectionTranslation) {
+            g_selectionTranslation->CleanupInvalid();
+        }
         AlwaysOnTopManager::Instance().CleanupInvalid();
     }
 

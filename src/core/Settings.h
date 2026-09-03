@@ -228,6 +228,18 @@
 #define IDC_PROVIDER_NAME             2292
 #define IDC_PROVIDER_TEST_STATUS      2294
 #define IDC_PROVIDER_ENABLED          2295
+#define IDC_PROVIDER_MODEL_LABEL      2310
+#define IDC_PROVIDER_REGION_LABEL     2311
+#define IDC_PROVIDER_REGION           2312
+#define IDC_PROVIDER_REASONING_LABEL  2313
+#define IDC_PROVIDER_TEMPERATURE_LABEL 2314
+#define IDC_PROVIDER_ADVANCED_LABEL   2315
+
+#define IDC_TRANSLATE_SELECTION_HOTKEY_LABEL 2316
+#define IDC_TRANSLATE_SELECTION_HOTKEY_EDIT  2317
+#define IDC_TRANSLATE_SELECTION_HOTKEY_CLEAR 2318
+#define IDC_TRANSLATE_SELECTION_COPY_FALLBACK 2319
+#define IDC_TRANSLATE_SELECTION_COPY_HINT    2320
 
 #define IDC_PROMPT_PROFILE            2300
 #define IDC_PROMPT_ADD                2301
@@ -404,6 +416,7 @@ struct HotkeyConfig {
     unsigned char key = 0;
 
     bool IsEmpty() const { return key == 0; }
+    bool operator==(const HotkeyConfig&) const = default;
     UINT Modifiers() const {
         UINT mod = 0;
         if (win) mod |= MOD_WIN;
@@ -425,12 +438,19 @@ struct HotkeySettings {
     HotkeyConfig screenshot;
     HotkeyConfig ocr;
     HotkeyConfig ocrAlt;
+    HotkeyConfig selectionTranslate;
+
+    bool operator==(const HotkeySettings&) const = default;
 };
 
 enum class TranslationAdapterKind {
     DeepSeekChat,
+    OpenAIResponses,
     OpenAIChatCompletions,
+    GeminiGenerateContent,
+    XaiResponses,
     OllamaChat,
+    MachineTranslation,
 };
 
 enum class TranslationReasoningMode {
@@ -446,18 +466,26 @@ enum class TranslationReasoningMode {
 
 enum class TranslationAuthMode {
     BearerApiKey,
+    ApiKey,
     None,
 };
 
-inline constexpr int kTranslationSettingsSchemaVersion = 3;
+inline constexpr bool TranslationAuthUsesCredential(
+    TranslationAuthMode mode) {
+    return mode != TranslationAuthMode::None;
+}
+
+inline constexpr int kTranslationSettingsSchemaVersion = 7;
 inline constexpr double kTranslationPreviewZoomMin = 0.25;
 inline constexpr double kTranslationPreviewZoomMax = 5.0;
 inline constexpr int kTranslationSourceFontSizeMin = 8;
 inline constexpr int kTranslationSourceFontSizeMax = 32;
 inline constexpr wchar_t kLegacyTranslationCredentialTarget[] =
     L"ZenCrop/Translation/deepseek";
-inline constexpr wchar_t kDefaultTranslationProviderId[] =
+inline constexpr wchar_t kLegacyDeepSeekTranslationProviderId[] =
     L"builtin.deepseek.default";
+inline constexpr wchar_t kDefaultTranslationProviderId[] =
+    L"builtin.google-translate-community.default";
 inline constexpr wchar_t kDefaultTranslationPromptId[] =
     L"builtin.accurate.v1";
 
@@ -469,6 +497,7 @@ struct TranslationProviderProfile {
     bool enabled = true;
     TranslationAuthMode authMode = TranslationAuthMode::BearerApiKey;
     std::wstring baseUrlOverride;
+    std::wstring region;
     std::wstring model = L"deepseek-v4-flash";
     bool customModel = false;
     std::wstring credentialRef = kLegacyTranslationCredentialTarget;
@@ -511,6 +540,7 @@ struct TranslationSettings {
     int schemaVersion = kTranslationSettingsSchemaVersion;
     bool schemaSupported = true;
     bool enabled = false;
+    bool selectionCopyFallbackEnabled = true;
     std::wstring ocrRoute = L"current";
     std::wstring sourceLanguage = L"auto";
     std::wstring targetLanguage = L"auto";
@@ -529,29 +559,14 @@ struct TranslationSettings {
     TranslationSettings() {
         TranslationProviderProfile profile;
         profile.id = kDefaultTranslationProviderId;
-        profile.displayName = L"DeepSeek - Default";
-        profile.presetKind = L"deepseek";
-        profile.adapterKind = TranslationAdapterKind::DeepSeekChat;
-        profile.authMode = TranslationAuthMode::BearerApiKey;
-        profile.credentialRef = kLegacyTranslationCredentialTarget;
-        profile.model = L"deepseek-v4-flash";
+        profile.displayName = L"Google Translate Community";
+        profile.presetKind = L"google-translate-community";
+        profile.adapterKind = TranslationAdapterKind::MachineTranslation;
+        profile.authMode = TranslationAuthMode::None;
+        profile.credentialRef.clear();
+        profile.model.clear();
         profile.reasoningMode = TranslationReasoningMode::Off;
-        profile.temperature = 1.3;
         providerProfiles.push_back(std::move(profile));
-
-        for (const auto& item : kBuiltInOpenAiCompatibleProviderDefaults) {
-            TranslationProviderProfile provider;
-            provider.id = item.id;
-            provider.displayName = item.displayName;
-            provider.presetKind = item.presetKind;
-            provider.adapterKind = TranslationAdapterKind::OpenAIChatCompletions;
-            provider.authMode = TranslationAuthMode::BearerApiKey;
-            provider.credentialRef = L"ZenCrop/Translation/provider/" + provider.id;
-            provider.model = item.model;
-            provider.reasoningMode = TranslationReasoningMode::ProviderDefault;
-            provider.temperature = 0.3;
-            providerProfiles.push_back(std::move(provider));
-        }
     }
 };
 
@@ -761,7 +776,9 @@ void SaveAotSettings(const AotSettings& settings);
 OverlaySettings LoadOverlaySettings();
 void SaveOverlaySettings(const OverlaySettings& settings);
 HotkeySettings LoadHotkeySettings();
-void SaveHotkeySettings(const HotkeySettings& settings);
+bool SaveHotkeySettings(
+    const HotkeySettings& settings,
+    std::wstring* error = nullptr);
 OcrSettings LoadOcrSettings();
 void SaveOcrSettings(const OcrSettings& settings);
 TranslationSettings LoadTranslationSettings();

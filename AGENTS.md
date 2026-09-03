@@ -7,9 +7,14 @@
 
 ZenCrop 的构建、架构、踩坑规则等开发文档已迁移至 `docs/01_architecture/01_ZENCROP_DEV_GUIDE.md`。
 
+## 可选公共参考仓库
+
+- Read Frog 上游仓库为 `https://github.com/mengxi-ream/read-frog.git`，本机约定参考 checkout 为 `D:\GITHUB_melody0709\#REF\read-frog`。
+
+
 ## 公共仓库边界
 
-- 私有研究材料、反编译输出、目标程序路径和历史施工计划不得写入本仓库。
+- 反编译输出、目标程序路径和历史施工计划不得写入本仓库。
 - 生产源码和公共文档只描述 ZenCrop 自身行为，不引用私有证据路径。
 - 新增图片、图标、字体或第三方代码时，必须记录来源与许可证。
 

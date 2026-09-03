@@ -3,6 +3,7 @@
 #include "TranslationEngineFactory.h"
 #include "TranslationProviderCatalog.h"
 #include "TranslationCredentialStore.h"
+#include "TranslationPreflight.h"
 #include "AppMessages.h"
 #include "Settings.h"
 #include "Strings.h"
@@ -277,6 +278,7 @@ bool TranslationCoordinator::Start(HWND owner, RECT sourceRect, HBITMAP hBitmap)
     CloseOcrDeliveryGate();
     if (resultWindow_) resultWindow_.reset();
     embeddedMode_ = false;
+    sourceMode_ = TranslationSourceMode::OcrImage;
     embeddedSink_ = nullptr;
     ClearTranslationTextState();
 
@@ -308,7 +310,7 @@ bool TranslationCoordinator::Start(HWND owner, RECT sourceRect, HBITMAP hBitmap)
         return false;
     }
     if (!dependencies_.translationEngine &&
-        provider->authMode == TranslationAuthMode::BearerApiKey &&
+        TranslationAuthUsesCredential(provider->authMode) &&
         !TranslationCredentialStore::HasKeyAtTarget(provider->credentialRef)) {
         ShowError(StageText(L"请先配置当前翻译 Provider 的 API Key。",
                             L"Configure the active translation provider API key first."));
@@ -351,8 +353,10 @@ bool TranslationCoordinator::Start(HWND owner, RECT sourceRect, HBITMAP hBitmap)
     request_.targetLanguage = selectedTargetLanguage_;
     request_.preserveParagraphs = settings_.preserveParagraphs;
 
+    const TranslationLaunchContext launchContext{
+        TranslationSourceMode::OcrImage, sourceRect_};
     resultWindow_ = std::make_unique<TranslationResultWindow>(
-        request_, sourceRect_, [this](TranslationResultWindow::Command command) {
+        request_, launchContext, [this](TranslationResultWindow::Command command) {
             OnWindowCommand(command);
         });
     if (!resultWindow_ || !resultWindow_->IsValid()) {
@@ -381,6 +385,101 @@ bool TranslationCoordinator::Start(HWND owner, RECT sourceRect, HBITMAP hBitmap)
     return true;
 }
 
+TranslationStartResult TranslationCoordinator::StartText(
+    HWND owner,
+    const TranslationLaunchContext& context,
+    std::wstring sourceText) {
+    if (shuttingDown_) {
+        return {false, TranslationStartError::ShuttingDown};
+    }
+
+    TranslationSettings latest = LoadTranslationSettings();
+    const TranslationStartError preflight = ValidateTranslationPreflight(
+        latest, dependencies_.translationEngine != nullptr, false);
+    if (preflight != TranslationStartError::None) {
+        return {false, preflight};
+    }
+
+    sourceText = NormalizeEditText(sourceText);
+    if (sourceText.empty() ||
+        SplitSourceText(sourceText, latest.preserveParagraphs).chunks.empty()) {
+        return {false, TranslationStartError::EmptyText};
+    }
+
+    TranslationRequest windowRequest;
+    windowRequest.sourceLanguage = NormalizeLanguageCode(
+        latest.sourceLanguage, true);
+    windowRequest.targetLanguage = NormalizeLanguageCode(
+        latest.targetLanguage, false);
+    windowRequest.preserveParagraphs = latest.preserveParagraphs;
+
+    POINT retainedWindowPosition = {};
+    bool retainWindowPosition = false;
+    // Only the first live selected-text result follows its selection. A
+    // replacement inherits the current top-left coordinate, including any
+    // position chosen by the user, while keeping automatic content sizing.
+    if (sourceMode_ == TranslationSourceMode::SelectedText &&
+        resultWindow_ && resultWindow_->IsValid()) {
+        RECT currentWindowRect = {};
+        if (GetWindowRect(resultWindow_->WindowHandle(), &currentWindowRect)) {
+            retainedWindowPosition = {
+                currentWindowRect.left, currentWindowRect.top};
+            retainWindowPosition = true;
+        }
+    }
+
+    TranslationLaunchContext selectedContext = context;
+    selectedContext.mode = TranslationSourceMode::SelectedText;
+    std::unique_ptr<TranslationResultWindow> nextWindow;
+    try {
+        nextWindow = std::make_unique<TranslationResultWindow>(
+            windowRequest, selectedContext,
+            [this](TranslationResultWindow::Command command) {
+                OnWindowCommand(command);
+            });
+    } catch (...) {
+        return {false, TranslationStartError::WindowCreationFailed};
+    }
+    if (!nextWindow || !nextWindow->IsValid()) {
+        return {false, TranslationStartError::WindowCreationFailed};
+    }
+
+    // Do not disturb an existing result until both configuration preflight
+    // and creation of the replacement native window have succeeded.
+    CleanupInvalid();
+    CancelActiveTranslation();
+    CancelOcrWatchdog();
+    CloseOcrDeliveryGate();
+    resultWindow_.reset();
+    ClearTranslationTextState();
+    ReleaseOcrSourceBitmap();
+    ocrEngine_.reset();
+    translationEngine_.reset();
+    ocrInFlight_ = false;
+    embeddedMode_ = false;
+    embeddedSink_ = nullptr;
+    sourceMode_ = TranslationSourceMode::SelectedText;
+    owner_ = owner;
+    sourceRect_ = selectedContext.anchorRect;
+    completionOcrMessage_ = 0;
+    completionTranslationMessage_ = WM_APP_SELECTION_TRANSLATION_DONE;
+    settings_ = std::move(latest);
+    resultWindow_ = std::move(nextWindow);
+    resultWindow_->Show(GetAppMainHwnd(),
+        retainWindowPosition ? &retainedWindowPosition : nullptr);
+    resultWindow_->SetAlwaysOnTop(settings_.resultOnTop);
+    resultWindow_->SetShowWindowBorder(settings_.showWindowBorder);
+    resultWindow_->SetShowSourceText(settings_.showSourceText);
+    resultWindow_->SetBusy(true);
+    resultWindow_->SetStage(StageText(
+        L"\u6b63\u5728\u7ffb\u8bd1\u2026", L"Translating..."));
+    resultWindow_->SetRetryOcrMode(false);
+    translationEngine_ = dependencies_.translationEngine;
+    StartTranslationForSource(sourceText, settings_.sourceLanguage,
+        settings_.targetLanguage);
+    return {true, TranslationStartError::None};
+}
+
 bool TranslationCoordinator::StartEmbeddedSegments(
     HWND owner,
     RECT sourceRect,
@@ -406,6 +505,7 @@ bool TranslationCoordinator::StartEmbeddedSegments(
     completionOcrMessage_ = 0;
     completionTranslationMessage_ = WM_APP_DASHBOARD_TRANSLATION_DONE;
     embeddedMode_ = true;
+    sourceMode_ = TranslationSourceMode::OcrImage;
     embeddedSink_ = sink;
     settings_ = LoadTranslationSettings();
 
@@ -431,7 +531,7 @@ bool TranslationCoordinator::StartEmbeddedSegments(
             : providerError);
     }
     if (!dependencies_.translationEngine &&
-        provider->authMode == TranslationAuthMode::BearerApiKey &&
+        TranslationAuthUsesCredential(provider->authMode) &&
         !TranslationCredentialStore::HasKeyAtTarget(provider->credentialRef)) {
         return fail(StageText(L"请先配置当前翻译 Provider 的 API Key。",
                               L"Configure the active translation provider API key first."));
@@ -912,7 +1012,9 @@ void TranslationCoordinator::ShowError(const std::wstring& message) {
         embeddedSink_->OnTranslationFailed(generation_, message);
     } else if (owner_ && IsWindow(owner_)) {
         MessageBoxW(owner_, message.c_str(),
-            StageText(L"截图翻译", L"Screenshot translation").c_str(),
+            (sourceMode_ == TranslationSourceMode::SelectedText
+                ? StageText(L"划词翻译", L"Selection translation")
+                : StageText(L"截图翻译", L"Screenshot translation")).c_str(),
             MB_OK | MB_ICONERROR);
     }
 }
@@ -1144,7 +1246,8 @@ void TranslationCoordinator::OnWindowCommand(TranslationResultWindow::Command co
         settings_ = latest;
         return;
     }
-    if (command == TranslationResultWindow::Command::OcrRouteChanged &&
+    if (sourceMode_ == TranslationSourceMode::OcrImage &&
+        command == TranslationResultWindow::Command::OcrRouteChanged &&
         resultWindow_ && resultWindow_->IsValid()) {
         const std::wstring previousRoute = settings_.ocrRoute;
         TranslationSettings latest = LoadTranslationSettings();
@@ -1210,7 +1313,8 @@ void TranslationCoordinator::OnWindowCommand(TranslationResultWindow::Command co
         ClearTranslationTextState();
         return;
     }
-    if (command == TranslationResultWindow::Command::RecognizeAgain &&
+    if (sourceMode_ == TranslationSourceMode::OcrImage &&
+        command == TranslationResultWindow::Command::RecognizeAgain &&
         resultWindow_ && resultWindow_->IsValid()) {
         if (!ocrSourceBitmap_) {
             ShowError(StageText(L"原始截图已不可用。", L"The original screenshot is no longer available."));

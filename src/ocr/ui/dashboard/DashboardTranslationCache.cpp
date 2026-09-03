@@ -3,6 +3,7 @@
 
 #include "core/AppDataPaths.h"
 #include "core/Sha256.h"
+#include "translation/TranslationProviderCatalog.h"
 
 #include <nlohmann/json.hpp>
 #include <windows.h>
@@ -178,11 +179,29 @@ std::wstring ProviderFingerprint(const TranslationSettings& settings) {
         fingerprint += L"\npreset=" + provider.presetKind;
         fingerprint += L"\nadapter=" + std::to_wstring(static_cast<int>(provider.adapterKind));
         fingerprint += L"\nmodel=" + provider.model;
+        fingerprint += L"\ncustomModel=" + std::wstring(
+            provider.customModel ? L"1" : L"0");
         fingerprint += L"\nbaseUrl=" + provider.baseUrlOverride;
+        fingerprint += L"\nregion=" + provider.region;
         fingerprint += L"\nreasoning=" + std::to_wstring(static_cast<int>(provider.reasoningMode));
         fingerprint += L"\ntemperature=" + (provider.temperature
             ? std::to_wstring(*provider.temperature) : L"unset");
         fingerprint += L"\nadvanced=" + provider.advancedOptionsJson;
+        const auto capabilities = translation::GetCapabilities(provider);
+        fingerprint += L"\noutput=" +
+            std::wstring(translation::LlmOutputModeName(capabilities.outputMode));
+        fingerprint += L"\ninstruction=" + std::to_wstring(
+            static_cast<int>(capabilities.instructionChannel));
+        fingerprint += L"\ntokenLimit=" + std::to_wstring(
+            static_cast<int>(capabilities.tokenLimitKind));
+        fingerprint += L"\nmaxSegments=" + std::to_wstring(
+            capabilities.maxSegmentsPerRequest);
+        fingerprint += L"\npolicyRevision=" + std::to_wstring(
+            capabilities.policyRevision);
+        fingerprint += L"\nfamily=" + std::to_wstring(
+            static_cast<int>(capabilities.family));
+        fingerprint += L"\nmachineProtocol=" + std::to_wstring(
+            static_cast<int>(capabilities.machineProtocol));
         break;
     }
     return fingerprint;
@@ -248,13 +267,17 @@ bool DashboardTranslationCacheBuildKey(
         translation::NormalizeLanguageCode(settings.sourceLanguage, true);
     const std::wstring normalizedTargetLanguage =
         translation::NormalizeLanguageCode(settings.targetLanguage, false);
+    bool usesPromptProfile = true;
+    if (const auto* provider = translation::FindActiveTranslationProvider(settings)) {
+        usesPromptProfile = translation::GetCapabilities(*provider).usesPromptProfile;
+    }
     const std::wstring material =
         L"dashboard-translation-cache-v1\n" + canonicalSourceMarkdown +
         L"\nsource=" + normalizedSourceLanguage +
         L"\ntarget=" + normalizedTargetLanguage +
         L"\npreserveParagraphs=" + (settings.preserveParagraphs ? L"1" : L"0") +
         L"\nprovider=" + ProviderFingerprint(settings) +
-        L"\nprompt=" + PromptFingerprint(settings);
+        (usesPromptProfile ? L"\nprompt=" + PromptFingerprint(settings) : L"\nprompt=unused");
     return ComputeUtf8Sha256Hex(material, key, error);
 }
 

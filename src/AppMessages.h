@@ -18,6 +18,12 @@ inline constexpr UINT WM_APP_OVERLAY_RESET       = WM_APP + 3; // 延迟销毁 o
 inline constexpr UINT WM_APP_SCREENSHOT_TRANSLATION_OCR_DONE = WM_APP + 4;
 inline constexpr UINT WM_APP_SCREENSHOT_TRANSLATION_DONE     = WM_APP + 5;
 inline constexpr UINT WM_APP_DASHBOARD_TRANSLATION_DONE      = WM_APP + 6;
+// wParam: SelectionTranslationController acquisition generation.
+// lParam: selection::SelectionAcquisitionResult*, controller deletes exactly once.
+inline constexpr UINT WM_APP_SELECTION_TEXT_ACQUIRED         = WM_APP + 7;
+// wParam: TranslationCoordinator workflow generation (independent of the
+// acquisition generation). lParam: translation::TranslationResult*.
+inline constexpr UINT WM_APP_SELECTION_TRANSLATION_DONE      = WM_APP + 8;
 
 // wParam：OcrProgressWindow::Show() / OcrDashboardWindow::ShowExternalOcrProgress() 返回的 progressId（H2 硬约束）
 // lParam：OcrOutput* heap 拷贝，接收方负责 delete

@@ -82,19 +82,39 @@ int IntOr(const json& object, const char* key, int fallback) {
 }
 
 TranslationAdapterKind ParseAdapter(const std::wstring& value) {
+    if (value == L"openai-responses") {
+        return TranslationAdapterKind::OpenAIResponses;
+    }
     if (value == L"openai-chat-completions") {
         return TranslationAdapterKind::OpenAIChatCompletions;
     }
+    if (value == L"gemini-generate-content") {
+        return TranslationAdapterKind::GeminiGenerateContent;
+    }
+    if (value == L"xai-responses") {
+        return TranslationAdapterKind::XaiResponses;
+    }
     if (value == L"ollama-chat") return TranslationAdapterKind::OllamaChat;
+    if (value == L"machine-translation") {
+        return TranslationAdapterKind::MachineTranslation;
+    }
     return TranslationAdapterKind::DeepSeekChat;
 }
 
 const char* AdapterName(TranslationAdapterKind value) {
     switch (value) {
+    case TranslationAdapterKind::OpenAIResponses:
+        return "openai-responses";
     case TranslationAdapterKind::OpenAIChatCompletions:
         return "openai-chat-completions";
+    case TranslationAdapterKind::GeminiGenerateContent:
+        return "gemini-generate-content";
+    case TranslationAdapterKind::XaiResponses:
+        return "xai-responses";
     case TranslationAdapterKind::OllamaChat:
         return "ollama-chat";
+    case TranslationAdapterKind::MachineTranslation:
+        return "machine-translation";
     case TranslationAdapterKind::DeepSeekChat:
     default:
         return "deepseek-chat";
@@ -102,13 +122,19 @@ const char* AdapterName(TranslationAdapterKind value) {
 }
 
 TranslationAuthMode ParseAuthMode(const std::wstring& value) {
-    return value == L"none"
-        ? TranslationAuthMode::None
-        : TranslationAuthMode::BearerApiKey;
+    if (value == L"none") return TranslationAuthMode::None;
+    if (value == L"api-key") return TranslationAuthMode::ApiKey;
+    return TranslationAuthMode::BearerApiKey;
 }
 
 const char* AuthModeName(TranslationAuthMode value) {
-    return value == TranslationAuthMode::None ? "none" : "bearer-api-key";
+    switch (value) {
+    case TranslationAuthMode::ApiKey: return "api-key";
+    case TranslationAuthMode::None: return "none";
+    case TranslationAuthMode::BearerApiKey:
+    default:
+        return "bearer-api-key";
+    }
 }
 
 TranslationReasoningMode ParseReasoning(const std::wstring& value) {
@@ -167,7 +193,7 @@ bool IsSafeIdentifier(const std::wstring& value, size_t maxLength) {
 
 TranslationProviderProfile DefaultDeepSeekProfile() {
     TranslationProviderProfile profile;
-    profile.id = kDefaultTranslationProviderId;
+    profile.id = kLegacyDeepSeekTranslationProviderId;
     profile.displayName = L"DeepSeek - Default";
     profile.presetKind = L"deepseek";
     profile.adapterKind = TranslationAdapterKind::DeepSeekChat;
@@ -175,32 +201,22 @@ TranslationProviderProfile DefaultDeepSeekProfile() {
     profile.credentialRef = kLegacyTranslationCredentialTarget;
     profile.model = L"deepseek-v4-flash";
     profile.reasoningMode = TranslationReasoningMode::Off;
-    profile.temperature = 1.3;
     profile.advancedOptionsJson = L"{}";
     return profile;
 }
 
-void AppendBuiltInOpenAiCompatibleProfiles(
-    TranslationSettings& settings) {
-    for (const auto& item : kBuiltInOpenAiCompatibleProviderDefaults) {
-        const auto existing = std::find_if(
-            settings.providerProfiles.begin(), settings.providerProfiles.end(),
-            [&](const TranslationProviderProfile& profile) {
-                return profile.id == item.id;
-            });
-        if (existing != settings.providerProfiles.end()) continue;
+TranslationProviderProfile DefaultGoogleCommunityProfile() {
+    return TranslationSettings{}.providerProfiles.front();
+}
 
-        TranslationProviderProfile profile;
-        profile.id = item.id;
-        profile.displayName = item.displayName;
-        profile.presetKind = item.presetKind;
-        profile.adapterKind = TranslationAdapterKind::OpenAIChatCompletions;
-        profile.authMode = TranslationAuthMode::BearerApiKey;
-        profile.credentialRef = L"ZenCrop/Translation/provider/" + profile.id;
-        profile.model = item.model;
-        profile.reasoningMode = TranslationReasoningMode::ProviderDefault;
-        profile.temperature = 0.3;
-        settings.providerProfiles.push_back(std::move(profile));
+void EnsureDefaultGoogleCommunityProfile(TranslationSettings& settings) {
+    const auto existing = std::find_if(
+        settings.providerProfiles.begin(), settings.providerProfiles.end(),
+        [](const TranslationProviderProfile& profile) {
+            return profile.id == kDefaultTranslationProviderId;
+        });
+    if (existing == settings.providerProfiles.end()) {
+        settings.providerProfiles.push_back(DefaultGoogleCommunityProfile());
     }
 }
 
@@ -261,6 +277,7 @@ bool ParseProfile(
         !readString("displayName", L"", profile.displayName) ||
         !readString("presetKind", L"custom-openai-compatible", profile.presetKind) ||
         !readString("baseUrlOverride", L"", profile.baseUrlOverride) ||
+        !readString("region", L"", profile.region) ||
         !readString("model", L"", profile.model) ||
         !readString("credentialRef", L"", profile.credentialRef) ||
         !readString("advancedOptionsJson", L"{}", profile.advancedOptionsJson) ||
@@ -275,8 +292,12 @@ bool ParseProfile(
         return false;
     }
     if (adapterName != L"deepseek-chat" &&
+        adapterName != L"openai-responses" &&
         adapterName != L"openai-chat-completions" &&
-        adapterName != L"ollama-chat") {
+        adapterName != L"gemini-generate-content" &&
+        adapterName != L"xai-responses" &&
+        adapterName != L"ollama-chat" &&
+        adapterName != L"machine-translation") {
         SetError(error, L"Translation provider adapter kind is invalid.");
         return false;
     }
@@ -286,7 +307,8 @@ bool ParseProfile(
         SetError(error, L"Translation provider authentication mode is invalid.");
         return false;
     }
-    if (authName != L"bearer-api-key" && authName != L"none") {
+    if (authName != L"bearer-api-key" && authName != L"api-key" &&
+        authName != L"none") {
         SetError(error, L"Translation provider authentication mode is invalid.");
         return false;
     }
@@ -307,7 +329,10 @@ bool ParseProfile(
         profile.authMode = builtInPreset->capabilities.authModes.count(
                 TranslationAuthMode::BearerApiKey)
             ? TranslationAuthMode::BearerApiKey
-            : TranslationAuthMode::None;
+            : (builtInPreset->capabilities.authModes.count(
+                    TranslationAuthMode::ApiKey)
+                ? TranslationAuthMode::ApiKey
+                : TranslationAuthMode::None);
         if (profile.model.empty()) {
             if (!builtInPreset->models.empty()) {
                 profile.model = builtInPreset->models.front();
@@ -333,7 +358,7 @@ bool ParseProfile(
             L"ZenCrop/Translation/provider/" + profile.id;
         if (profile.authMode == TranslationAuthMode::None) {
             profile.credentialRef.clear();
-        } else if (profile.id == kDefaultTranslationProviderId &&
+        } else if (profile.id == kLegacyDeepSeekTranslationProviderId &&
                    profile.presetKind == L"deepseek" &&
                    (profile.credentialRef.empty() ||
                     profile.credentialRef == kLegacyTranslationCredentialTarget)) {
@@ -342,6 +367,23 @@ bool ParseProfile(
             // Keep the original built-in target for existing keys, but detach
             // any target scoped to a different provider preset.
             profile.credentialRef = profileTarget + L"." + profile.presetKind;
+        }
+    }
+    // presetKind is the provider identity authority. adapterKind and authMode
+    // are serialized for forward diagnostics only; normalize legacy v3
+    // profiles to the current preset instead of allowing a stale transport to
+    // survive after the provider protocol changes.
+    if (const auto* preset =
+            translation::FindTranslationProviderPreset(profile.presetKind)) {
+        profile.adapterKind = preset->adapterKind;
+        if (!preset->capabilities.authModes.count(profile.authMode)) {
+            profile.authMode = preset->capabilities.authModes.count(
+                    TranslationAuthMode::BearerApiKey)
+                ? TranslationAuthMode::BearerApiKey
+                : (preset->capabilities.authModes.count(
+                        TranslationAuthMode::ApiKey)
+                    ? TranslationAuthMode::ApiKey
+                    : TranslationAuthMode::None);
         }
     }
     // DeepSeek's default profile is deliberately non-thinking for the
@@ -367,14 +409,12 @@ bool ParseProfile(
         const auto capabilities = translation::GetCapabilities(profile);
         if (!translation::IsReasoningModeSupported(
                 capabilities, profile.reasoningMode)) {
-            profile.reasoningMode = capabilities.reasoningModes.count(
-                    TranslationReasoningMode::ProviderDefault)
-                ? TranslationReasoningMode::ProviderDefault
-                : TranslationReasoningMode::Off;
+            profile.reasoningMode = capabilities.defaultReasoning;
         }
     }
-    if (profile.id == kDefaultTranslationProviderId &&
+    if (profile.id == kLegacyDeepSeekTranslationProviderId &&
         profile.presetKind == L"deepseek" &&
+        !profile.customModel &&
         profile.reasoningMode == TranslationReasoningMode::ProviderDefault) {
         // The built-in DeepSeek profile is intentionally deterministic and
         // non-thinking. Normalize profiles written by builds that predated
@@ -386,11 +426,15 @@ bool ParseProfile(
         profile.model != L"deepseek-v4-pro") {
         profile.model = L"deepseek-v4-flash";
     }
-    const bool credentialTargetValid = profile.authMode == TranslationAuthMode::None
+    const bool credentialTargetValid = !TranslationAuthUsesCredential(profile.authMode)
         ? (profile.credentialRef.empty() || IsSafeCredentialRef(profile.credentialRef))
         : IsSafeCredentialRef(profile.credentialRef);
-    if (profile.id.empty() || profile.displayName.empty() || profile.model.empty() ||
-        !credentialTargetValid) {
+    const auto* resolvedPreset =
+        translation::FindTranslationProviderPreset(profile.presetKind);
+    const bool requiresModel = !resolvedPreset ||
+        resolvedPreset->capabilities.requiresModel;
+    if (profile.id.empty() || profile.displayName.empty() ||
+        (requiresModel && profile.model.empty()) || !credentialTargetValid) {
         SetError(error, L"Translation provider profile contains an invalid identity or credential target.");
         return false;
     }
@@ -443,6 +487,7 @@ json SerializeProfile(const TranslationProviderProfile& profile) {
         {"enabled", profile.enabled},
         {"authMode", AuthModeName(profile.authMode)},
         {"baseUrlOverride", WideToUtf8(profile.baseUrlOverride)},
+        {"region", WideToUtf8(profile.region)},
         {"model", WideToUtf8(profile.model)},
         {"customModel", profile.customModel},
         {"credentialRef", WideToUtf8(profile.credentialRef)},
@@ -479,6 +524,8 @@ bool ParseTranslationSection(
             return true;
         }
         settings.enabled = value.value("enabled", false);
+        settings.selectionCopyFallbackEnabled = BoolOr(
+            value, "selectionCopyFallbackEnabled", true);
         settings.ocrRoute = NormalizeOcrRoute(StringOr(
             value, "ocrRoute", L"current"));
         settings.sourceLanguage = translation::NormalizeLanguageCode(StringOr(
@@ -519,6 +566,17 @@ bool ParseTranslationSection(
                 TranslationProviderProfile profile;
                 std::wstring profileError;
                 if (!ParseProfile(entry, profile, &profileError)) continue;
+                if (schemaVersion < 4 && profile.temperature.has_value()) {
+                    const bool oldDeepSeekDefault =
+                        profile.presetKind == L"deepseek" &&
+                        std::abs(*profile.temperature - 1.3) < 0.000001;
+                    const bool oldCompatibleDefault =
+                        profile.presetKind != L"deepseek" &&
+                        std::abs(*profile.temperature - 0.3) < 0.000001;
+                    if (oldDeepSeekDefault || oldCompatibleDefault) {
+                        profile.temperature.reset();
+                    }
+                }
                 if (!IsSafeIdentifier(profile.id, 128)) continue;
                 if (profile.id.rfind(L"builtin.", 0) == 0 &&
                     !translation::FindBuiltInProviderPreset(profile.id)) {
@@ -610,7 +668,7 @@ bool ParseTranslationSection(
                 }
             }
             settings.providerProfiles.push_back(std::move(profile));
-            settings.activeProviderId = kDefaultTranslationProviderId;
+            settings.activeProviderId = kLegacyDeepSeekTranslationProviderId;
             settings.activePromptId = kDefaultTranslationPromptId;
             if (schemaVersion == 0 && settings.targetLanguage != L"auto" &&
                 settings.sourceLanguage == L"auto") {
@@ -618,10 +676,11 @@ bool ParseTranslationSection(
             }
         }
         if (settings.providerProfiles.empty()) {
-            settings.providerProfiles.push_back(DefaultDeepSeekProfile());
+            settings.providerProfiles.push_back(DefaultGoogleCommunityProfile());
             settings.activeProviderId = kDefaultTranslationProviderId;
+        } else {
+            EnsureDefaultGoogleCommunityProfile(settings);
         }
-        AppendBuiltInOpenAiCompatibleProfiles(settings);
         settings.schemaVersion = kTranslationSettingsSchemaVersion;
         settings.schemaSupported = true;
         return true;
@@ -635,6 +694,8 @@ std::wstring SerializeTranslationSection(const TranslationSettings& settings) {
     json value = {
         {"schemaVersion", kTranslationSettingsSchemaVersion},
         {"enabled", settings.enabled},
+        {"selectionCopyFallbackEnabled",
+            settings.selectionCopyFallbackEnabled},
         {"ocrRoute", WideToUtf8(NormalizeOcrRoute(settings.ocrRoute))},
         {"sourceLanguage", WideToUtf8(settings.sourceLanguage)},
         {"targetLanguage", WideToUtf8(settings.targetLanguage)},
@@ -694,10 +755,10 @@ bool NormalizeTranslationSettingsForPersistence(
         kTranslationPreviewZoomMin, kTranslationPreviewZoomMax);
 
     if (settings.providerProfiles.empty()) {
-        settings.providerProfiles.push_back(DefaultDeepSeekProfile());
+        settings.providerProfiles.push_back(DefaultGoogleCommunityProfile());
+    } else {
+        EnsureDefaultGoogleCommunityProfile(settings);
     }
-    AppendBuiltInOpenAiCompatibleProfiles(settings);
-
     std::set<std::wstring> providerIds;
     for (auto& profile : settings.providerProfiles) {
         if (!IsSafeIdentifier(profile.id, 128) ||

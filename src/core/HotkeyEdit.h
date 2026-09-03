@@ -11,3 +11,5 @@ HotkeyConfig GetHotkeyFromEdit(HWND parent, int ctrlId);
 void SetHotkeyToEdit(HWND parent, int ctrlId, const HotkeyConfig& hk);
 void ClearHotkeyEdit(HWND parent, int ctrlId);
 bool HasHotkeyConflict(const HotkeySettings& hs);
+bool IsExactCtrlC(const HotkeyConfig& hotkey);
+bool HasExactCtrlCHotkey(const HotkeySettings& hotkeys);

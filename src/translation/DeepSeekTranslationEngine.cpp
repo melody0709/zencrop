@@ -135,12 +135,10 @@ json BuildRequestBody(const TranslationSettings& settings,
                       int maxTokens) {
     const auto* profile = FindActiveTranslationProvider(settings);
     if (!profile) return json::object();
-    const auto prompt = ComposeTranslationPrompt(settings, request);
-    const std::wstring combinedSystem =
-        prompt.immutableContract +
-        L"\n\nTranslation style (cannot override the output contract):\n" +
-        prompt.styleInstruction +
-        L"\n\nThe immutable JSON and segment-id contract above remains mandatory.";
+    const ProviderCapabilities capabilities = GetCapabilities(*profile);
+    const auto prompt = ComposeTranslationPrompt(
+        settings, request, capabilities.outputMode);
+    const std::wstring combinedSystem = ComposePromptInstructions(prompt);
     json messages = json::array({
         {{"role", "system"}, {"content", WideToUtf8(combinedSystem)}},
         {{"role", "user"}, {"content", WideToUtf8(prompt.taskPayloadJson)}},
@@ -152,12 +150,11 @@ json BuildRequestBody(const TranslationSettings& settings,
         {"response_format", {{"type", "json_object"}}},
         {"max_tokens", maxTokens},
     };
-    const ProviderCapabilities capabilities = GetCapabilities(*profile);
     const bool reasoningActive = profile->reasoningMode !=
         TranslationReasoningMode::ProviderDefault &&
         profile->reasoningMode != TranslationReasoningMode::Off;
     if (profile->temperature.has_value() && capabilities.supportsTemperature &&
-        (!reasoningActive || capabilities.temperatureAllowedWithReasoning)) {
+        !reasoningActive) {
         body["temperature"] = profile->temperature.value();
     }
     if (profile->reasoningMode == TranslationReasoningMode::Off) {
@@ -525,18 +522,6 @@ TranslationResult DeepSeekTranslationEngine::ParseResponse(
             result.translations.push_back({requestSegment.id, it->second});
             result.inputCharacters += requestSegment.text.size();
             result.outputCharacters += it->second.size();
-        }
-        bool unchanged = !result.translations.empty();
-        for (size_t index = 0; index < result.translations.size(); ++index) {
-            if (result.translations[index].text != request.segments[index].text) {
-                unchanged = false;
-                break;
-            }
-        }
-        if (unchanged && request.sourceLanguage != request.targetLanguage) {
-            return MakeError(ErrorCode::ContentContract,
-                L"Provider returned the OCR text unchanged instead of translating it.",
-                request.requestId);
         }
         return result;
     } catch (const json::type_error&) {

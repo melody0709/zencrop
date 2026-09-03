@@ -8,6 +8,8 @@
 #include "TranslationTypes.h"
 
 #include "core/Settings.h"
+#include "core/SettingsHotkeyDraft.h"
+#include "core/HotkeyEdit.h"
 #include "core/Strings.h"
 
 #include <commctrl.h>
@@ -25,6 +27,7 @@ struct PageState {
     // update provider/prompt collections in shared settings, but must not
     // overwrite the other unsaved controls in this draft.
     TranslationSettings draft;
+    SettingsHotkeyDraft* hotkeyDraft = nullptr;
     std::vector<std::wstring*> sourceIds;
     std::vector<std::wstring*> targetIds;
     std::vector<std::wstring*> ocrRouteIds;
@@ -93,6 +96,16 @@ void SetText(HWND page, int id, const std::wstring& text) {
 
 void UpdateDataRoute(HWND page, const TranslationSettings& settings) {
     const auto* profile = FindActiveTranslationProvider(settings);
+    const bool usesPromptProfile = profile &&
+        GetCapabilities(*profile).usesPromptProfile;
+    SetText(page, IDC_TRANSLATE_MODEL_LABEL,
+        usesPromptProfile
+            ? (S::IsChinese() ? L"\u63d0\u793a\u8bcd\uff1a" : L"Prompt:")
+            : (S::IsChinese() ? L"\u63d0\u793a\u8bcd\uff08\u4ec5 LLM\uff09\uff1a" : L"Prompt (LLM only):"));
+    for (const int id : {IDC_TRANSLATE_MODEL_LABEL, IDC_TRANSLATE_PROMPT,
+                         IDC_TRANSLATE_PROMPT_MANAGE}) {
+        EnableWindow(GetDlgItem(page, id), usesPromptProfile);
+    }
     if (!profile || !profile->enabled) {
         SetText(page, IDC_TRANSLATE_NOTICE_TEXT,
             S::IsChinese() ? L"当前没有启用的 Provider。" :
@@ -103,8 +116,8 @@ void UpdateDataRoute(HWND page, const TranslationSettings& settings) {
         ? FindTranslationProviderPreset(profile->presetKind) : nullptr;
     const std::wstring host = preset ? preset->dataHost : L"custom endpoint";
     const std::wstring message = S::IsChinese()
-        ? L"\u8bc6\u522b\u6587\u672c\u4f1a\u53d1\u9001\u5230 " + host + L"\u3002"
-        : L"Recognized text is sent to " + host + L".";
+        ? L"OCR \u4e0e\u9009\u4e2d\u6587\u672c\u4f1a\u53d1\u9001\u5230 " + host + L"\u3002"
+        : L"OCR and selected text are sent to " + host + L".";
     SetText(page, IDC_TRANSLATE_NOTICE_TEXT, message);
 }
 
@@ -121,6 +134,10 @@ TranslationSettings ReadPage(HWND page, PageState& state) {
     settings.schemaVersion = shared.schemaVersion;
     settings.schemaSupported = shared.schemaSupported;
     settings.enabled = IsDlgButtonChecked(page, IDC_TRANSLATE_ENABLED) == BST_CHECKED;
+    settings.selectionCopyFallbackEnabled = IsDlgButtonChecked(
+        page, IDC_TRANSLATE_SELECTION_COPY_FALLBACK) == BST_CHECKED;
+    UpdateSelectionCopyFallbackDraft(
+        state.hotkeyDraft, settings.selectionCopyFallbackEnabled);
     const auto keepIfSelected = [](const std::wstring& selected,
                                    const std::wstring& fallback) {
         return selected.empty() ? fallback : selected;
@@ -177,7 +194,7 @@ bool ValidatePage(HWND page, const TranslationSettings& settings) {
         return false;
     }
     if (settings.enabled &&
-        profile->authMode == TranslationAuthMode::BearerApiKey &&
+        TranslationAuthUsesCredential(profile->authMode) &&
         !TranslationCredentialStore::HasKeyAtTarget(profile->credentialRef)) {
         MessageBoxW(page,
             S::IsChinese() ? L"请先在 LLM Providers 页面配置当前 Provider 的 API Key。" :
@@ -201,9 +218,23 @@ bool ValidatePage(HWND page, const TranslationSettings& settings) {
 
 void InitializePage(HWND page, PageState& state) {
     state.draft = GetSharedSettings().translation;
+    if (state.hotkeyDraft) {
+        state.draft.selectionCopyFallbackEnabled =
+            state.hotkeyDraft->selectionCopyFallbackEnabled;
+    }
     const TranslationSettings settings = state.draft;
+    SetText(page, IDC_TRANSLATE_SELECTION_HOTKEY_LABEL,
+        S::IsChinese() ? L"划词翻译快捷键：" : L"Selection hotkey:");
+    SetText(page, IDC_TRANSLATE_SELECTION_COPY_FALLBACK,
+        S::IsChinese() ? L"UIA 失败时允许模拟复制" :
+            L"Allow simulated copy when UIA fails");
+    SetText(page, IDC_TRANSLATE_SELECTION_COPY_HINT,
+        S::IsChinese()
+            ? L"模拟复制会触发 Ctrl+C；选中文字可能进入剪贴板历史、云同步或管理器，原剪贴板仅尽力恢复。"
+            : L"Ctrl+C may expose selected text to clipboard history, cloud sync, or managers; prior content is restored best-effort.");
     SetText(page, IDC_TRANSLATE_ENABLED,
-        S::IsChinese() ? L"启用截图翻译" : L"Enable screenshot translation");
+        S::IsChinese() ? L"启用 OCR 来源翻译" :
+            L"Enable OCR-source translation");
     SetText(page, IDC_TRANSLATE_LANGUAGES_LABEL,
         S::IsChinese() ? L"语言" : L"Languages");
     SetText(page, IDC_TRANSLATE_SOURCE_LABEL,
@@ -230,6 +261,27 @@ void InitializePage(HWND page, PageState& state) {
         S::IsChinese() ? L"显示结果窗口边框" : L"Show result window border");
     SetText(page, IDC_TRANSLATE_SOURCE_FONT_SIZE_LABEL,
         S::IsChinese() ? L"原文字体大小：" : L"Source font size:");
+
+    const HotkeySettings& hotkeys = state.hotkeyDraft
+        ? state.hotkeyDraft->hotkeys : GetSharedSettings().hotkeys;
+    CreateHotkeyEdit(page, IDC_TRANSLATE_SELECTION_HOTKEY_EDIT,
+        hotkeys.selectionTranslate);
+    HFONT pageFont = reinterpret_cast<HFONT>(
+        SendMessageW(page, WM_GETFONT, 0, 0));
+    SendDlgItemMessageW(page, IDC_TRANSLATE_SELECTION_HOTKEY_EDIT,
+        WM_SETFONT, reinterpret_cast<WPARAM>(pageFont), 0);
+    HWND clearButton = GetDlgItem(
+        page, IDC_TRANSLATE_SELECTION_HOTKEY_CLEAR);
+    RECT clearRect = {};
+    GetWindowRect(clearButton, &clearRect);
+    MapWindowPoints(nullptr, page,
+        reinterpret_cast<POINT*>(&clearRect), 2);
+    RECT editStart = {110, 0, 0, 0};
+    MapDialogRect(page, &editStart);
+    MoveWindow(GetDlgItem(page, IDC_TRANSLATE_SELECTION_HOTKEY_EDIT),
+        editStart.left, clearRect.top,
+        clearRect.left - editStart.left - 4,
+        clearRect.bottom - clearRect.top, TRUE);
 
     HWND source = GetDlgItem(page, IDC_TRANSLATE_SOURCE);
     HWND target = GetDlgItem(page, IDC_TRANSLATE_TARGET);
@@ -276,6 +328,8 @@ void InitializePage(HWND page, PageState& state) {
 
     CheckDlgButton(page, IDC_TRANSLATE_ENABLED,
         settings.enabled ? BST_CHECKED : BST_UNCHECKED);
+    CheckDlgButton(page, IDC_TRANSLATE_SELECTION_COPY_FALLBACK,
+        settings.selectionCopyFallbackEnabled ? BST_CHECKED : BST_UNCHECKED);
     CheckDlgButton(page, IDC_TRANSLATE_SHOW_SOURCE,
         settings.showSourceText ? BST_CHECKED : BST_UNCHECKED);
     CheckDlgButton(page, IDC_TRANSLATE_PARAGRAPHS,
@@ -391,7 +445,7 @@ void ShowManagementPage(HWND owner, int resourceId, DLGPROC dialogProc,
 
 void ShowTranslationProviderSettings(HWND owner) {
     ShowManagementPage(owner, IDD_SETTINGS_TRANSLATE_PROVIDERS,
-        TranslationProviderSettingsPageProc, L"LLM Providers");
+        TranslationProviderSettingsPageProc, L"Translation Providers");
 }
 
 void ShowTranslationPromptSettings(HWND owner) {
@@ -405,6 +459,11 @@ INT_PTR CALLBACK TranslationSettingsPageProc(
         GetWindowLongPtrW(page, GWLP_USERDATA));
     if (message == WM_INITDIALOG) {
         state = new PageState();
+        const auto* propertyPage =
+            reinterpret_cast<const PROPSHEETPAGEW*>(lParam);
+        state->hotkeyDraft = propertyPage
+            ? reinterpret_cast<SettingsHotkeyDraft*>(propertyPage->lParam)
+            : nullptr;
         SetWindowLongPtrW(page, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(state));
         InitializePage(page, *state);
         return TRUE;
@@ -413,6 +472,22 @@ INT_PTR CALLBACK TranslationSettingsPageProc(
     if (message == WM_COMMAND) {
         const int control = LOWORD(wParam);
         const int notification = HIWORD(wParam);
+        if (control == IDC_TRANSLATE_SELECTION_HOTKEY_EDIT &&
+            notification == EN_CHANGE) {
+            UpdateSettingsHotkeyDraft(state->hotkeyDraft,
+                &HotkeySettings::selectionTranslate,
+                GetHotkeyFromEdit(
+                    page, IDC_TRANSLATE_SELECTION_HOTKEY_EDIT));
+            return TRUE;
+        }
+        if (control == IDC_TRANSLATE_SELECTION_HOTKEY_CLEAR &&
+            notification == BN_CLICKED) {
+            ClearHotkeyEdit(page, IDC_TRANSLATE_SELECTION_HOTKEY_EDIT);
+            UpdateSettingsHotkeyDraft(state->hotkeyDraft,
+                &HotkeySettings::selectionTranslate, {});
+            PropSheet_Changed(GetParent(page), page);
+            return TRUE;
+        }
         if (control == IDC_TRANSLATE_PROVIDER_MANAGE && notification == BN_CLICKED) {
             ReadPage(page, *state);
             ShowTranslationProviderSettings(GetParent(page));
@@ -453,6 +528,8 @@ INT_PTR CALLBACK TranslationSettingsPageProc(
             merged = GetSharedSettings().translation;
         }
         merged.enabled = settings.enabled;
+        merged.selectionCopyFallbackEnabled =
+            settings.selectionCopyFallbackEnabled;
         merged.ocrRoute = settings.ocrRoute;
         merged.sourceLanguage = settings.sourceLanguage;
         merged.targetLanguage = settings.targetLanguage;

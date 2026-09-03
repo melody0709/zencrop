@@ -1,4 +1,5 @@
 #pragma once
+
 #include <windows.h>
 
 // PropertySheet-based settings dialog. Extracted from Settings.cpp so that

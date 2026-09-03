@@ -1,5 +1,6 @@
 #include "HotkeyEdit.h"
 #include "Strings.h"
+#include <algorithm>
 #include <commctrl.h>
 #include <mutex>
 
@@ -12,6 +13,26 @@ struct HotkeyEditState {
     HotkeyConfig original;
     bool capturing = false;
 };
+
+std::wstring DisplayedHotkeyText(const HotkeyEditState& state) {
+    return state.capturing && state.hotkey.IsEmpty()
+        ? S::HotkeyPrompt() : state.hotkey.ToString();
+}
+
+void SyncHotkeyWindowText(HWND edit, const HotkeyEditState& state) {
+    const std::wstring text = DisplayedHotkeyText(state);
+    SetWindowTextW(edit, text.c_str());
+}
+
+void NotifyHotkeyChanged(HWND edit) {
+    const HWND page = GetParent(edit);
+    if (!page) return;
+    SendMessageW(page, WM_COMMAND,
+        MAKEWPARAM(GetDlgCtrlID(edit), EN_CHANGE),
+        reinterpret_cast<LPARAM>(edit));
+    const HWND sheet = GetParent(page);
+    if (sheet) PropSheet_Changed(sheet, page);
+}
 } // namespace
 
 bool IsModifierKey(unsigned char vk) {
@@ -45,6 +66,21 @@ static void RegisterHotkeyEditClass() {
         case WM_SETFONT: {
             return DefWindowProcW(hwnd, msg, wParam, lParam);
         }
+        case WM_GETTEXTLENGTH: {
+            return state
+                ? static_cast<LRESULT>(DisplayedHotkeyText(*state).size())
+                : 0;
+        }
+        case WM_GETTEXT: {
+            if (!state || !lParam || wParam == 0) return 0;
+            const std::wstring text = DisplayedHotkeyText(*state);
+            const size_t copied = (std::min)(
+                text.size(), static_cast<size_t>(wParam - 1));
+            auto* destination = reinterpret_cast<wchar_t*>(lParam);
+            std::copy_n(text.data(), copied, destination);
+            destination[copied] = L'\0';
+            return static_cast<LRESULT>(copied);
+        }
         case WM_GETDLGCODE: {
             return DLGC_WANTALLKEYS;
         }
@@ -52,6 +88,7 @@ static void RegisterHotkeyEditClass() {
             if (state) {
                 state->capturing = true;
                 state->original = state->hotkey;
+                SyncHotkeyWindowText(hwnd, *state);
                 InvalidateRect(hwnd, nullptr, TRUE);
             }
             return 0;
@@ -59,6 +96,7 @@ static void RegisterHotkeyEditClass() {
         case WM_KILLFOCUS: {
             if (state) {
                 state->capturing = false;
+                SyncHotkeyWindowText(hwnd, *state);
                 InvalidateRect(hwnd, nullptr, TRUE);
             }
             return 0;
@@ -73,14 +111,17 @@ static void RegisterHotkeyEditClass() {
             if (wParam == VK_ESCAPE) {
                 state->hotkey = state->original;
                 state->capturing = false;
+                SyncHotkeyWindowText(hwnd, *state);
                 InvalidateRect(hwnd, nullptr, TRUE);
+                NotifyHotkeyChanged(hwnd);
                 SetFocus(GetParent(hwnd));
                 return 0;
             }
             if (wParam == VK_BACK || wParam == VK_DELETE) {
                 state->hotkey = HotkeyConfig();
+                SyncHotkeyWindowText(hwnd, *state);
                 InvalidateRect(hwnd, nullptr, TRUE);
-                PropSheet_Changed(GetParent(GetParent(hwnd)), GetParent(hwnd));
+                NotifyHotkeyChanged(hwnd);
                 return 0;
             }
             if (IsModifierKey((unsigned char)wParam)) {
@@ -107,8 +148,9 @@ static void RegisterHotkeyEditClass() {
                 }
 
                 state->hotkey = hk;
+                SyncHotkeyWindowText(hwnd, *state);
                 InvalidateRect(hwnd, nullptr, TRUE);
-                PropSheet_Changed(GetParent(GetParent(hwnd)), GetParent(hwnd));
+                NotifyHotkeyChanged(hwnd);
             }
             return 0;
         }
@@ -118,7 +160,9 @@ static void RegisterHotkeyEditClass() {
             if (wParam == VK_ESCAPE) {
                 state->hotkey = state->original;
                 state->capturing = false;
+                SyncHotkeyWindowText(hwnd, *state);
                 InvalidateRect(hwnd, nullptr, TRUE);
+                NotifyHotkeyChanged(hwnd);
                 SetFocus(GetParent(hwnd));
                 return 0;
             }
@@ -146,8 +190,9 @@ static void RegisterHotkeyEditClass() {
                 }
 
                 state->hotkey = hk;
+                SyncHotkeyWindowText(hwnd, *state);
                 InvalidateRect(hwnd, nullptr, TRUE);
-                PropSheet_Changed(GetParent(GetParent(hwnd)), GetParent(hwnd));
+                NotifyHotkeyChanged(hwnd);
             }
             return 0;
         }
@@ -169,8 +214,7 @@ static void RegisterHotkeyEditClass() {
             DeleteObject(borderBrush);
 
             if (state) {
-                std::wstring text = state->capturing && state->hotkey.IsEmpty()
-                    ? S::HotkeyPrompt() : state->hotkey.ToString();
+                const std::wstring text = DisplayedHotkeyText(*state);
                 SetBkMode(hdc, TRANSPARENT);
                 SetTextColor(hdc, GetSysColor(COLOR_WINDOWTEXT));
                 HFONT font = (HFONT)SendMessageW(hwnd, WM_GETFONT, 0, 0);
@@ -203,6 +247,7 @@ HWND CreateHotkeyEdit(HWND parent, int ctrlId, const HotkeyConfig& initial) {
     if (state) {
         state->hotkey = initial;
         state->original = initial;
+        SyncHotkeyWindowText(edit, *state);
     }
     return edit;
 }
@@ -221,6 +266,7 @@ void SetHotkeyToEdit(HWND parent, int ctrlId, const HotkeyConfig& hk) {
     if (state) {
         state->hotkey = hk;
         state->original = hk;
+        SyncHotkeyWindowText(edit, *state);
         InvalidateRect(edit, nullptr, TRUE);
     }
 }
@@ -230,7 +276,9 @@ void ClearHotkeyEdit(HWND parent, int ctrlId) {
 }
 
 bool HasHotkeyConflict(const HotkeySettings& hs) {
-    HotkeyConfig keys[] = { hs.reparent, hs.thumbnail, hs.viewport, hs.closeReparent, hs.alwaysOnTop, hs.screenshot, hs.ocr, hs.ocrAlt };
+    HotkeyConfig keys[] = { hs.reparent, hs.thumbnail, hs.viewport,
+        hs.closeReparent, hs.alwaysOnTop, hs.screenshot, hs.ocr, hs.ocrAlt,
+        hs.selectionTranslate };
     const int count = (int)(sizeof(keys) / sizeof(keys[0]));
     for (int i = 0; i < count; i++) {
         if (keys[i].IsEmpty()) continue;
@@ -241,4 +289,24 @@ bool HasHotkeyConflict(const HotkeySettings& hs) {
         }
     }
     return false;
+}
+
+bool IsExactCtrlC(const HotkeyConfig& hotkey) {
+    return hotkey.ctrl && !hotkey.win && !hotkey.shift && !hotkey.alt &&
+        hotkey.key == 'C';
+}
+
+bool HasExactCtrlCHotkey(const HotkeySettings& hotkeys) {
+    const HotkeyConfig keys[] = {
+        hotkeys.reparent,
+        hotkeys.thumbnail,
+        hotkeys.viewport,
+        hotkeys.closeReparent,
+        hotkeys.alwaysOnTop,
+        hotkeys.screenshot,
+        hotkeys.ocr,
+        hotkeys.ocrAlt,
+        hotkeys.selectionTranslate,
+    };
+    return std::any_of(std::begin(keys), std::end(keys), IsExactCtrlC);
 }

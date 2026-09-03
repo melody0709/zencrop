@@ -1,6 +1,7 @@
 #pragma once
 
 #include "TranslationEngine.h"
+#include "TranslationLaunchContext.h"
 #include "TranslationResultWindow.h"
 #include "core/Settings.h"
 
@@ -62,6 +63,10 @@ public:
     // Synchronous preflight failures return false so the screenshot overlay can
     // restore the user's current selection.
     bool Start(HWND owner, RECT sourceRect, HBITMAP hBitmap);
+    TranslationStartResult StartText(
+        HWND owner,
+        const TranslationLaunchContext& context,
+        std::wstring sourceText);
     // Starts a block-aware, windowless translation workflow. Segment ids are
     // preserved in the final completion so a document projection can rebuild
     // Markdown and PreviewBlocks without touching the OCR model.
@@ -86,6 +91,7 @@ private:
     UINT completionOcrMessage_ = 0;
     UINT completionTranslationMessage_ = 0;
     bool embeddedMode_ = false;
+    TranslationSourceMode sourceMode_ = TranslationSourceMode::OcrImage;
     ITranslationEmbeddedSink* embeddedSink_ = nullptr;
 
     TranslationSettings settings_;

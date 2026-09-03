@@ -1,5 +1,6 @@
 #pragma once
 
+#include "TranslationLaunchContext.h"
 #include "TranslationTypes.h"
 
 #include <windows.h>
@@ -34,7 +35,7 @@ public:
     using CommandCallback = std::function<void(Command)>;
 
     TranslationResultWindow(const TranslationRequest& request,
-                            const RECT& sourceRect,
+                            const TranslationLaunchContext& context,
                             CommandCallback callback);
     ~TranslationResultWindow();
 
@@ -50,7 +51,9 @@ public:
                                bool retryOcr) {
         return PostAsyncError(window, 0, message, retryOcr);
     }
-    void Show(HWND owner);
+    // A retained position keeps the top-left coordinate fixed while content-
+    // driven automatic sizing continues normally.
+    void Show(HWND owner, const POINT* retainedPosition = nullptr);
     void SetStage(const std::wstring& stage);
     void SetOcrEngineLabel(const std::wstring& label);
     void SetSourceText(const std::wstring& text);
@@ -120,6 +123,7 @@ private:
     HFONT textFont_ = nullptr;
     HFONT sourceTextFont_ = nullptr;
     UINT layoutDpi_ = 0;
+    TranslationSourceMode sourceMode_ = TranslationSourceMode::OcrImage;
     RECT sourceRect_ = {};
     RECT sourceCardRect_ = {};
     RECT translationCardRect_ = {};
@@ -163,6 +167,7 @@ private:
     int sourceSplitPermille_ = -1;
     bool windowSizeMoveActive_ = false;
     bool windowSizeManuallyAdjusted_ = false;
+    bool autoPositionNearSource_ = true;
     RECT windowSizeMoveStartRect_ = {};
     bool suppressCommands_ = false;
     bool closeNotified_ = false;

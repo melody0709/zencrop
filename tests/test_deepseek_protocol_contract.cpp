@@ -127,6 +127,19 @@ bool SendAll(SOCKET socket, const std::string& bytes, const std::atomic<bool>& s
     return offset == bytes.size();
 }
 
+bool ReceiveRequestHeaders(SOCKET socket, const std::atomic<bool>& stopping) {
+    std::string request;
+    request.reserve(1024);
+    char buffer[1024] = {};
+    while (!stopping.load() && request.find("\r\n\r\n") == std::string::npos) {
+        const int received = recv(socket, buffer, static_cast<int>(sizeof(buffer)), 0);
+        if (received <= 0) return false;
+        request.append(buffer, static_cast<size_t>(received));
+        if (request.size() > 16384) return false;
+    }
+    return request.find("\r\n\r\n") != std::string::npos;
+}
+
 class LoopbackHttpServer final {
 public:
     using Handler = std::function<void(SOCKET, const std::atomic<bool>&)>;
@@ -207,7 +220,9 @@ private:
             std::lock_guard<std::mutex> lock(socketMutex_);
             clientSocket_ = client;
         }
-        if (!stopping_.load() && handler_) handler_(client, stopping_);
+        if (!stopping_.load() && handler_ && ReceiveRequestHeaders(client, stopping_)) {
+            handler_(client, stopping_);
+        }
         {
             std::lock_guard<std::mutex> lock(socketMutex_);
             if (clientSocket_ == client) clientSocket_ = INVALID_SOCKET;
@@ -259,7 +274,18 @@ struct AsyncResponseWaiter {
 
 TranslationSettings TestSettings() {
     TranslationSettings settings;
-    if (auto* profile = FindActiveTranslationProvider(settings)) profile->model = L"deepseek-v4-flash";
+    settings.providerProfiles.clear();
+    TranslationProviderProfile profile;
+    profile.id = kLegacyDeepSeekTranslationProviderId;
+    profile.displayName = L"DeepSeek - Default";
+    profile.presetKind = L"deepseek";
+    profile.adapterKind = TranslationAdapterKind::DeepSeekChat;
+    profile.authMode = TranslationAuthMode::BearerApiKey;
+    profile.model = L"deepseek-v4-flash";
+    profile.credentialRef = kLegacyTranslationCredentialTarget;
+    profile.reasoningMode = TranslationReasoningMode::Off;
+    settings.providerProfiles.push_back(std::move(profile));
+    settings.activeProviderId = kLegacyDeepSeekTranslationProviderId;
     return settings;
 }
 
@@ -272,11 +298,11 @@ TranslationRequest TestRequest() {
     return request;
 }
 
-HttpResponse TranslationResponse(const char* id = "s1") {
+HttpResponse TranslationResponse(const char* id = "s1", const char* text = "你好") {
     json inner = {
         {"targetLanguage", "zh-Hans"},
         {"detectedSourceLanguage", "en"},
-        {"translations", {{{"id", "s1"}, {"text", "你好"}}}},
+        {"translations", {{{"id", "s1"}, {"text", text}}}},
     };
     inner["translations"][0]["id"] = id;
     json outer = {
@@ -338,7 +364,7 @@ int TestRequestShapeAndSuccess() {
     const json body = json::parse(transport->records[0].body);
     if (body.value("model", "") != "deepseek-v4-flash") return 31;
     if (body.value("stream", true)) return 32;
-    if (body.value("temperature", 0.0) != 1.3) return 33;
+    if (body.contains("temperature")) return 33;
     if (body["thinking"].value("type", "") != "disabled") return 34;
     if (body["response_format"].value("type", "") != "json_object") return 35;
     if (body.value("max_tokens", 0) != 16384) return 36;
@@ -363,6 +389,16 @@ int TestEmptyContentRetry() {
         transport->records[1].options.deadlineMs >=
             transport->records[0].options.deadlineMs) return 2;
     return 0;
+}
+
+int TestLegitimateUnchangedContent() {
+    auto transport = std::make_shared<FakeTransport>();
+    transport->postResponses.push_back(TranslationResponse("s1", "Hello"));
+    DeepSeekTranslationEngine engine(
+        TestSettings(), transport, std::make_shared<FakeCredentialProvider>());
+    const auto result = RunTranslate(engine, TestRequest());
+    return result.success && result.translations.size() == 1 &&
+        result.translations[0].text == L"Hello" ? 0 : 1;
 }
 
 int TestEmptyContentFailsAfterOneRetry() {
@@ -1040,6 +1076,7 @@ int main() {
     const TestCase tests[] = {
         {"request shape and success", TestRequestShapeAndSuccess},
         {"empty content retry", TestEmptyContentRetry},
+        {"legitimate unchanged content", TestLegitimateUnchangedContent},
         {"empty content retry limit", TestEmptyContentFailsAfterOneRetry},
         {"strict schema", TestStrictSchema},
         {"segment order", TestSegmentOrderContract},
