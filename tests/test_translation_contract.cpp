@@ -1035,6 +1035,26 @@ int TestCoordinatorMessageChain() {
         return 90;
     }
 
+    RECT retainedOcrRect = {};
+    if (!GetWindowRect(resultWindow, &retainedOcrRect)) {
+        coordinator.Shutdown();
+        DestroyWindow(messageWindow);
+        cleanup();
+        return 549;
+    }
+    SendMessageW(resultWindow, WM_ENTERSIZEMOVE, 0, 0);
+    SetWindowPos(resultWindow, nullptr,
+        retainedOcrRect.left + 17, retainedOcrRect.top + 13, 0, 0,
+        SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+    SendMessageW(resultWindow, WM_EXITSIZEMOVE, 0, 0);
+    if (!GetWindowRect(resultWindow, &retainedOcrRect)) {
+        coordinator.Shutdown();
+        DestroyWindow(messageWindow);
+        cleanup();
+        return 550;
+    }
+    const HWND retainedOcrWindow = resultWindow;
+
     translator->delayMs.store(250);
     bitmap = CreateBitmap(32, 16, 1, 32, nullptr);
     if (!bitmap) {
@@ -1043,15 +1063,21 @@ int TestCoordinatorMessageChain() {
         cleanup();
         return 65;
     }
-    coordinator.Start(nullptr, sourceRect, bitmap);
+    const bool repeatedOcrStarted = coordinator.Start(
+        nullptr, sourceRect, bitmap);
     DeleteObject(bitmap);
     PumpTranslationMessages(80);
     resultWindow = FindWindowW(L"ZenCrop.TranslationResultWindow", nullptr);
-    if (!resultWindow) {
+    RECT repeatedOcrRect = {};
+    if (resultWindow) GetWindowRect(resultWindow, &repeatedOcrRect);
+    if (!repeatedOcrStarted || !resultWindow ||
+        resultWindow != retainedOcrWindow ||
+        repeatedOcrRect.left != retainedOcrRect.left ||
+        repeatedOcrRect.top != retainedOcrRect.top) {
         coordinator.Shutdown();
         DestroyWindow(messageWindow);
         cleanup();
-        return 66;
+        return 551;
     }
     SendMessageW(resultWindow, WM_COMMAND,
         MAKEWPARAM(3115, BN_CLICKED), reinterpret_cast<LPARAM>(GetDlgItem(resultWindow, 3115)));
@@ -1202,12 +1228,43 @@ int TestCoordinatorMessageChain() {
         return 482;
     }
 
+    RECT retainedSelectedRect = {};
+    GetWindowRect(selectedTextWindow, &retainedSelectedRect);
+    const auto repeatedSelectedTextStart = coordinator.StartText(
+        nullptr, selectedTextContext, L"Replacement selected text");
+    PumpTranslationMessages(500);
+    HWND repeatedSelectedTextWindow = FindWindowW(
+        L"ZenCrop.TranslationResultWindow", nullptr);
+    RECT repeatedSelectedRect = {};
+    if (repeatedSelectedTextWindow) {
+        GetWindowRect(repeatedSelectedTextWindow, &repeatedSelectedRect);
+    }
+    if (!repeatedSelectedTextStart.started ||
+        repeatedSelectedTextWindow != selectedTextWindow ||
+        repeatedSelectedRect.left != retainedSelectedRect.left ||
+        repeatedSelectedRect.top != retainedSelectedRect.top ||
+        ControlText(selectedTextWindow, 3101) != L"Replacement selected text" ||
+        ControlText(selectedTextWindow, 3102).find(
+            L"[fake] Replacement selected text") == std::wstring::npos) {
+        coordinator.Shutdown();
+        DestroyWindow(messageWindow);
+        cleanup();
+        return 548;
+    }
+
     const bool selectedSourcePreviewAvailable =
         IsWindowEnabled(selectedSourceModeButton) != FALSE;
     if ((selectedSourcePreviewAvailable &&
-            ControlText(selectedTextWindow, 3120) != L"Source") ||
+            (ControlText(selectedTextWindow, 3120) != L"Source" ||
+             IsWindowVisible(GetDlgItem(selectedTextWindow, 3101)))) ||
         (!selectedSourcePreviewAvailable &&
             ControlText(selectedTextWindow, 3120) != L"Preview")) {
+        std::wcerr << L"selected preview diagnostic: enabled="
+                   << selectedSourcePreviewAvailable
+                   << L" button='" << ControlText(selectedTextWindow, 3120)
+                   << L"' source-visible="
+                   << IsWindowVisible(GetDlgItem(selectedTextWindow, 3101))
+                   << L"\n";
         coordinator.Shutdown();
         DestroyWindow(messageWindow);
         cleanup();
@@ -1272,7 +1329,7 @@ int TestCoordinatorMessageChain() {
         rejectedStart.error !=
             translation::TranslationStartError::InvalidLanguages ||
         !IsWindow(selectedTextWindow) ||
-        ControlText(selectedTextWindow, 3101) != L"Selected plain text") {
+        ControlText(selectedTextWindow, 3101) != L"Replacement selected text") {
         coordinator.Shutdown();
         DestroyWindow(messageWindow);
         cleanup();
@@ -1536,6 +1593,7 @@ int TestResultWindowLayoutContract() {
     SetWindowTextW(sourceControl, editedSource.c_str());
     SendMessageW(native, WM_COMMAND,
         MAKEWPARAM(3101, EN_CHANGE), reinterpret_cast<LPARAM>(sourceControl));
+    PumpMessagesFor(200);
     RECT expandedEditedWindowRect = {};
     if (!GetWindowRect(native, &expandedEditedWindowRect) ||
         expandedEditedWindowRect.bottom - expandedEditedWindowRect.top <=
@@ -1550,6 +1608,7 @@ int TestResultWindowLayoutContract() {
         measuredSource += line == 11 ? L"" : L"\r\n";
     }
     window.SetSourceText(measuredSource);
+    PumpMessagesFor(200);
     RECT expandedWindow = {};
     if (!GetWindowRect(native, &expandedWindow) ||
         expandedWindow.bottom - expandedWindow.top <=
@@ -1575,6 +1634,7 @@ int TestResultWindowLayoutContract() {
         longTranslation += line == 23 ? L"" : L"\r\n";
     }
     window.SetTranslationText(longTranslation);
+    PumpMessagesFor(200);
     RECT sourceAfterLongTranslation = {};
     RECT translationAfterLongTranslation = {};
     RECT windowAfterLongTranslation = {};

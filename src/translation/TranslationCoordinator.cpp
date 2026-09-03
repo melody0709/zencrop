@@ -273,10 +273,22 @@ TranslationCoordinator::~TranslationCoordinator() {
 bool TranslationCoordinator::Start(HWND owner, RECT sourceRect, HBITMAP hBitmap) {
     if (!hBitmap || shuttingDown_) return false;
     CleanupInvalid();
+    const bool reuseWindow = sourceMode_ == TranslationSourceMode::OcrImage &&
+        resultWindow_ && resultWindow_->IsValid();
+    POINT retainedWindowPosition = {};
+    bool retainedWindowPositionValid = false;
+    if (reuseWindow) {
+        RECT currentWindowRect = {};
+        if (GetWindowRect(resultWindow_->WindowHandle(), &currentWindowRect)) {
+            retainedWindowPosition = {
+                currentWindowRect.left, currentWindowRect.top};
+            retainedWindowPositionValid = true;
+        }
+    }
     CancelActiveTranslation();
     CancelOcrWatchdog();
     CloseOcrDeliveryGate();
-    if (resultWindow_) resultWindow_.reset();
+    if (!reuseWindow && resultWindow_) resultWindow_.reset();
     embeddedMode_ = false;
     sourceMode_ = TranslationSourceMode::OcrImage;
     embeddedSink_ = nullptr;
@@ -355,20 +367,24 @@ bool TranslationCoordinator::Start(HWND owner, RECT sourceRect, HBITMAP hBitmap)
 
     const TranslationLaunchContext launchContext{
         TranslationSourceMode::OcrImage, sourceRect_};
-    resultWindow_ = std::make_unique<TranslationResultWindow>(
-        request_, launchContext, [this](TranslationResultWindow::Command command) {
-            OnWindowCommand(command);
-        });
-    if (!resultWindow_ || !resultWindow_->IsValid()) {
-        resultWindow_.reset();
-        ShowError(StageText(L"无法创建翻译结果窗口。", L"Failed to create the translation result window."));
-        ReleaseOcrSourceBitmap();
-        return false;
+    if (reuseWindow) {
+        resultWindow_->PrepareForReuse(sourceRect_);
+    } else {
+        resultWindow_ = std::make_unique<TranslationResultWindow>(
+            request_, launchContext, [this](TranslationResultWindow::Command command) {
+                OnWindowCommand(command);
+            });
+        if (!resultWindow_ || !resultWindow_->IsValid()) {
+            resultWindow_.reset();
+            ShowError(StageText(L"无法创建翻译结果窗口。", L"Failed to create the translation result window."));
+            ReleaseOcrSourceBitmap();
+            return false;
+        }
     }
-    // The crop overlay is destroyed immediately after this callback returns;
-    // keep the result window owned by the durable application window instead.
-    resultWindow_->Show(GetAppMainHwnd());
     resultWindow_->SetWorkflowGeneration(generation_);
+    resultWindow_->SetSourceLanguage(request_.sourceLanguage);
+    resultWindow_->SetTargetLanguage(request_.targetLanguage);
+    resultWindow_->SetProviderSelection(settings_.activeProviderId);
     resultWindow_->SetOcrEngineLabel(
         StageText(L"OCR：" , L"OCR: ") + FriendlyOcrProviderLabel(ocrDisplayLabel_));
     resultWindow_->SetOcrRouteSelection(settings_.ocrRoute);
@@ -379,6 +395,9 @@ bool TranslationCoordinator::Start(HWND owner, RECT sourceRect, HBITMAP hBitmap)
     resultWindow_->SetStage(StageText(L"正在识别文字…", L"Recognizing text..."));
     resultWindow_->BeginOcrElapsed();
     resultWindow_->SetRetryOcrMode(false);
+    // Configure the dark, final initial state before exposing the HWND.
+    resultWindow_->Show(GetAppMainHwnd(),
+        retainedWindowPositionValid ? &retainedWindowPosition : nullptr);
     translationEngine_ = dependencies_.translationEngine;
     active_ = true;
     StartOcrRecognition(generation_);
@@ -413,44 +432,42 @@ TranslationStartResult TranslationCoordinator::StartText(
         latest.targetLanguage, false);
     windowRequest.preserveParagraphs = latest.preserveParagraphs;
 
+    CleanupInvalid();
+    const bool reuseWindow = sourceMode_ == TranslationSourceMode::SelectedText &&
+        resultWindow_ && resultWindow_->IsValid();
     POINT retainedWindowPosition = {};
-    bool retainWindowPosition = false;
-    // Only the first live selected-text result follows its selection. A
-    // replacement inherits the current top-left coordinate, including any
-    // position chosen by the user, while keeping automatic content sizing.
-    if (sourceMode_ == TranslationSourceMode::SelectedText &&
-        resultWindow_ && resultWindow_->IsValid()) {
+    bool retainedWindowPositionValid = false;
+    if (reuseWindow) {
         RECT currentWindowRect = {};
         if (GetWindowRect(resultWindow_->WindowHandle(), &currentWindowRect)) {
             retainedWindowPosition = {
                 currentWindowRect.left, currentWindowRect.top};
-            retainWindowPosition = true;
+            retainedWindowPositionValid = true;
         }
     }
 
     TranslationLaunchContext selectedContext = context;
     selectedContext.mode = TranslationSourceMode::SelectedText;
     std::unique_ptr<TranslationResultWindow> nextWindow;
-    try {
-        nextWindow = std::make_unique<TranslationResultWindow>(
-            windowRequest, selectedContext,
-            [this](TranslationResultWindow::Command command) {
-                OnWindowCommand(command);
-            });
-    } catch (...) {
-        return {false, TranslationStartError::WindowCreationFailed};
-    }
-    if (!nextWindow || !nextWindow->IsValid()) {
-        return {false, TranslationStartError::WindowCreationFailed};
+    if (!reuseWindow) {
+        try {
+            nextWindow = std::make_unique<TranslationResultWindow>(
+                windowRequest, selectedContext,
+                [this](TranslationResultWindow::Command command) {
+                    OnWindowCommand(command);
+                });
+        } catch (...) {
+            return {false, TranslationStartError::WindowCreationFailed};
+        }
+        if (!nextWindow || !nextWindow->IsValid()) {
+            return {false, TranslationStartError::WindowCreationFailed};
+        }
     }
 
-    // Do not disturb an existing result until both configuration preflight
-    // and creation of the replacement native window have succeeded.
-    CleanupInvalid();
     CancelActiveTranslation();
     CancelOcrWatchdog();
     CloseOcrDeliveryGate();
-    resultWindow_.reset();
+    if (!reuseWindow) resultWindow_.reset();
     ClearTranslationTextState();
     ReleaseOcrSourceBitmap();
     ocrEngine_.reset();
@@ -464,9 +481,14 @@ TranslationStartResult TranslationCoordinator::StartText(
     completionOcrMessage_ = 0;
     completionTranslationMessage_ = WM_APP_SELECTION_TRANSLATION_DONE;
     settings_ = std::move(latest);
-    resultWindow_ = std::move(nextWindow);
-    resultWindow_->Show(GetAppMainHwnd(),
-        retainWindowPosition ? &retainedWindowPosition : nullptr);
+    if (reuseWindow) {
+        resultWindow_->PrepareForReuse(selectedContext.anchorRect);
+    } else {
+        resultWindow_ = std::move(nextWindow);
+    }
+    resultWindow_->SetSourceLanguage(windowRequest.sourceLanguage);
+    resultWindow_->SetTargetLanguage(windowRequest.targetLanguage);
+    resultWindow_->SetProviderSelection(settings_.activeProviderId);
     resultWindow_->SetAlwaysOnTop(settings_.resultOnTop);
     resultWindow_->SetShowWindowBorder(settings_.showWindowBorder);
     resultWindow_->SetShowSourceText(settings_.showSourceText);
@@ -474,6 +496,8 @@ TranslationStartResult TranslationCoordinator::StartText(
     resultWindow_->SetStage(StageText(
         L"\u6b63\u5728\u7ffb\u8bd1\u2026", L"Translating..."));
     resultWindow_->SetRetryOcrMode(false);
+    resultWindow_->Show(GetAppMainHwnd(),
+        retainedWindowPositionValid ? &retainedWindowPosition : nullptr);
     translationEngine_ = dependencies_.translationEngine;
     StartTranslationForSource(sourceText, settings_.sourceLanguage,
         settings_.targetLanguage);
@@ -649,11 +673,12 @@ void TranslationCoordinator::HandleOcrDone(uint64_t generation, OcrOutput* resul
     // capture without reopening the screenshot workflow.
     ocrEngine_.reset();
     if (resultWindow_ && resultWindow_->IsValid()) {
-        resultWindow_->SetSourceText(source);
         resultWindow_->SetTranslationText(L"");
+        resultWindow_->ClearTranslationElapsed();
         resultWindow_->SetBusy(true);
         resultWindow_->SetStage(StageText(L"正在翻译…", L"Translating..."));
         resultWindow_->SetRetryOcrMode(false);
+        resultWindow_->SetSourceText(source);
     }
     BeginTranslation(generation);
 }
@@ -764,13 +789,13 @@ void TranslationCoordinator::HandleTranslationDone(
     translatedBuffer_ += translationTrailingBreaks_;
     currentBatchRequestId_.clear();
     if (resultWindow_ && resultWindow_->IsValid()) {
-        resultWindow_->SetTranslationText(translatedBuffer_);
         resultWindow_->SetBusy(false);
         const ULONGLONG elapsed = translationStartedTick_ == 0 ? 0 :
             GetTickCount64() - translationStartedTick_;
         resultWindow_->SetTranslationElapsed(static_cast<DWORD>(
             (std::min)(elapsed, static_cast<ULONGLONG>(MAXDWORD))));
         resultWindow_->SetStage(StageText(L"就绪", L"Ready"));
+        resultWindow_->SetTranslationText(translatedBuffer_);
     }
     if (embeddedMode_ && embeddedSink_) {
         const ULONGLONG elapsed = translationStartedTick_ == 0 ? 0 :
@@ -1028,9 +1053,6 @@ void TranslationCoordinator::BeginTranslation(uint64_t generation) {
     currentBatchRequestId_.clear();
     completedBatchRequestIds_.clear();
     completedTranslations_.clear();
-    if (resultWindow_ && resultWindow_->IsValid()) {
-        resultWindow_->ClearTranslationElapsed();
-    }
     BeginNextTranslationBatch(generation);
 }
 
@@ -1182,11 +1204,11 @@ void TranslationCoordinator::StartTranslationForSource(
         request_.segments.push_back({L"s" + std::to_wstring(i + 1), sourcePlan.chunks[i]});
     }
     if (resultWindow_ && resultWindow_->IsValid()) {
-        resultWindow_->SetSourceText(normalizedText);
         resultWindow_->SetTranslationText(L"");
         resultWindow_->ClearTranslationElapsed();
         resultWindow_->SetBusy(true);
         resultWindow_->SetStage(StageText(L"正在翻译…", L"Translating..."));
+        resultWindow_->SetSourceText(normalizedText);
     }
     BeginTranslation(generation_);
 }

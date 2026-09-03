@@ -54,6 +54,7 @@ public:
     // A retained position keeps the top-left coordinate fixed while content-
     // driven automatic sizing continues normally.
     void Show(HWND owner, const POINT* retainedPosition = nullptr);
+    void PrepareForReuse(const RECT& sourceRect);
     void SetStage(const std::wstring& stage);
     void SetOcrEngineLabel(const std::wstring& label);
     void SetSourceText(const std::wstring& text);
@@ -80,6 +81,7 @@ public:
     bool IsAlwaysOnTop() const { return alwaysOnTop_; }
     bool IsShowingSourceText() const { return showSourceText_; }
     void SetSourceLanguage(const std::wstring& value);
+    void SetTargetLanguage(const std::wstring& value);
 
 private:
     enum class SourceDisplayMode {
@@ -155,12 +157,10 @@ private:
     bool translationPreviewFailed_ = false;
     bool sourcePreviewMetricsValid_ = false;
     bool translationPreviewMetricsValid_ = false;
+    bool sourcePreviewRenderReady_ = false;
+    bool translationPreviewRenderReady_ = false;
     int sourcePreviewContentHeight_ = 0;
-    int sourcePreviewContentWidth_ = 0;
-    int sourcePreviewClientWidth_ = 0;
     int translationPreviewContentHeight_ = 0;
-    int translationPreviewContentWidth_ = 0;
-    int translationPreviewClientWidth_ = 0;
     bool sourceSplitterDragging_ = false;
     bool sourceSplitterHot_ = false;
     int sourceSplitterDragOffset_ = 0;
@@ -168,7 +168,11 @@ private:
     bool windowSizeMoveActive_ = false;
     bool windowSizeManuallyAdjusted_ = false;
     bool autoPositionNearSource_ = true;
+    bool resizeAnimationActive_ = false;
     RECT windowSizeMoveStartRect_ = {};
+    RECT resizeAnimationStartRect_ = {};
+    RECT resizeAnimationTargetRect_ = {};
+    ULONGLONG resizeAnimationStartedTick_ = 0;
     bool suppressCommands_ = false;
     bool closeNotified_ = false;
     int popupMenuAnchorWidth_ = 0;
@@ -205,6 +209,7 @@ private:
     static constexpr int kRecognizeAgain = 3121;
     static constexpr int kProviderCombo = 3122;
     static constexpr UINT_PTR kOcrElapsedTimer = 1;
+    static constexpr UINT_PTR kResizeAnimationTimer = 2;
     static constexpr UINT kAsyncErrorMessage = WM_APP + 0x2A;
 
     static const wchar_t* ClassName();
@@ -214,7 +219,7 @@ private:
     UINT LayoutDpi() const;
     void SetLayoutDpi(UINT dpi);
     void CreateControls(const TranslationRequest& request);
-    void LayoutControls();
+    void LayoutControls(bool redraw = true);
     void RefreshFontForLayoutDpi();
     void Paint();
     void DrawOwnerDrawControl(const DRAWITEMSTRUCT& draw);
@@ -224,6 +229,9 @@ private:
     void ClampToCurrentMonitorWorkArea();
     SIZE CalculateAutomaticWindowSize() const;
     void ResizeToAutomaticWindowSize();
+    void BeginAutomaticResizeAnimation(const SIZE& desired);
+    void UpdateAutomaticResizeAnimation();
+    void StopAutomaticResizeAnimation(bool finish);
     void AddLanguage(std::vector<LanguageOption>& languages,
                      const wchar_t* label, const wchar_t* value);
     void ShowLanguageMenu(HWND control, bool sourceLanguage);

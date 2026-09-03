@@ -1,15 +1,14 @@
-# ZenCrop v2.9.18
+# ZenCrop v2.9.19
 
 [English](../README.md)
 
 ZenCrop 是对 [PowerToys Crop And Lock](https://github.com/microsoft/PowerToys/tree/main/src/modules/CropAndLock/) 的独立、**增强型**重构实现，并融合了丰富的截图标注、长截图、多引擎 OCR 和 OCR 工作台。
 
-## v2.9.18 更新重点
+## v2.9.19 更新重点
 
-- **划词翻译**：在其他应用中选中文字后按 `Shift+A` 即可翻译。ZenCrop 优先读取无障碍文本，也可启用模拟复制兜底，并在完成后恢复原剪贴板内容。
-- **翻译提供商扩展**：直接机器翻译支持 Google Translate Community、Microsoft Translator Community、Google Cloud Translation、Azure Translator、DeepL API 和自定义 DeepLX；LLM 翻译按提供商使用 OpenAI Responses、Chat Completions、Gemini、xAI、Ollama 与 DeepSeek 协议。
-- **设置事务更安全**：翻译选项和全部快捷键在同一次设置事务中校验和保存，能够阻止重复快捷键以及与 `Ctrl+C` 模拟复制兜底冲突的配置。
-- **结果窗口位置保持**：刷新或替换划词翻译时，结果窗口保留用户移动后的位置，同时继续根据内容自动调整大小。
+- **翻译窗口更流畅**：OCR 与划词翻译采用短时 ease-out 原位拉伸动画，不再为内容变化反复重建并整窗重绘。
+- **结果窗口复用**：连续使用同一种翻译模式时复用原有窗口和 WebView，并保留用户位置、手工尺寸、分隔比例及置顶状态。
+- **Preview 切换修复**：隐藏状态下的 WebView2 仍会回报内容尺寸，避免 Preview 卡在可编辑 Source 视图，并减少内容替换时的白色闪烁。
 
 完整变更请参阅 [CHANGELOG](CHANGELOG.md)。
 

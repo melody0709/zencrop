@@ -44,6 +44,8 @@ constexpr int kTranslationSourceDefaultPercent = 36;
 constexpr int kTranslationSourceMaxPercent = 50;
 constexpr int kTranslationAutomaticMinimumWidth = 800;
 constexpr int kTranslationPreviewMetricSafety = 6;
+constexpr ULONGLONG kTranslationResizeAnimationDurationMs = 120;
+constexpr UINT kTranslationResizeAnimationFrameMs = 15;
 
 constexpr COLORREF kWindowBackground = RGB(29, 29, 32);
 constexpr COLORREF kCardBackground = RGB(9, 9, 10);
@@ -66,6 +68,22 @@ constexpr DWORD kDwmRoundCornerPreference = 2;
 constexpr UINT kTranslationChildKeyboardMessage = WM_APP + 74;
 constexpr WPARAM kTranslationChildKeyShift = static_cast<WPARAM>(1) << 16;
 constexpr UINT_PTR kTranslationChildKeyboardSubclass = 1;
+
+void SetControlVisible(HWND control, bool visible) {
+    if (!control || (IsWindowVisible(control) != FALSE) == visible) return;
+    ShowWindow(control, visible ? SW_SHOW : SW_HIDE);
+}
+
+bool SetControlText(HWND control, const std::wstring& text) {
+    if (!control) return false;
+    const int length = GetWindowTextLengthW(control);
+    std::wstring current(static_cast<size_t>((std::max)(0, length)) + 1, L'\0');
+    if (length > 0) GetWindowTextW(control, current.data(), length + 1);
+    current.resize(static_cast<size_t>((std::max)(0, length)));
+    if (current == text) return false;
+    SetWindowTextW(control, text.c_str());
+    return true;
+}
 
 UINT NativeWindowDpi(HWND hwnd) {
     const UINT dpi = hwnd ? GetDpiForWindow(hwnd) : 0;
@@ -452,7 +470,7 @@ void TranslationResultWindow::RegisterClass() {
     static std::once_flag once;
     std::call_once(once, [] {
         WNDCLASSEXW wc = { sizeof(wc) };
-        wc.style = CS_HREDRAW | CS_VREDRAW | CS_DBLCLKS;
+        wc.style = CS_DBLCLKS;
         wc.lpfnWndProc = &TranslationResultWindow::WndProc;
         wc.hInstance = GetModuleHandleW(nullptr);
         wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
@@ -540,31 +558,38 @@ TranslationResultWindow::TranslationResultWindow(
                 const OcrMarkdownPreviewHost::PreviewContentMetrics& metrics) {
                 sourcePreviewMetricsValid_ = true;
                 sourcePreviewContentHeight_ = metrics.scrollHeight;
-                sourcePreviewContentWidth_ = metrics.scrollWidth;
-                sourcePreviewClientWidth_ = metrics.clientWidth;
-                ResizeToAutomaticWindowSize();
-                LayoutControls();
+                if (!sourcePreviewRenderReady_) {
+                    sourcePreviewRenderReady_ = true;
+                    UpdateSourcePreviewVisibility();
+                    if (!sourceMarkdownText_.empty()) ResizeToAutomaticWindowSize();
+                }
             };
             sourcePreviewCallbacks.onUnavailable = [this](const std::wstring&) {
                 sourcePreviewFailed_ = true;
                 sourcePreviewMetricsValid_ = false;
+                sourcePreviewRenderReady_ = false;
                 sourceDisplayMode_ = SourceDisplayMode::Source;
                 UpdateSourceModeButton();
                 UpdateSourcePreviewVisibility();
+                if (!sourceMarkdownText_.empty()) ResizeToAutomaticWindowSize();
             };
             sourcePreviewCallbacks.onRenderError = [this](int, const std::wstring&) {
                 sourcePreviewFailed_ = true;
                 sourcePreviewMetricsValid_ = false;
+                sourcePreviewRenderReady_ = false;
                 sourceDisplayMode_ = SourceDisplayMode::Source;
                 UpdateSourceModeButton();
                 UpdateSourcePreviewVisibility();
+                if (!sourceMarkdownText_.empty()) ResizeToAutomaticWindowSize();
             };
             sourcePreviewCallbacks.onProcessFailed = [this]() {
                 sourcePreviewFailed_ = true;
                 sourcePreviewMetricsValid_ = false;
+                sourcePreviewRenderReady_ = false;
                 sourceDisplayMode_ = SourceDisplayMode::Source;
                 UpdateSourceModeButton();
                 UpdateSourcePreviewVisibility();
+                if (!sourceMarkdownText_.empty()) ResizeToAutomaticWindowSize();
             };
             sourcePreviewCallbacks.onPreviewDocumentEdit = [this]() {
                 SetSourceDisplayMode(SourceDisplayMode::Source, true);
@@ -599,25 +624,32 @@ TranslationResultWindow::TranslationResultWindow(
             const OcrMarkdownPreviewHost::PreviewContentMetrics& metrics) {
             translationPreviewMetricsValid_ = true;
             translationPreviewContentHeight_ = metrics.scrollHeight;
-            translationPreviewContentWidth_ = metrics.scrollWidth;
-            translationPreviewClientWidth_ = metrics.clientWidth;
-            ResizeToAutomaticWindowSize();
-            LayoutControls();
+            if (!translationPreviewRenderReady_) {
+                translationPreviewRenderReady_ = true;
+                UpdateTranslationPreviewVisibility();
+                if (!translationMarkdownText_.empty()) ResizeToAutomaticWindowSize();
+            }
         };
         previewCallbacks.onUnavailable = [this](const std::wstring&) {
             translationPreviewFailed_ = true;
             translationPreviewMetricsValid_ = false;
+            translationPreviewRenderReady_ = false;
             UpdateTranslationPreviewVisibility();
+            if (!translationMarkdownText_.empty()) ResizeToAutomaticWindowSize();
         };
         previewCallbacks.onRenderError = [this](int, const std::wstring&) {
             translationPreviewFailed_ = true;
             translationPreviewMetricsValid_ = false;
+            translationPreviewRenderReady_ = false;
             UpdateTranslationPreviewVisibility();
+            if (!translationMarkdownText_.empty()) ResizeToAutomaticWindowSize();
         };
         previewCallbacks.onProcessFailed = [this]() {
             translationPreviewFailed_ = true;
             translationPreviewMetricsValid_ = false;
+            translationPreviewRenderReady_ = false;
             UpdateTranslationPreviewVisibility();
+            if (!translationMarkdownText_.empty()) ResizeToAutomaticWindowSize();
         };
         if (!translationPreview_->Create(window_, translationContentRect_,
             std::move(previewCallbacks))) {
@@ -668,6 +700,9 @@ void TranslationResultWindow::SetLayoutDpi(UINT dpi) {
 TranslationResultWindow::~TranslationResultWindow() {
     callback_ = {};
     const HWND windowHandle = window_;
+    if (windowHandle && IsWindow(windowHandle)) {
+        KillTimer(windowHandle, kResizeAnimationTimer);
+    }
     const auto drainAsyncErrors = [](HWND filter) {
         MSG message = {};
         while (PeekMessageW(&message, filter,
@@ -1076,6 +1111,11 @@ void TranslationResultWindow::Show(
     SetForegroundWindow(window_);
 }
 
+void TranslationResultWindow::PrepareForReuse(const RECT& sourceRect) {
+    StopAutomaticResizeAnimation(false);
+    sourceRect_ = sourceRect;
+}
+
 void TranslationResultWindow::PositionNearSourceRect() {
     if (!window_ || sourceRect_.right <= sourceRect_.left ||
         sourceRect_.bottom <= sourceRect_.top) {
@@ -1187,21 +1227,8 @@ SIZE TranslationResultWindow::CalculateAutomaticWindowSize() const {
     const int preferredTextWidth = (std::max)(sourceTextWidth, translationTextWidth);
     if (measureDc) ReleaseDC(window_, measureDc);
 
-    const int previewWidthOverflowThreshold = ScaleForDpi(8, dpi);
-    const int sourcePreviewWidthHint = sourcePreviewMetricsValid_ &&
-        sourceDisplayMode_ == SourceDisplayMode::Preview &&
-        sourcePreviewContentWidth_ > sourcePreviewClientWidth_ + previewWidthOverflowThreshold
-        ? sourcePreviewContentWidth_ : 0;
-    const int translationPreviewWidthHint = translationPreviewMetricsValid_ &&
-        translationPreviewContentWidth_ > translationPreviewClientWidth_ + previewWidthOverflowThreshold
-        ? translationPreviewContentWidth_ : 0;
-    const int previewWidthHint = (std::max)(sourcePreviewWidthHint,
-        translationPreviewWidthHint);
     const int preferredWidth = (std::max)({ minWidth, cropWidthHint,
-        preferredTextWidth + ScaleForDpi(56, dpi),
-        previewWidthHint > 0
-            ? previewWidthHint + margin * 2 + cardPadding * 2 + ScaleForDpi(12, dpi)
-            : 0 });
+        preferredTextWidth + ScaleForDpi(56, dpi) });
     const int width = (std::clamp)(preferredWidth, minWidth, maxWidth);
     const int measureWidth = (std::max)(ScaleForDpi(48, dpi),
         width - margin * 2 - cardPadding * 2 - textInset * 2);
@@ -1248,19 +1275,101 @@ SIZE TranslationResultWindow::CalculateAutomaticWindowSize() const {
 }
 
 void TranslationResultWindow::ResizeToAutomaticWindowSize() {
-    if (!window_ || !IsWindow(window_) || windowSizeManuallyAdjusted_) return;
+    if (!window_ || !IsWindow(window_)) return;
+    if (windowSizeManuallyAdjusted_) {
+        LayoutControls();
+        return;
+    }
     const SIZE desired = CalculateAutomaticWindowSize();
     RECT current = {};
     if (!GetWindowRect(window_, &current)) return;
     if (current.right - current.left == desired.cx &&
         current.bottom - current.top == desired.cy) {
+        LayoutControls();
         return;
     }
-    SetWindowPos(window_, nullptr, 0, 0, desired.cx, desired.cy,
-        SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
-    if (autoPositionNearSource_) {
-        PositionNearSourceRect();
+    if (!IsWindowVisible(window_) || IsIconic(window_) || IsZoomed(window_) ||
+        windowSizeMoveActive_) {
+        SetWindowPos(window_, nullptr, 0, 0, desired.cx, desired.cy,
+            SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+        if (autoPositionNearSource_) PositionNearSourceRect();
+        return;
     }
+    BeginAutomaticResizeAnimation(desired);
+}
+
+void TranslationResultWindow::BeginAutomaticResizeAnimation(const SIZE& desired) {
+    if (!window_ || !GetWindowRect(window_, &resizeAnimationStartRect_)) return;
+
+    POINT targetPosition = {
+        resizeAnimationStartRect_.left,
+        resizeAnimationStartRect_.top,
+    };
+    if (autoPositionNearSource_ && sourceRect_.right > sourceRect_.left &&
+        sourceRect_.bottom > sourceRect_.top) {
+        targetPosition = CalculateWindowPositionNearSource(
+            sourceRect_, desired.cx, desired.cy);
+    }
+    resizeAnimationTargetRect_ = {
+        targetPosition.x,
+        targetPosition.y,
+        targetPosition.x + desired.cx,
+        targetPosition.y + desired.cy,
+    };
+    resizeAnimationStartedTick_ = GetTickCount64();
+    resizeAnimationActive_ = true;
+    if (!SetTimer(window_, kResizeAnimationTimer,
+            kTranslationResizeAnimationFrameMs, nullptr)) {
+        resizeAnimationActive_ = false;
+        SetWindowPos(window_, nullptr,
+            resizeAnimationTargetRect_.left, resizeAnimationTargetRect_.top,
+            desired.cx, desired.cy, SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+}
+
+void TranslationResultWindow::UpdateAutomaticResizeAnimation() {
+    if (!resizeAnimationActive_ || !window_ || !IsWindow(window_)) return;
+
+    const ULONGLONG elapsed = GetTickCount64() - resizeAnimationStartedTick_;
+    const double progress = (std::min)(1.0,
+        static_cast<double>(elapsed) /
+            static_cast<double>(kTranslationResizeAnimationDurationMs));
+    const double remaining = 1.0 - progress;
+    const double eased = 1.0 - remaining * remaining * remaining;
+    const auto interpolate = [eased](LONG start, LONG target) {
+        return static_cast<LONG>(std::lround(
+            static_cast<double>(start) +
+            static_cast<double>(target - start) * eased));
+    };
+    RECT frame = {
+        interpolate(resizeAnimationStartRect_.left, resizeAnimationTargetRect_.left),
+        interpolate(resizeAnimationStartRect_.top, resizeAnimationTargetRect_.top),
+        interpolate(resizeAnimationStartRect_.right, resizeAnimationTargetRect_.right),
+        interpolate(resizeAnimationStartRect_.bottom, resizeAnimationTargetRect_.bottom),
+    };
+    SetWindowPos(window_, nullptr, frame.left, frame.top,
+        frame.right - frame.left, frame.bottom - frame.top,
+        SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOREDRAW);
+
+    if (progress >= 1.0) {
+        KillTimer(window_, kResizeAnimationTimer);
+        resizeAnimationActive_ = false;
+        LayoutControls();
+    }
+}
+
+void TranslationResultWindow::StopAutomaticResizeAnimation(bool finish) {
+    if (!resizeAnimationActive_) return;
+    KillTimer(window_, kResizeAnimationTimer);
+    if (finish && window_ && IsWindow(window_)) {
+        SetWindowPos(window_, nullptr,
+            resizeAnimationTargetRect_.left, resizeAnimationTargetRect_.top,
+            resizeAnimationTargetRect_.right - resizeAnimationTargetRect_.left,
+            resizeAnimationTargetRect_.bottom - resizeAnimationTargetRect_.top,
+            SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOREDRAW);
+    }
+    resizeAnimationActive_ = false;
+    if (finish) LayoutControls();
 }
 
 void TranslationResultWindow::SetStage(const std::wstring& stage) {
@@ -1312,51 +1421,61 @@ void TranslationResultWindow::SetOcrRouteSelection(const std::wstring& route) {
 
 void TranslationResultWindow::SetSourceText(const std::wstring& text) {
     const std::wstring displayText = NormalizeCardTextForWrap(text);
+    if (displayText == sourceMarkdownText_ && !sourcePreviewFailed_) {
+        ResizeToAutomaticWindowSize();
+        return;
+    }
+    const bool waitForPreview = sourcePreview_ &&
+        (sourcePreview_->IsReady() || sourcePreview_->IsCreating());
     sourceMarkdownText_ = displayText;
-    sourceDisplayMode_ = SourceDisplayMode::Preview;
-    sourcePreviewFailed_ = false;
+    sourceDisplayMode_ = waitForPreview
+        ? SourceDisplayMode::Preview : SourceDisplayMode::Source;
+    sourcePreviewFailed_ = !waitForPreview;
     sourcePreviewMetricsValid_ = false;
+    sourcePreviewRenderReady_ = false;
     sourcePreviewContentHeight_ = 0;
-    sourcePreviewContentWidth_ = 0;
-    sourcePreviewClientWidth_ = 0;
     suppressCommands_ = true;
-    if (sourceEdit_) SetWindowTextW(sourceEdit_, displayText.c_str());
+    SetControlText(sourceEdit_, displayText);
     suppressCommands_ = false;
-    if (sourcePreview_) {
+    if (waitForPreview) {
         sourcePreview_->RenderMarkdown(-1, displayText, true);
+        UpdateSourcePreviewVisibility();
     }
-    if (sourceCountLabel_) {
-        const std::wstring count = CharacterCountText(displayText);
-        SetWindowTextW(sourceCountLabel_, count.c_str());
+    SetControlText(sourceCountLabel_, CharacterCountText(displayText));
+    if (displayText.empty()) {
+        UpdateSourcePreviewVisibility();
+    } else if (!waitForPreview) {
+        ResizeToAutomaticWindowSize();
     }
-    LayoutControls();
-    ResizeToAutomaticWindowSize();
-    UpdateSourceModeButton();
-    UpdateSourcePreviewVisibility();
 }
 
 void TranslationResultWindow::SetTranslationText(const std::wstring& text) {
     const std::wstring displayText = NormalizeCardTextForWrap(text);
+    if (displayText == translationMarkdownText_ && !translationPreviewFailed_) {
+        ResizeToAutomaticWindowSize();
+        return;
+    }
+    const bool waitForPreview = translationPreview_ &&
+        (translationPreview_->IsReady() || translationPreview_->IsCreating());
     translationMarkdownText_ = displayText;
     // A previous render can fail while the WebView remains alive. A new
     // translation is a fresh render attempt; keep the native edit as a
     // fallback only if this attempt reports another error.
-    translationPreviewFailed_ = false;
+    translationPreviewFailed_ = !waitForPreview;
     translationPreviewMetricsValid_ = false;
+    translationPreviewRenderReady_ = false;
     translationPreviewContentHeight_ = 0;
-    translationPreviewContentWidth_ = 0;
-    translationPreviewClientWidth_ = 0;
-    if (translationEdit_) SetWindowTextW(translationEdit_, displayText.c_str());
-    if (translationPreview_) {
+    SetControlText(translationEdit_, displayText);
+    if (waitForPreview) {
         translationPreview_->RenderMarkdown(-1, displayText, true);
+        UpdateTranslationPreviewVisibility();
     }
-    if (translationCountLabel_) {
-        const std::wstring count = CharacterCountText(displayText);
-        SetWindowTextW(translationCountLabel_, count.c_str());
+    SetControlText(translationCountLabel_, CharacterCountText(displayText));
+    if (displayText.empty()) {
+        UpdateTranslationPreviewVisibility();
+    } else if (!waitForPreview) {
+        ResizeToAutomaticWindowSize();
     }
-    LayoutControls();
-    ResizeToAutomaticWindowSize();
-    UpdateTranslationPreviewVisibility();
 }
 
 void TranslationResultWindow::SetTranslationElapsed(DWORD elapsedMs) {
@@ -1365,16 +1484,15 @@ void TranslationResultWindow::SetTranslationElapsed(DWORD elapsedMs) {
         const std::wstring text = WideFormatSeconds1(elapsedMs / 1000.0);
         SetWindowTextW(translationElapsedLabel_, text.c_str());
     }
-    LayoutControls();
 }
 
 void TranslationResultWindow::ClearTranslationElapsed() {
     showTranslationElapsed_ = false;
-    if (translationElapsedLabel_) SetWindowTextW(translationElapsedLabel_, L"");
-    LayoutControls();
+    SetControlText(translationElapsedLabel_, L"");
 }
 
 void TranslationResultWindow::SetBusy(bool busy) {
+    if (busy_ == busy) return;
     busy_ = busy;
     if (!busy) EndOcrElapsed();
     EnableWindow(engineLabel_, !busy);
@@ -1383,7 +1501,8 @@ void TranslationResultWindow::SetBusy(bool busy) {
     EnableWindow(targetCombo_, !busy);
     EnableWindow(sourceEdit_, !busy);
     UpdateActionAvailability();
-    LayoutControls();
+    SetControlVisible(retranslateButton_, !busy_ && !retryOcrMode_);
+    SetControlVisible(cancelButton_, busy_);
 }
 
 void TranslationResultWindow::SetSourceDisplayMode(
@@ -1395,6 +1514,7 @@ void TranslationResultWindow::SetSourceDisplayMode(
     sourceDisplayMode_ = mode;
     if (mode == SourceDisplayMode::Preview) {
         sourceMarkdownText_ = SourceText();
+        sourcePreviewRenderReady_ = false;
         if (sourcePreview_) {
             sourcePreview_->RenderMarkdown(-1, sourceMarkdownText_, true);
         }
@@ -1409,22 +1529,23 @@ void TranslationResultWindow::SetSourceDisplayMode(
 
 void TranslationResultWindow::UpdateSourceModeButton() {
     if (!sourceModeButton_) return;
-    SetWindowTextW(sourceModeButton_,
+    const bool textChanged = SetControlText(sourceModeButton_,
         sourceDisplayMode_ == SourceDisplayMode::Preview
             ? (S::IsChinese() ? L"\u539f\u6587" : L"Source")
             : (S::IsChinese() ? L"\u9884\u89c8" : L"Preview"));
     const bool available = showSourceText_ && sourcePreview_ && !sourcePreviewFailed_;
-    EnableWindow(sourceModeButton_, available);
-    InvalidateRect(sourceModeButton_, nullptr, TRUE);
+    const bool enabledChanged = (IsWindowEnabled(sourceModeButton_) != FALSE) != available;
+    if (enabledChanged) EnableWindow(sourceModeButton_, available);
+    if (textChanged || enabledChanged) InvalidateRect(sourceModeButton_, nullptr, TRUE);
 }
 
 void TranslationResultWindow::UpdateSourcePreviewVisibility() {
     const bool previewReady = showSourceText_ &&
         sourceDisplayMode_ == SourceDisplayMode::Preview &&
         sourcePreview_ && sourcePreview_->IsReady() &&
-        !sourcePreviewFailed_ && !sourceMarkdownText_.empty();
-    if (sourceEdit_) ShowWindow(sourceEdit_, previewReady ? SW_HIDE :
-        (showSourceText_ ? SW_SHOW : SW_HIDE));
+        sourcePreviewRenderReady_ && !sourcePreviewFailed_ &&
+        !sourceMarkdownText_.empty();
+    SetControlVisible(sourceEdit_, !previewReady && showSourceText_);
     if (sourcePreview_) {
         sourcePreview_->Show(previewReady);
         sourcePreview_->SetBounds(sourceContentRect_);
@@ -1435,8 +1556,8 @@ void TranslationResultWindow::UpdateSourcePreviewVisibility() {
 void TranslationResultWindow::UpdateTranslationPreviewVisibility() {
     const bool previewReady = translationPreview_ &&
         translationPreview_->IsReady() && !translationPreviewFailed_ &&
-        !translationMarkdownText_.empty();
-    if (translationEdit_) ShowWindow(translationEdit_, previewReady ? SW_HIDE : SW_SHOW);
+        translationPreviewRenderReady_ && !translationMarkdownText_.empty();
+    SetControlVisible(translationEdit_, !previewReady);
     if (translationPreview_) {
         translationPreview_->Show(previewReady);
         translationPreview_->SetBounds(translationContentRect_);
@@ -1445,6 +1566,7 @@ void TranslationResultWindow::UpdateTranslationPreviewVisibility() {
 
 void TranslationResultWindow::SetAlwaysOnTop(bool alwaysOnTop) {
     if (!window_ || !IsWindow(window_)) return;
+    if (alwaysOnTop_ == alwaysOnTop) return;
 
     // Screenshot translation is a native ZenCrop window, so use the same
     // manager as the existing crop/viewport windows.  Besides HWND_TOPMOST,
@@ -1461,14 +1583,15 @@ void TranslationResultWindow::SetAlwaysOnTop(bool alwaysOnTop) {
 }
 
 void TranslationResultWindow::SetShowWindowBorder(bool show) {
+    if (showWindowBorder_ == show) return;
     showWindowBorder_ = show;
     ApplyDarkWindowChrome();
-    LayoutControls();
     ResizeToAutomaticWindowSize();
     if (window_) InvalidateRect(window_, nullptr, TRUE);
 }
 
 void TranslationResultWindow::SetShowSourceText(bool show) {
+    if (showSourceText_ == show) return;
     if (!show && sourceSplitterDragging_) {
         sourceSplitterDragging_ = false;
         sourceSplitterHot_ = false;
@@ -1479,18 +1602,19 @@ void TranslationResultWindow::SetShowSourceText(bool show) {
         SetFocus(showSourceToggle_);
     }
     showSourceText_ = show;
-    ShowWindow(copySourceButton_, show ? SW_SHOW : SW_HIDE);
-    ShowWindow(sourceCountLabel_, show ? SW_SHOW : SW_HIDE);
-    UpdateSourcePreviewVisibility();
-    LayoutControls();
+    SetControlVisible(copySourceButton_, show);
+    SetControlVisible(sourceCountLabel_, show);
     ResizeToAutomaticWindowSize();
     if (showSourceToggle_) InvalidateRect(showSourceToggle_, nullptr, TRUE);
 }
 
 void TranslationResultWindow::SetRetryOcrMode(bool retryOcr) {
-    retryOcrMode_ = sourceMode_ == TranslationSourceMode::OcrImage && retryOcr;
+    const bool next = sourceMode_ == TranslationSourceMode::OcrImage && retryOcr;
+    if (retryOcrMode_ == next) return;
+    retryOcrMode_ = next;
     UpdateActionAvailability();
-    LayoutControls();
+    SetControlVisible(retranslateButton_, !busy_ && !retryOcrMode_);
+    SetControlVisible(cancelButton_, busy_);
 }
 
 std::wstring TranslationResultWindow::SourceText() const {
@@ -1514,12 +1638,32 @@ void TranslationResultWindow::SetSourceLanguage(const std::wstring& value) {
     suppressCommands_ = true;
     for (size_t index = 0; index < sourceLanguages_.size(); ++index) {
         if (sourceLanguages_[index].value == value) {
+            if (sourceLanguageIndex_ == static_cast<int>(index)) {
+                suppressCommands_ = false;
+                return;
+            }
             sourceLanguageIndex_ = static_cast<int>(index);
-            SetWindowTextW(sourceCombo_, sourceLanguages_[index].label.c_str());
-            InvalidateRect(sourceCombo_, nullptr, TRUE);
+            if (SetControlText(sourceCombo_, sourceLanguages_[index].label)) {
+                InvalidateRect(sourceCombo_, nullptr, TRUE);
+            }
             suppressCommands_ = false;
             return;
         }
+    }
+    suppressCommands_ = false;
+}
+
+void TranslationResultWindow::SetTargetLanguage(const std::wstring& value) {
+    suppressCommands_ = true;
+    for (size_t index = 0; index < targetLanguages_.size(); ++index) {
+        if (targetLanguages_[index].value != value) continue;
+        if (targetLanguageIndex_ != static_cast<int>(index)) {
+            targetLanguageIndex_ = static_cast<int>(index);
+            if (SetControlText(targetCombo_, targetLanguages_[index].label)) {
+                InvalidateRect(targetCombo_, nullptr, TRUE);
+            }
+        }
+        break;
     }
     suppressCommands_ = false;
 }
@@ -1707,7 +1851,7 @@ void TranslationResultWindow::RefreshFontForLayoutDpi() {
     if (previousSourceText) DeleteObject(previousSourceText);
 }
 
-void TranslationResultWindow::LayoutControls() {
+void TranslationResultWindow::LayoutControls(bool redraw) {
     if (!window_) return;
     RECT rc = {};
     GetClientRect(window_, &rc);
@@ -1741,21 +1885,26 @@ void TranslationResultWindow::LayoutControls() {
     const int elapsedWidth = ScaleForDpi(58, dpi);
     const int retranslateWidth = ScaleForDpi(132, dpi);
     const int contentWidth = (std::max)(ScaleForDpi(120, dpi), clientWidth - margin * 2);
+    const auto move = [](HWND control, int x, int y, int width, int height) {
+        if (!control) return;
+        SetWindowPos(control, nullptr, x, y, width, height,
+            SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOREDRAW);
+    };
 
     const int closeX = clientWidth - headerIconInset - headerButtonWidth;
     const int minimizeX = closeX - headerButtonGap - headerButtonWidth;
     const int pinX = compactHeader
         ? closeX - headerButtonGap - headerButtonWidth
         : minimizeX - headerButtonGap - headerButtonWidth;
-    MoveWindow(pinButton_, pinX, headerButtonTop,
-        headerButtonWidth, headerButtonWidth, TRUE);
-    ShowWindow(minimizeButton_, compactHeader ? SW_HIDE : SW_SHOW);
+    move(pinButton_, pinX, headerButtonTop,
+        headerButtonWidth, headerButtonWidth);
+    if (redraw) SetControlVisible(minimizeButton_, !compactHeader);
     if (!compactHeader) {
-        MoveWindow(minimizeButton_, minimizeX, headerButtonTop,
-            headerButtonWidth, headerButtonWidth, TRUE);
+        move(minimizeButton_, minimizeX, headerButtonTop,
+            headerButtonWidth, headerButtonWidth);
     }
-    MoveWindow(closeButton_, closeX, headerButtonTop,
-        headerButtonWidth, headerButtonWidth, TRUE);
+    move(closeButton_, closeX, headerButtonTop,
+        headerButtonWidth, headerButtonWidth);
 
     const int metadataLeft = ScaleForDpi(kTranslationMetadataTextInset, dpi);
     const int minimumStageWidth = ScaleForDpi(48, dpi);
@@ -1798,22 +1947,22 @@ void TranslationResultWindow::LayoutControls() {
     const int engineAnchor = showSourceMode
         ? sourceModeX : (showOcrControls ? engineX : pinX);
     if (sourceModeButton_) {
-        ShowWindow(sourceModeButton_, showSourceMode ? SW_SHOW : SW_HIDE);
+        if (redraw) SetControlVisible(sourceModeButton_, showSourceMode);
     }
     if (showSourceMode) {
-        MoveWindow(sourceModeButton_, sourceModeX, sourceModeTop,
-            sourceModeWidth, sourceModeHeight, TRUE);
+        move(sourceModeButton_, sourceModeX, sourceModeTop,
+            sourceModeWidth, sourceModeHeight);
     }
     if (showOcrControls) {
-        MoveWindow(recognizeButton_, recognizeX, recognizeTop,
-            recognizeWidth, actionHeight, TRUE);
+        move(recognizeButton_, recognizeX, recognizeTop,
+            recognizeWidth, actionHeight);
     }
-    MoveWindow(stageLabel_, metadataLeft, metadataTop,
+    move(stageLabel_, metadataLeft, metadataTop,
         (std::max)(minimumStageWidth, engineAnchor - metadataLeft - rowGap),
-        metadataHeight, TRUE);
+        metadataHeight);
     if (showOcrControls) {
-        MoveWindow(engineLabel_, engineX, metadataTop,
-            engineWidth, metadataHeight, TRUE);
+        move(engineLabel_, engineX, metadataTop,
+            engineWidth, metadataHeight);
     }
 
     const int bodyTop = headerHeight + ScaleForDpi(3, dpi);
@@ -1972,11 +2121,11 @@ void TranslationResultWindow::LayoutControls() {
     const int arrowX = targetComboX - rowGap - arrowWidth;
     const int sourceComboX = arrowX - rowGap - sourceComboWidth;
     const int providerX = sourceComboX - rowGap - providerWidth;
-    MoveWindow(showSourceToggle_, toggleX, controlTop, showSourceWidth, controlRowHeight, TRUE);
-    MoveWindow(providerCombo_, providerX, controlTop, providerWidth, comboHeight, TRUE);
-    MoveWindow(sourceCombo_, sourceComboX, controlTop, sourceComboWidth, comboHeight, TRUE);
-    MoveWindow(targetLabel_, arrowX, controlTop, arrowWidth, controlRowHeight, TRUE);
-    MoveWindow(targetCombo_, targetComboX, controlTop, targetComboWidth, comboHeight, TRUE);
+    move(showSourceToggle_, toggleX, controlTop, showSourceWidth, controlRowHeight);
+    move(providerCombo_, providerX, controlTop, providerWidth, comboHeight);
+    move(sourceCombo_, sourceComboX, controlTop, sourceComboWidth, comboHeight);
+    move(targetLabel_, arrowX, controlTop, arrowWidth, controlRowHeight);
+    move(targetCombo_, targetComboX, controlTop, targetComboWidth, comboHeight);
 
     const auto layoutCard = [&](const RECT& card, HWND edit, HWND count, HWND copy) {
         const int footerTop = card.bottom - cardFooterHeight;
@@ -1984,8 +2133,8 @@ void TranslationResultWindow::LayoutControls() {
         const int editHeight = (std::max)(ScaleForDpi(30, dpi),
             footerTop - editTop - ScaleForDpi(kTranslationCardFooterGap, dpi));
         const int footerButtonTop = footerTop + (cardFooterHeight - actionHeight) / 2;
-        MoveWindow(edit, card.left + cardPadding, editTop,
-            (std::max)(ScaleForDpi(48, dpi), contentWidth - cardPadding * 2), editHeight, TRUE);
+        move(edit, card.left + cardPadding, editTop,
+            (std::max)(ScaleForDpi(48, dpi), contentWidth - cardPadding * 2), editHeight);
         if (edit == sourceEdit_) {
             sourceContentRect_ = {
                 card.left + cardPadding,
@@ -2003,28 +2152,30 @@ void TranslationResultWindow::LayoutControls() {
                 editTop + editHeight,
             };
         }
-        MoveWindow(copy, card.left + cardPadding, footerButtonTop, copyWidth, actionHeight, TRUE);
-        MoveWindow(count, card.left + cardPadding + copyWidth + rowGap, footerTop,
-            countWidth, cardFooterHeight, TRUE);
+        move(copy, card.left + cardPadding, footerButtonTop, copyWidth, actionHeight);
+        move(count, card.left + cardPadding + copyWidth + rowGap, footerTop,
+            countWidth, cardFooterHeight);
         if (edit == translationEdit_) {
             // Translate again / Cancel share one slot at the footer's right
             // edge. The row already exists, so the action adds no height.
             const int footerActionX = card.right - cardPadding - actionWidth;
-            MoveWindow(retranslateButton_, footerActionX, footerButtonTop,
-                actionWidth, actionHeight, TRUE);
-            MoveWindow(cancelButton_, footerActionX, footerButtonTop,
-                actionWidth, actionHeight, TRUE);
-            ShowWindow(retranslateButton_, (busy_ || retryOcrMode_) ? SW_HIDE : SW_SHOW);
-            ShowWindow(cancelButton_, busy_ ? SW_SHOW : SW_HIDE);
+            move(retranslateButton_, footerActionX, footerButtonTop,
+                actionWidth, actionHeight);
+            move(cancelButton_, footerActionX, footerButtonTop,
+                actionWidth, actionHeight);
+            if (redraw) {
+                SetControlVisible(retranslateButton_, !busy_ && !retryOcrMode_);
+                SetControlVisible(cancelButton_, busy_);
+            }
             const int elapsedX = card.left + cardPadding + copyWidth + rowGap + countWidth + rowGap;
             const int elapsedAvailable = footerActionX - rowGap - elapsedX;
             const int minElapsedWidth = ScaleForDpi(40, dpi);
             if (showTranslationElapsed_ && elapsedAvailable >= minElapsedWidth) {
-                MoveWindow(translationElapsedLabel_, elapsedX, footerTop,
-                    (std::min)(elapsedWidth, elapsedAvailable), cardFooterHeight, TRUE);
-                ShowWindow(translationElapsedLabel_, SW_SHOW);
+                move(translationElapsedLabel_, elapsedX, footerTop,
+                    (std::min)(elapsedWidth, elapsedAvailable), cardFooterHeight);
+                if (redraw) SetControlVisible(translationElapsedLabel_, true);
             } else {
-                ShowWindow(translationElapsedLabel_, SW_HIDE);
+                if (redraw) SetControlVisible(translationElapsedLabel_, false);
             }
         }
     };
@@ -2034,15 +2185,18 @@ void TranslationResultWindow::LayoutControls() {
     }
     layoutCard(translationCardRect_, translationEdit_, translationCountLabel_,
         copyTranslationButton_);
-    if (translationPreview_) {
-        translationPreview_->SetBounds(translationContentRect_);
+    if (redraw) {
+        if (translationPreview_) {
+            translationPreview_->SetBounds(translationContentRect_);
+        }
+        if (sourcePreview_) {
+            sourcePreview_->SetBounds(sourceContentRect_);
+        }
+        UpdateSourcePreviewVisibility();
+        UpdateTranslationPreviewVisibility();
+        RedrawWindow(window_, nullptr, nullptr,
+            RDW_INVALIDATE | RDW_ALLCHILDREN);
     }
-    if (sourcePreview_) {
-        sourcePreview_->SetBounds(sourceContentRect_);
-    }
-    UpdateSourcePreviewVisibility();
-    UpdateTranslationPreviewVisibility();
-    InvalidateRect(window_, nullptr, FALSE);
 }
 
 void TranslationResultWindow::Paint() {
@@ -2524,9 +2678,10 @@ LRESULT TranslationResultWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wPara
         break;
     }
     case WM_SIZE:
-        LayoutControls();
+        LayoutControls(!resizeAnimationActive_);
         return 0;
     case WM_ENTERSIZEMOVE:
+        StopAutomaticResizeAnimation(true);
         windowSizeMoveActive_ = true;
         GetWindowRect(hwnd, &windowSizeMoveStartRect_);
         return 0;
@@ -2548,12 +2703,17 @@ LRESULT TranslationResultWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wPara
         }
         return 0;
     case WM_TIMER:
+        if (wParam == kResizeAnimationTimer) {
+            UpdateAutomaticResizeAnimation();
+            return 0;
+        }
         if (wParam == kOcrElapsedTimer) {
             UpdateOcrElapsedStage();
             return 0;
         }
         break;
     case WM_DPICHANGED: {
+        StopAutomaticResizeAnimation(false);
         SetLayoutDpi(LOWORD(wParam));
         RefreshFontForLayoutDpi();
         const auto* suggested = reinterpret_cast<const RECT*>(lParam);
@@ -2563,7 +2723,6 @@ LRESULT TranslationResultWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wPara
                 SWP_NOZORDER | SWP_NOACTIVATE);
         }
         ApplyDarkWindowChrome();
-        LayoutControls();
         ResizeToAutomaticWindowSize();
         if (autoPositionNearSource_) {
             ClampToCurrentMonitorWorkArea();
@@ -2648,7 +2807,6 @@ LRESULT TranslationResultWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wPara
                 const std::wstring count = CharacterCountText(SourceText());
                 SetWindowTextW(sourceCountLabel_, count.c_str());
             }
-            LayoutControls();
             ResizeToAutomaticWindowSize();
             MarkDirty();
             return 0;
@@ -2669,6 +2827,8 @@ LRESULT TranslationResultWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wPara
         DestroyWindow(hwnd);
         return 0;
     case WM_DESTROY:
+        KillTimer(hwnd, kResizeAnimationTimer);
+        resizeAnimationActive_ = false;
         NotifyClose();
         // Do not leave a stale entry or a border window behind if the user
         // closes the result window while it is pinned.

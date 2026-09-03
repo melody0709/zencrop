@@ -230,10 +230,9 @@
 
   function scheduleContentMetrics() {
     if (metricsFrame) return;
-    var requestFrame = window.requestAnimationFrame || function (callback) {
-      return window.setTimeout(callback, 16);
-    };
-    metricsFrame = requestFrame(function () {
+    // WebView2 may pause requestAnimationFrame while its controller is hidden.
+    // A timer lets native keep old content hidden until this render is measured.
+    metricsFrame = window.setTimeout(function () {
       metricsFrame = 0;
       if (!preview || !preview.isConnected) return;
       var pixelRatio = Number(window.devicePixelRatio) || 1;
@@ -266,7 +265,7 @@
         scrollWidth: scrollWidth,
         clientWidth: clientWidth
       });
-    });
+    }, 0);
   }
 
   if (window.MutationObserver) {

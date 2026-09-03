@@ -510,6 +510,25 @@ int wmain() {
         return 1;
     }
 
+    // Translation keeps the controller hidden until the current render has
+    // been measured. Hidden renders must still report metrics or Preview can
+    // remain permanently stuck on the native Source fallback.
+    const std::wstring visibleRenderToken = contentMetrics.renderToken;
+    contentMetricsReceived = false;
+    host.Show(false);
+    host.RenderMarkdown(2, L"# Hidden render\n\npreview metrics while hidden");
+    if (!PumpUntil([&]() {
+            return contentMetricsReceived &&
+                contentMetrics.renderToken != visibleRenderToken;
+        }, 2000)) {
+        host.Destroy();
+        DestroyWindow(hwnd);
+        CoUninitialize();
+        std::wcerr << L"Hidden Preview render did not report content metrics\n";
+        return 1;
+    }
+    host.Show(true);
+
     // The main Preview rail is intentionally zero-width in the document and
     // replaced by a non-layout overlay thumb. Verify that a long document
     // still exposes a scrollable viewport, starts visually hidden, appears

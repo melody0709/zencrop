@@ -52,6 +52,7 @@ constexpr double kPreviewZoomMin = 0.25;
 constexpr double kPreviewZoomMax = 5.0;
 constexpr int kPreviewFontSizeMin = 8;
 constexpr int kPreviewFontSizeMax = 32;
+constexpr COREWEBVIEW2_COLOR kPreviewBackgroundColor = {255, 30, 30, 30};
 
 std::wstring FormatHResult(HRESULT hr) {
     // OWN-113: pure hex u32 label (WideStringUtils).
@@ -598,6 +599,7 @@ struct OcrMarkdownPreviewHost::Impl {
     }
 
     void SetBounds(const RECT& rc) {
+        if (EqualRect(&bounds, &rc)) return;
         bounds = rc;
         if (controller) {
             controller->put_Bounds(bounds);
@@ -628,6 +630,7 @@ struct OcrMarkdownPreviewHost::Impl {
 
     void Show(bool show) {
         if (!show) SetVerticalScrollbarBoundaryHover(false);
+        if (visible == show) return;
         visible = show;
         if (controller) {
             controller->put_IsVisible(show ? TRUE : FALSE);
@@ -775,9 +778,11 @@ struct OcrMarkdownPreviewHost::Impl {
         HRESULT hr = environment->CreateCoreWebView2Controller(
             parent,
             Callback<ICoreWebView2CreateCoreWebView2ControllerCompletedHandler>(
-                [weakState](HRESULT controllerResult, ICoreWebView2Controller* createdController) -> HRESULT {
+                [weakState](HRESULT controllerResult,
+                            ICoreWebView2Controller* createdController) -> HRESULT {
                     if (!weakState || !weakState->owner) return S_OK;
-                    weakState->owner->OnControllerCreated(controllerResult, createdController);
+                    weakState->owner->OnControllerCreated(
+                        controllerResult, createdController);
                     return S_OK;
                 }).Get());
         if (FAILED(hr)) {
@@ -794,6 +799,10 @@ struct OcrMarkdownPreviewHost::Impl {
         }
 
         controller = createdController;
+        ComPtr<ICoreWebView2Controller2> controller2;
+        if (SUCCEEDED(controller.As(&controller2)) && controller2) {
+            controller2->put_DefaultBackgroundColor(kPreviewBackgroundColor);
+        }
         controller->get_CoreWebView2(&webview);
         if (!webview) {
             Fail(L"Failed to get WebView2 core");
@@ -1249,10 +1258,15 @@ struct OcrMarkdownPreviewHost::Impl {
     }
 
     bool IsAvailable() const {
-        // A creating controller cannot render yet. Callers use IsCreating()
-        // when they want to retain the host while keeping their native
-        // fallback visible during asynchronous startup.
         return !failed && ready && webview;
+    }
+
+    bool IsCreating() const {
+        // Controller creation completes before the document posts "ready".
+        // Keep that navigation gap in the initializing state so callers do
+        // not discard a healthy host or mark its queued render as failed.
+        return creating || (!ready && !failed &&
+            (environment || controller || webview));
     }
 
 #ifdef ZENCROP_PREVIEW_HOST_TESTS
@@ -1369,7 +1383,7 @@ bool OcrMarkdownPreviewHost::IsAvailable() const {
 }
 
 bool OcrMarkdownPreviewHost::IsCreating() const {
-    return m_impl->creating;
+    return m_impl->IsCreating();
 }
 
 #ifdef ZENCROP_PREVIEW_HOST_TESTS

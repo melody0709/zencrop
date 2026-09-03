@@ -1,15 +1,14 @@
-# ZenCrop v2.9.18
+# ZenCrop v2.9.19
 
 [中文文档](doc/README_zh.md)
 
 An independent, **enhanced** reimplementation of [PowerToys Crop And Lock](https://github.com/microsoft/PowerToys/tree/main/src/modules/CropAndLock/), with rich screenshot annotation, long screenshot, multi-engine OCR, and OCR Dashboard.
 
-## What's new in v2.9.18
+## What's new in v2.9.19
 
-- **Selection Translation**: Press `Shift+A` in another application to translate selected text. ZenCrop first reads accessible text and can optionally use a clipboard-copy fallback while restoring the previous clipboard contents.
-- **Expanded Translation Providers**: Direct machine-translation adapters cover Google Translate Community, Microsoft Translator Community, Google Cloud Translation, Azure Translator, DeepL API, and custom DeepLX endpoints. LLM providers use provider-specific OpenAI Responses, Chat Completions, Gemini, xAI, Ollama, and DeepSeek protocols.
-- **Safer Translation Settings**: Translation and hotkey changes are validated as one settings transaction, including duplicate-hotkey and `Ctrl+C` fallback conflicts.
-- **Stable Result Placement**: Refreshing or replacing a selection translation keeps the result window at the position chosen by the user while automatic content sizing continues.
+- **Smoother Translation Windows**: OCR and selection translation resize in place with a short ease-out animation instead of repeatedly rebuilding and repainting the full window.
+- **Reusable Results**: Repeating the same translation mode reuses its existing window and WebViews while preserving the user-selected position, manual size, splitter ratio, and always-on-top state.
+- **Reliable Preview Switching**: Hidden WebView2 previews continue reporting content metrics, preventing Preview from remaining stuck on the editable Source fallback and reducing white flashes during content replacement.
 
 See [CHANGELOG](doc/CHANGELOG.md) for the complete release notes.
 

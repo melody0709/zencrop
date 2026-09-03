@@ -1,5 +1,22 @@
 # Changelog
 
+## V2.9.19 (2026-09-03)
+
+### 修复 (Bug Fixes)
+
+- **翻译窗口白闪与重复重建**: OCR 和划词翻译连续触发时复用同模式结果窗口及 WebView，保留用户位置、手工尺寸、分隔比例与置顶状态；不同模式仍按控件结构安全重建。
+- **Preview 切换失败**: 隐藏 WebView2 的内容尺寸调度不再依赖可能暂停的 `requestAnimationFrame`，避免 Preview 永久停留在 Source fallback。
+- **WebView 初始白底**: WebView2 controller 使用与窗口一致的深色默认背景，并补齐异步创建到页面 ready 之间的初始化状态判断。
+
+### 调整 (Changes)
+
+- **内容驱动拉伸动画**: Source 与翻译结果到达时使用 120 ms ease-out 动画调整窗口；动画期间延后 WebView bounds 和完整重绘，终点统一提交布局。
+- **版本号更新**: 应用、MSI、Portable 包、README 和发布产物统一升级到 `v2.9.19`。
+
+### 测试 (Tests)
+
+- **翻译窗口复用契约**: 覆盖 OCR 与划词翻译重复触发时 HWND 和用户位置不变，以及隐藏 Preview render 仍返回内容尺寸。
+
 ## V2.9.18 (2026-09-03)
 
 ### 新增 (New Features)
