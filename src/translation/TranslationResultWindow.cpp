@@ -85,6 +85,19 @@ void SetControlVisible(HWND control, bool visible) {
     ShowWindow(control, visible ? SW_SHOW : SW_HIDE);
 }
 
+bool IsIdleStageText(const std::wstring& text) {
+    return text.empty() || text == L"Ready" || text == L"\u5c31\u7eea";
+}
+
+bool StageLabelNeedsPresentation(HWND control) {
+    if (!control) return false;
+    const int length = GetWindowTextLengthW(control);
+    std::wstring text(static_cast<size_t>((std::max)(0, length)) + 1, L'\0');
+    if (length > 0) GetWindowTextW(control, text.data(), length + 1);
+    text.resize(static_cast<size_t>((std::max)(0, length)));
+    return !IsIdleStageText(text);
+}
+
 bool SetControlText(HWND control, const std::wstring& text) {
     if (!control) return false;
     const int length = GetWindowTextLengthW(control);
@@ -115,7 +128,8 @@ UINT MonitorDpi(HMONITOR monitor) {
     return kTranslationDesignDpi;
 }
 
-SIZE CalculateInitialTranslationWindowSize(const RECT& sourceRect, UINT dpi) {
+SIZE CalculateInitialTranslationWindowSize(
+    const RECT& sourceRect, UINT dpi, bool ocrToolbarOwnRow) {
     HMONITOR monitor = MonitorFromRect(&sourceRect, MONITOR_DEFAULTTONEAREST);
     MONITORINFO monitorInfo = { sizeof(monitorInfo) };
     if (!monitor || !GetMonitorInfoW(monitor, &monitorInfo)) {
@@ -137,8 +151,12 @@ SIZE CalculateInitialTranslationWindowSize(const RECT& sourceRect, UINT dpi) {
         MulDiv(cropWidth, 8, 10), ScaleForDpi(720, dpi));
     const int cropHeightHint = (std::min)(
         MulDiv(cropHeight, 8, 10), ScaleForDpi(520, dpi));
+    // OCR keeps its engine actions above the translation selectors, while
+    // selected-text translation keeps every selector in the title bar.
     const int compactChromeHeight = ScaleForDpi(
-        30 + 3 + 24 + kTranslationControlRowGap * 2 + 4, dpi);
+        30 + 3 + (ocrToolbarOwnRow
+            ? 24 + kTranslationControlRowGap * 2
+            : kTranslationControlRowGap) + 4, dpi);
     const int minimumBodyHeight = (std::max)(0, minHeight - compactChromeHeight);
     const int bodyHeight = (std::max)(minimumBodyHeight, cropHeightHint);
     const int width = (std::clamp)((std::max)(minWidth, cropWidthHint),
@@ -535,7 +553,8 @@ TranslationResultWindow::TranslationResultWindow(
     sourceEditFontSize_ = sourceFontSize_;
     const UINT initialDpi = MonitorDpi(
         MonitorFromRect(&sourceRect_, MONITOR_DEFAULTTONEAREST));
-    const SIZE initialSize = CalculateInitialTranslationWindowSize(sourceRect_, initialDpi);
+    const SIZE initialSize = CalculateInitialTranslationWindowSize(
+        sourceRect_, initialDpi, sourceMode_ == TranslationSourceMode::OcrImage);
     window_ = CreateWindowExW(
         // Keep the result window in the taskbar even after Show() assigns the
         // durable application window as its owner.
@@ -772,7 +791,8 @@ TranslationResultWindow::TranslationResultWindow(
             translationPreview_->Show(false);
         }
         const UINT dpi = LayoutDpi();
-        const SIZE layoutSize = CalculateInitialTranslationWindowSize(sourceRect_, dpi);
+        const SIZE layoutSize = CalculateInitialTranslationWindowSize(
+            sourceRect_, dpi, sourceMode_ == TranslationSourceMode::OcrImage);
         RECT currentRect = {};
         if (GetWindowRect(window_, &currentRect) &&
             (currentRect.right - currentRect.left != layoutSize.cx ||
@@ -1006,6 +1026,15 @@ void TranslationResultWindow::CreateControls(const TranslationRequest& request) 
         tool.hwnd = window_;
         tool.uId = reinterpret_cast<UINT_PTR>(pinButton_);
         tool.lpszText = const_cast<wchar_t*>(pinToolTipText_.c_str());
+        SendMessageW(pinToolTip_, TTM_ADDTOOLW, 0, reinterpret_cast<LPARAM>(&tool));
+    }
+    if (pinToolTip_ && recognizeButton_) {
+        TOOLINFOW tool = { sizeof(tool) };
+        tool.uFlags = TTF_IDISHWND | TTF_SUBCLASS;
+        tool.hwnd = window_;
+        tool.uId = reinterpret_cast<UINT_PTR>(recognizeButton_);
+        tool.lpszText = const_cast<wchar_t*>(S::IsChinese()
+            ? L"\u91cd\u65b0\u8bc6\u522b" : L"Recognize again");
         SendMessageW(pinToolTip_, TTM_ADDTOOLW, 0, reinterpret_cast<LPARAM>(&tool));
     }
 
@@ -1306,7 +1335,8 @@ SIZE TranslationResultWindow::CalculateAutomaticWindowSize() const {
     HMONITOR monitor = MonitorFromRect(&sourceRect_, MONITOR_DEFAULTTONEAREST);
     MONITORINFO monitorInfo = { sizeof(monitorInfo) };
     if (!monitor || !GetMonitorInfoW(monitor, &monitorInfo)) {
-        return CalculateInitialTranslationWindowSize(sourceRect_, dpi);
+        return CalculateInitialTranslationWindowSize(
+            sourceRect_, dpi, sourceMode_ == TranslationSourceMode::OcrImage);
     }
 
     const int minWidth = ScaleForDpi(kTranslationAutomaticMinimumWidth, dpi);
@@ -1324,9 +1354,13 @@ SIZE TranslationResultWindow::CalculateAutomaticWindowSize() const {
     const int cardFooterGap = ScaleForDpi(kTranslationCardFooterGap, dpi);
     const int controlRowHeight = ScaleForDpi(24, dpi);
     const int controlRowGap = ScaleForDpi(kTranslationControlRowGap, dpi);
+    const bool selectorsInHeader = !showWindowBorder_ &&
+        sourceMode_ != TranslationSourceMode::OcrImage;
     const int headerHeight = ScaleForDpi(showWindowBorder_ ? 58 : 30, dpi);
-    const int chromeHeight = headerHeight + ScaleForDpi(3, dpi) + controlRowHeight +
-        controlRowGap * 2 + margin;
+    const int chromeHeight = headerHeight + ScaleForDpi(3, dpi) + margin +
+        (selectorsInHeader
+            ? (showSourceText_ ? controlRowGap : 0)
+            : controlRowHeight + controlRowGap * 2);
     const int minimumBodyHeight = (std::max)(0, minHeight - chromeHeight);
     const int maximumBodyHeight = (std::max)(minimumBodyHeight, maxHeight - chromeHeight);
     const int cropWidth = (std::max)(0,
@@ -1494,7 +1528,17 @@ void TranslationResultWindow::StopAutomaticResizeAnimation(bool finish) {
 }
 
 void TranslationResultWindow::SetStage(const std::wstring& stage) {
-    if (stageLabel_) SetWindowTextW(stageLabel_, stage.c_str());
+    if (!stageLabel_) return;
+    SetWindowTextW(stageLabel_, stage.c_str());
+    const bool showStage = !IsIdleStageText(stage);
+    SetControlVisible(stageLabel_, showStage);
+    if (showStage) {
+        SetControlVisible(translationElapsedLabel_, false);
+    } else if (showTranslationElapsed_ && window_ && IsWindow(window_)) {
+        // Let the existing layout pass place the elapsed label before showing
+        // it. In the bordered variant it may not have received geometry yet.
+        LayoutControls();
+    }
 }
 
 void TranslationResultWindow::BeginOcrElapsed() {
@@ -1614,6 +1658,7 @@ void TranslationResultWindow::SetTranslationElapsed(DWORD elapsedMs) {
 void TranslationResultWindow::ClearTranslationElapsed() {
     showTranslationElapsed_ = false;
     SetControlText(translationElapsedLabel_, L"");
+    SetControlVisible(translationElapsedLabel_, false);
 }
 
 void TranslationResultWindow::SetBusy(bool busy) {
@@ -2103,6 +2148,7 @@ void TranslationResultWindow::LayoutControls(bool redraw) {
     const int rowGap = ScaleForDpi(6, dpi);
     const int controlRowHeight = ScaleForDpi(24, dpi);
     const int comboHeight = ScaleForDpi(24, dpi);
+    const int showSourceWidth = ScaleForDpi(124, dpi);
     const int controlRowGap = ScaleForDpi(kTranslationControlRowGap, dpi);
     const int cardPadding = ScaleForDpi(8, dpi);
     const int cardFooterHeight = ScaleForDpi(kTranslationCardFooterHeight, dpi);
@@ -2112,6 +2158,7 @@ void TranslationResultWindow::LayoutControls(bool redraw) {
     const int elapsedWidth = ScaleForDpi(58, dpi);
     const int retranslateWidth = ScaleForDpi(132, dpi);
     const int contentWidth = (std::max)(ScaleForDpi(120, dpi), clientWidth - margin * 2);
+    const int toggleX = margin + ScaleForDpi(8, dpi);
     const auto move = [](HWND control, int x, int y, int width, int height) {
         if (!control) return;
         SetWindowPos(control, nullptr, x, y, width, height,
@@ -2133,26 +2180,39 @@ void TranslationResultWindow::LayoutControls(bool redraw) {
     move(closeButton_, closeX, headerButtonTop,
         headerButtonWidth, headerButtonWidth);
 
-    const int metadataLeft = ScaleForDpi(kTranslationMetadataTextInset, dpi);
-    const int minimumStageWidth = ScaleForDpi(48, dpi);
     const bool showOcrControls =
         sourceMode_ == TranslationSourceMode::OcrImage;
+    const bool compactOcrHeader = compactHeader && showOcrControls;
+    const bool selectorsInHeader = compactHeader && !showOcrControls;
+    const bool showSourceInHeader = compactHeader;
+    const bool showSourceMode = sourceModeButton_ && showSourceText_;
+    const bool sourceModeInHeader = !compactHeader && showSourceMode;
+    const bool stageInHeader = !compactHeader;
+    if (sourceModeButton_) {
+        if (redraw) SetControlVisible(sourceModeButton_, showSourceMode);
+    }
+    const int metadataLeft = ScaleForDpi(kTranslationMetadataTextInset, dpi);
+    const int minimumStageWidth = stageInHeader
+        ? ScaleForDpi(48, dpi)
+        : (compactOcrHeader
+            ? showSourceWidth + ScaleForDpi(80, dpi) : 0);
     const int minimumEngineWidth = showOcrControls
         ? ScaleForDpi(128, dpi) : 0;
     const int minimumRecognizeWidth = showOcrControls
-        ? ScaleForDpi(132, dpi) : 0;
-    int recognizeWidth = showOcrControls ? ScaleForDpi(150, dpi) : 0;
+        ? (compactOcrHeader ? headerButtonWidth : ScaleForDpi(132, dpi)) : 0;
+    int recognizeWidth = showOcrControls
+        ? (compactOcrHeader ? headerButtonWidth : ScaleForDpi(150, dpi)) : 0;
+    const int recognizeHeight = compactOcrHeader ? headerButtonWidth : actionHeight;
     const int recognizeTop = headerButtonTop +
-        (headerButtonWidth - actionHeight) / 2;
+        (headerButtonWidth - recognizeHeight) / 2;
     int engineWidth = showOcrControls
         ? (std::min)(ScaleForDpi(232, dpi),
             (std::max)(ScaleForDpi(128, dpi), contentWidth / 3))
         : 0;
-    const bool showSourceMode = sourceModeButton_ && showSourceText_;
-    const int topGapCount = (showOcrControls ? 3 : 1) +
-        (showSourceMode ? 1 : 0);
+    const int topGapCount = (showOcrControls ? (stageInHeader ? 3 : 2) :
+        (stageInHeader ? 1 : 0)) + (sourceModeInHeader ? 1 : 0);
     int topShortfall = minimumStageWidth + rowGap * topGapCount + engineWidth +
-        (showSourceMode ? sourceModeWidth : 0) + recognizeWidth -
+        (sourceModeInHeader ? sourceModeWidth : 0) + recognizeWidth -
         (pinX - metadataLeft);
     if (topShortfall > 0) {
         const int recognizeReduction = (std::min)(topShortfall,
@@ -2171,41 +2231,49 @@ void TranslationResultWindow::LayoutControls(bool redraw) {
         ? recognizeX - rowGap - engineWidth : pinX;
     const int sourceModeX = (showOcrControls ? engineX : pinX) -
         rowGap - sourceModeWidth;
-    const int engineAnchor = showSourceMode
+    const int engineAnchor = sourceModeInHeader
         ? sourceModeX : (showOcrControls ? engineX : pinX);
-    if (sourceModeButton_) {
-        if (redraw) SetControlVisible(sourceModeButton_, showSourceMode);
-    }
-    if (showSourceMode) {
+    if (sourceModeInHeader) {
         move(sourceModeButton_, sourceModeX, sourceModeTop,
             sourceModeWidth, sourceModeHeight);
     }
+    if (showSourceInHeader) {
+        move(showSourceToggle_, toggleX,
+            (headerHeight - controlRowHeight) / 2,
+            showSourceWidth, controlRowHeight);
+    }
     if (showOcrControls) {
         move(recognizeButton_, recognizeX, recognizeTop,
-            recognizeWidth, actionHeight);
+            recognizeWidth, recognizeHeight);
     }
-    move(stageLabel_, metadataLeft, metadataTop,
-        (std::max)(minimumStageWidth, engineAnchor - metadataLeft - rowGap),
-        metadataHeight);
+    if (stageInHeader) {
+        move(stageLabel_, metadataLeft, metadataTop,
+            (std::max)(minimumStageWidth, engineAnchor - metadataLeft - rowGap),
+            metadataHeight);
+    }
     if (showOcrControls) {
-        move(engineLabel_, engineX, metadataTop,
-            engineWidth, metadataHeight);
+        move(engineLabel_, engineX,
+            compactOcrHeader ? (headerHeight - actionHeight) / 2 : metadataTop,
+            engineWidth, compactOcrHeader ? actionHeight : metadataHeight);
     }
 
     const int bodyTop = headerHeight + ScaleForDpi(3, dpi);
-    const int showSourceWidth = ScaleForDpi(124, dpi);
     const int arrowWidth = ScaleForDpi(16, dpi);
     const int actionWidth = (std::min)(retranslateWidth,
         (std::max)(ScaleForDpi(128, dpi), contentWidth / 5));
     const int sourceEditorActionWidth = ScaleForDpi(64, dpi);
     const int showSourceToComboGap = ScaleForDpi(24, dpi);
     const int minimumComboWidth = ScaleForDpi(68, dpi);
+    const int minimumTargetComboWidth = compactHeader
+        ? ScaleForDpi(120, dpi) : minimumComboWidth;
     const int minimumProviderWidth = ScaleForDpi(96, dpi);
     const int minimumSelectorWidth = minimumProviderWidth +
-        minimumComboWidth * 2 + arrowWidth + rowGap * 3;
-    const int minimumControlRowWidth = showSourceWidth + showSourceToComboGap +
-        rowGap + minimumSelectorWidth;
-    const int controlRowRight = clientWidth - margin;
+        minimumComboWidth + minimumTargetComboWidth + arrowWidth + rowGap * 3;
+    const int controlRowLeadingWidth = compactOcrHeader
+        ? 0 : showSourceWidth + showSourceToComboGap + rowGap;
+    const int minimumControlRowWidth = controlRowLeadingWidth + minimumSelectorWidth;
+    const int controlRowRight = selectorsInHeader
+        ? pinX - rowGap : clientWidth - margin;
     const int clusterRight = (std::max)(controlRowRight,
         margin + minimumControlRowWidth);
     int sourceLanguageTextWidth = 0;
@@ -2226,10 +2294,9 @@ void TranslationResultWindow::LayoutControls(bool redraw) {
         };
         sourceLanguageTextWidth = measureLanguageText(sourceLanguages_);
         targetLanguageTextWidth = measureLanguageText(targetLanguages_);
-        // Provider labels are prefixed ("Provider: …"), so measure the full
-        // button text rather than the bare display name.
         for (const auto& provider : providerOptions_) {
-            const std::wstring label = ProviderButtonLabel(provider.label);
+            const std::wstring label = compactOcrHeader
+                ? provider.label : ProviderButtonLabel(provider.label);
             SIZE textSize = {};
             GetTextExtentPoint32W(languageMeasureDc, label.c_str(),
                 static_cast<int>(label.size()), &textSize);
@@ -2241,19 +2308,25 @@ void TranslationResultWindow::LayoutControls(bool redraw) {
     if (languageMeasureDc) ReleaseDC(window_, languageMeasureDc);
 
     const int comboTextExtra = ScaleForDpi(36, dpi);
-    const auto preferredComboWidth = [&](int textWidth) {
+    const auto preferredComboWidth = [&](int textWidth, int minimumWidth) {
         const int fallbackWidth = ScaleForDpi(112, dpi);
         return (std::min)(ScaleForDpi(240, dpi),
-            (std::max)(minimumComboWidth,
+            (std::max)(minimumWidth,
                 textWidth > 0 ? textWidth + comboTextExtra : fallbackWidth));
     };
-    int providerWidth = (std::min)(ScaleForDpi(200, dpi),
+    const int providerMaximumWidth = ScaleForDpi(
+        compactOcrHeader ? 240 : 200, dpi);
+    int providerWidth = (std::min)(providerMaximumWidth,
         (std::max)(minimumProviderWidth,
             providerTextWidth > 0 ? providerTextWidth + comboTextExtra
                                   : ScaleForDpi(128, dpi)));
-    int sourceComboWidth = preferredComboWidth(sourceLanguageTextWidth);
-    int targetComboWidth = preferredComboWidth(targetLanguageTextWidth);
-    const int selectorStart = margin + showSourceWidth + rowGap + showSourceToComboGap;
+    int sourceComboWidth = preferredComboWidth(sourceLanguageTextWidth,
+        minimumComboWidth);
+    int targetComboWidth = preferredComboWidth(targetLanguageTextWidth,
+        minimumTargetComboWidth);
+    const int selectorStart = compactOcrHeader
+        ? margin + cardPadding
+        : margin + showSourceWidth + rowGap + showSourceToComboGap;
     const int selectorAvailable = (std::max)(minimumSelectorWidth,
         clusterRight - selectorStart);
     int selectorShortfall = providerWidth + sourceComboWidth + targetComboWidth +
@@ -2272,14 +2345,20 @@ void TranslationResultWindow::LayoutControls(bool redraw) {
     }
     if (selectorShortfall > 0) {
         const int targetReduction = (std::min)(selectorShortfall,
-            targetComboWidth - minimumComboWidth);
+            targetComboWidth - minimumTargetComboWidth);
         targetComboWidth -= targetReduction;
     }
 
-    int controlTop = bodyTop;
+    int controlTop = selectorsInHeader
+        ? (headerHeight - controlRowHeight) / 2
+        : bodyTop;
+    const int cardsTop = bodyTop;
+    const int betweenCardsHeight = selectorsInHeader
+        ? controlRowGap
+        : controlRowHeight + controlRowGap * 2;
     if (showSourceText_) {
         const int cardSpace = (std::max)(ScaleForDpi(200, dpi),
-            clientHeight - bodyTop - controlRowHeight - controlRowGap * 2 - margin);
+            clientHeight - cardsTop - betweenCardsHeight - margin);
         const int minSourceHeight = ScaleForDpi(kTranslationSourceMinHeight, dpi);
         const int minTranslationHeight = ScaleForDpi(kTranslationTranslationMinHeight, dpi);
         const int measureWidth = (std::max)(ScaleForDpi(48, dpi),
@@ -2323,33 +2402,35 @@ void TranslationResultWindow::LayoutControls(bool redraw) {
             sourceHeight = (std::clamp)(desiredSourceHeight,
                 automaticSourceBaselineHeight, automaticSourceMaxHeight);
         }
-        sourceCardRect_ = { margin, bodyTop, clientWidth - margin, bodyTop + sourceHeight };
+        sourceCardRect_ = { margin, cardsTop, clientWidth - margin, cardsTop + sourceHeight };
         sourceSplitterRect_ = { margin, sourceCardRect_.bottom,
             clientWidth - margin, sourceCardRect_.bottom + controlRowGap };
         const int translationTop = sourceCardRect_.bottom + controlRowGap +
-            controlRowHeight + controlRowGap;
+            (selectorsInHeader ? 0 : controlRowHeight + controlRowGap);
         translationCardRect_ = { margin, translationTop, clientWidth - margin,
             translationTop + cardSpace - sourceHeight };
-        controlTop = sourceCardRect_.bottom + controlRowGap;
+        if (!selectorsInHeader) {
+            controlTop = sourceCardRect_.bottom + controlRowGap;
+        }
     } else {
         sourceCardRect_ = {};
         sourceContentRect_ = {};
         sourceSplitterRect_ = {};
-        translationCardRect_ = { margin, bodyTop + controlRowHeight + controlRowGap,
+        translationCardRect_ = { margin, cardsTop +
+            (selectorsInHeader ? 0 : controlRowHeight + controlRowGap),
             clientWidth - margin, clientHeight - margin };
     }
 
-    const int toggleX = margin + ScaleForDpi(8, dpi);
-    // Keep the provider/language selectors and arrow as a fixed-width cluster
-    // on the right. Extra width therefore becomes the spacer before the
-    // provider selector instead of stretching the selectors or the area
-    // around the arrow. The translate/cancel action lives in the translation
-    // card footer so this row stays at its original height.
-    const int targetComboX = clusterRight - targetComboWidth;
-    const int arrowX = targetComboX - rowGap - arrowWidth;
-    const int sourceComboX = arrowX - rowGap - sourceComboWidth;
-    const int providerX = sourceComboX - rowGap - providerWidth;
-    move(showSourceToggle_, toggleX, controlTop, showSourceWidth, controlRowHeight);
+    const int selectorWidth = providerWidth + sourceComboWidth +
+        targetComboWidth + arrowWidth + rowGap * 3;
+    const int providerX = clusterRight - selectorWidth;
+    const int sourceComboX = providerX + providerWidth + rowGap;
+    const int arrowX = sourceComboX + sourceComboWidth + rowGap;
+    const int targetComboX = arrowX + arrowWidth + rowGap;
+    if (!showSourceInHeader) {
+        move(showSourceToggle_, toggleX, controlTop,
+            showSourceWidth, controlRowHeight);
+    }
     move(providerCombo_, providerX, controlTop, providerWidth, comboHeight);
     move(sourceCombo_, sourceComboX, controlTop, sourceComboWidth, comboHeight);
     move(targetLabel_, arrowX, controlTop, arrowWidth, controlRowHeight);
@@ -2381,8 +2462,13 @@ void TranslationResultWindow::LayoutControls(bool redraw) {
             };
         }
         move(copy, card.left + cardPadding, footerButtonTop, copyWidth, actionHeight);
-        move(count, card.left + cardPadding + copyWidth + rowGap, footerTop,
-            countWidth, cardFooterHeight);
+        int countX = card.left + cardPadding + copyWidth + rowGap;
+        if (edit == sourceEdit_ && compactHeader && showSourceMode) {
+            move(sourceModeButton_, countX, footerButtonTop,
+                sourceModeWidth, actionHeight);
+            countX += sourceModeWidth + rowGap;
+        }
+        move(count, countX, footerTop, countWidth, cardFooterHeight);
         if (edit == sourceEdit_) {
             const int sourceSaveX = card.right - cardPadding - sourceEditorActionWidth;
             const int sourceCancelX = sourceSaveX - rowGap - sourceEditorActionWidth;
@@ -2403,10 +2489,24 @@ void TranslationResultWindow::LayoutControls(bool redraw) {
                 SetControlVisible(retranslateButton_, !busy_ && !retryOcrMode_);
                 SetControlVisible(cancelButton_, busy_);
             }
-            const int elapsedX = card.left + cardPadding + copyWidth + rowGap + countWidth + rowGap;
+            const int elapsedX = card.left + cardPadding + copyWidth + rowGap +
+                countWidth + rowGap;
             const int elapsedAvailable = footerActionX - rowGap - elapsedX;
             const int minElapsedWidth = ScaleForDpi(40, dpi);
-            if (showTranslationElapsed_ && elapsedAvailable >= minElapsedWidth) {
+            if (compactHeader) {
+                const bool showStage = StageLabelNeedsPresentation(stageLabel_);
+                const bool hasStatusRoom = elapsedAvailable >= minElapsedWidth;
+                move(stageLabel_, elapsedX, footerTop,
+                    (std::max)(0, elapsedAvailable), cardFooterHeight);
+                move(translationElapsedLabel_, elapsedX, footerTop,
+                    (std::min)(elapsedWidth, (std::max)(0, elapsedAvailable)),
+                    cardFooterHeight);
+                if (redraw) {
+                    SetControlVisible(stageLabel_, showStage && hasStatusRoom);
+                    SetControlVisible(translationElapsedLabel_, !showStage &&
+                        showTranslationElapsed_ && hasStatusRoom);
+                }
+            } else if (showTranslationElapsed_ && elapsedAvailable >= minElapsedWidth) {
                 move(translationElapsedLabel_, elapsedX, footerTop,
                     (std::min)(elapsedWidth, elapsedAvailable), cardFooterHeight);
                 if (redraw) SetControlVisible(translationElapsedLabel_, true);
@@ -2580,13 +2680,28 @@ void TranslationResultWindow::DrawOwnerDrawControl(const DRAWITEMSTRUCT& draw) {
         FillRoundedRect(draw.hDC, draw.rcItem, radius, background, border);
         wchar_t label[128] = {};
         GetWindowTextW(draw.hwndItem, label, static_cast<int>(std::size(label)));
+        const wchar_t* visualLabel = label;
+        const bool compactOcr = !showWindowBorder_ &&
+            sourceMode_ == TranslationSourceMode::OcrImage;
+        if (compactOcr && id == kEngineLabel) {
+            const wchar_t* separator = wcschr(label, L':');
+            if (!separator) separator = wcschr(label, L'\uff1a');
+            if (separator) {
+                visualLabel = separator + 1;
+                while (*visualLabel == L' ') ++visualLabel;
+            }
+        } else if (compactOcr && id == kProviderCombo &&
+                   providerIndex_ >= 0 &&
+                   providerIndex_ < static_cast<int>(providerOptions_.size())) {
+            visualLabel = providerOptions_[providerIndex_].label.c_str();
+        }
         const int textPadding = ScaleForDpi(id == kEngineLabel ? 8 : 10, dpi);
         const int arrowWidth = ScaleForDpi(22, dpi);
         RECT text = { draw.rcItem.left + textPadding, draw.rcItem.top,
             draw.rcItem.right - arrowWidth, draw.rcItem.bottom };
         SetBkMode(draw.hDC, TRANSPARENT);
         SetTextColor(draw.hDC, disabled ? kTextMuted : kTextPrimary);
-        DrawTextW(draw.hDC, label, -1, &text,
+        DrawTextW(draw.hDC, visualLabel, -1, &text,
             DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
         const int midX = draw.rcItem.right - arrowWidth / 2 - ScaleForDpi(4, dpi);
         const int midY = (draw.rcItem.top + draw.rcItem.bottom) / 2;
@@ -2658,7 +2773,8 @@ void TranslationResultWindow::DrawOwnerDrawControl(const DRAWITEMSTRUCT& draw) {
     }
 
     const bool isHeaderButton = id == kMinimize || id == kClose;
-    const bool isHeaderModeButton = id == kSourceMode;
+    const bool usesHeaderUnderlay = id == kSourceMode ||
+        (id == kRecognizeAgain && !showWindowBorder_);
     const bool isCopyButton = id == kCopySource || id == kCopyTranslation;
     const bool isPrimary = id == kRetranslate || id == kSourceEditorSave;
     COLORREF background = isHeaderButton ? kWindowBackground :
@@ -2693,7 +2809,7 @@ void TranslationResultWindow::DrawOwnerDrawControl(const DRAWITEMSTRUCT& draw) {
             background, border);
     } else {
         HBRUSH underlay = CreateSolidBrush(
-            isHeaderModeButton ? kWindowBackground : kCardBackground);
+            usesHeaderUnderlay ? kWindowBackground : kCardBackground);
         FillRect(draw.hDC, &draw.rcItem, underlay);
         DeleteObject(underlay);
         FillRoundedRect(draw.hDC, draw.rcItem, radius, background, border);
@@ -2702,7 +2818,8 @@ void TranslationResultWindow::DrawOwnerDrawControl(const DRAWITEMSTRUCT& draw) {
     wchar_t label[96] = {};
     GetWindowTextW(draw.hwndItem, label, static_cast<int>(std::size(label)));
     const wchar_t* visualLabel = id == kMinimize ? L"\u2212" :
-        (id == kClose ? L"\u00d7" : label);
+        (id == kClose ? L"\u00d7" :
+        (id == kRecognizeAgain && !showWindowBorder_ ? L"\u21bb" : label));
     SetBkMode(draw.hDC, TRANSPARENT);
     SetTextColor(draw.hDC, disabled ? kTextMuted :
         (isPrimary ? RGB(255, 255, 255) : (isCopyButton ? kTextMuted : kTextPrimary)));
@@ -2786,6 +2903,13 @@ LRESULT TranslationResultWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wPara
         if (bottom) return HTBOTTOM;
         const int headerHitHeight = ScaleForDpi(showWindowBorder_ ? 58 : 30, LayoutDpi());
         if (point.y < headerHitHeight &&
+            !PointInChild(hwnd, showSourceToggle_, point) &&
+            !PointInChild(hwnd, providerCombo_, point) &&
+            !PointInChild(hwnd, sourceCombo_, point) &&
+            !PointInChild(hwnd, targetLabel_, point) &&
+            !PointInChild(hwnd, targetCombo_, point) &&
+            !PointInChild(hwnd, engineLabel_, point) &&
+            !PointInChild(hwnd, recognizeButton_, point) &&
             !PointInChild(hwnd, sourceModeButton_, point) &&
             !PointInChild(hwnd, pinButton_, point) &&
             !PointInChild(hwnd, minimizeButton_, point) &&
@@ -2876,7 +3000,8 @@ LRESULT TranslationResultWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wPara
         HDC hdc = reinterpret_cast<HDC>(wParam);
         HWND control = reinterpret_cast<HWND>(lParam);
         const bool onCard = control == sourceCountLabel_ || control == translationCountLabel_ ||
-            control == translationElapsedLabel_ || control == translationEdit_;
+            control == translationElapsedLabel_ || control == translationEdit_ ||
+            (control == stageLabel_ && !showWindowBorder_);
         SetBkColor(hdc, onCard ? kCardBackground : kWindowBackground);
         SetTextColor(hdc, control == targetLabel_ ||
             control == translationEdit_

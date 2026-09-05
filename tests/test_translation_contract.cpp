@@ -314,6 +314,87 @@ bool VisibleChildrenInsideClient(HWND window) {
     return true;
 }
 
+LRESULT HitTestChildCenter(HWND window, HWND child) {
+    RECT rect = {};
+    if (!window || !child || !GetWindowRect(child, &rect)) return HTERROR;
+    const int x = (rect.left + rect.right) / 2;
+    const int y = (rect.top + rect.bottom) / 2;
+    return SendMessageW(window, WM_NCHITTEST, 0, MAKELPARAM(x, y));
+}
+
+LRESULT HitTestScreenPoint(HWND window, POINT point) {
+    return SendMessageW(window, WM_NCHITTEST, 0,
+        MAKELPARAM(point.x, point.y));
+}
+
+bool VerifyCompactTitlebarHitTargets(HWND window, bool expectOcrControls) {
+    std::vector<int> ids = {3116, 3122, 3103, 3111, 3104, 3119, 3109};
+    if (expectOcrControls) {
+        ids.push_back(3114);
+        ids.push_back(3121);
+    }
+    std::vector<RECT> rects;
+    rects.reserve(ids.size());
+    for (int id : ids) {
+        HWND control = GetDlgItem(window, id);
+        RECT rect = {};
+        if (!control || !IsWindowVisible(control) ||
+            !GetWindowRect(control, &rect) ||
+            HitTestChildCenter(window, control) != HTCLIENT) {
+            return false;
+        }
+        for (const RECT& earlier : rects) {
+            RECT intersection = {};
+            if (IntersectRect(&intersection, &earlier, &rect)) return false;
+        }
+        rects.push_back(rect);
+    }
+    RECT showSource = {};
+    RECT provider = {};
+    if (!GetWindowRect(GetDlgItem(window, 3116), &showSource) ||
+        !GetWindowRect(GetDlgItem(window, 3122), &provider)) {
+        return false;
+    }
+    if (expectOcrControls) {
+        RECT engine = {};
+        RECT recognize = {};
+        RECT sourceFooter = {};
+        RECT translationEdit = {};
+        RECT target = {};
+        RECT client = {};
+        POINT clientOrigin = {};
+        if (!GetWindowRect(GetDlgItem(window, 3114), &engine) ||
+            !GetWindowRect(GetDlgItem(window, 3121), &recognize) ||
+            !GetWindowRect(GetDlgItem(window, 3106), &sourceFooter) ||
+            !GetWindowRect(GetDlgItem(window, 3102), &translationEdit) ||
+            !GetWindowRect(GetDlgItem(window, 3104), &target) ||
+            !GetClientRect(window, &client) ||
+            !ClientToScreen(window, &clientOrigin) ||
+            showSource.top != engine.top || showSource.right >= engine.left ||
+            recognize.right - recognize.left != recognize.bottom - recognize.top ||
+            sourceFooter.bottom > provider.top ||
+            provider.bottom > translationEdit.top ||
+            clientOrigin.x + client.right - target.right > 8) {
+            return false;
+        }
+        wchar_t recognizeName[64] = {};
+        GetWindowTextW(GetDlgItem(window, 3121), recognizeName,
+            static_cast<int>(std::size(recognizeName)));
+        if (std::wstring(recognizeName) != L"Recognize again") return false;
+        const POINT dragPoint = {
+            (showSource.right + engine.left) / 2,
+            (engine.top + engine.bottom) / 2,
+        };
+        return HitTestScreenPoint(window, dragPoint) == HTCAPTION;
+    }
+    if (provider.left - showSource.right < 2) return false;
+    const POINT dragPoint = {
+        (showSource.right + provider.left) / 2,
+        (showSource.top + showSource.bottom) / 2,
+    };
+    return HitTestScreenPoint(window, dragPoint) == HTCAPTION;
+}
+
 POINT ExpectedOcrResultPosition(const RECT& cropRect, int windowWidth, int windowHeight) {
     HMONITOR monitor = MonitorFromRect(&cropRect, MONITOR_DEFAULTTONEAREST);
     MONITORINFO info = { sizeof(info) };
@@ -1702,6 +1783,21 @@ int TestResultWindowLayoutContract() {
         return 181;
     }
     window.Show(nullptr);
+    window.SetShowWindowBorder(false);
+    window.SetStage(L"Ready");
+    if (IsWindowVisible(GetDlgItem(native, 3105))) return 571;
+    if (!VerifyCompactTitlebarHitTargets(native, true)) return 572;
+    window.SetStage(L"Translating...");
+    RECT stageRect = {};
+    RECT initialTranslationRect = {};
+    if (!IsWindowVisible(GetDlgItem(native, 3105)) ||
+        !GetWindowRect(GetDlgItem(native, 3105), &stageRect) ||
+        !GetWindowRect(GetDlgItem(native, 3102), &initialTranslationRect) ||
+        stageRect.top < initialTranslationRect.bottom) {
+        return 573;
+    }
+    window.SetStage(L"Ready");
+    if (IsWindowVisible(GetDlgItem(native, 3105))) return 574;
     const UINT initialDpi = GetDpiForWindow(native);
     const auto scaleForInitialDpi = [initialDpi](int value) {
         return (std::max)(1, MulDiv(value, static_cast<int>(initialDpi), 144));
@@ -1952,16 +2048,16 @@ int TestResultWindowLayoutContract() {
     RECT automaticSourceRect = {};
     RECT automaticTranslationRect = {};
     RECT splitterSourceFooterRect = {};
-    RECT splitterControlRect = {};
     if (!GetWindowRect(sourceControl, &automaticSourceRect) ||
         !GetWindowRect(translationControl, &automaticTranslationRect) ||
-        !GetWindowRect(copySourceControl, &splitterSourceFooterRect) ||
-        !GetWindowRect(GetDlgItem(native, 3104), &splitterControlRect)) {
+        !GetWindowRect(copySourceControl, &splitterSourceFooterRect)) {
         return 170;
     }
+    const int splitterGap = (std::max)(1,
+        MulDiv(6, static_cast<int>(GetDpiForWindow(native)), 144));
     POINT splitterPoint = {
         (splitterSourceFooterRect.left + splitterSourceFooterRect.right) / 2,
-        (splitterSourceFooterRect.bottom + splitterControlRect.top) / 2,
+        splitterSourceFooterRect.bottom + splitterGap / 2,
     };
     ScreenToClient(native, &splitterPoint);
     const int dragDistance = 40;
@@ -1982,13 +2078,12 @@ int TestResultWindowLayoutContract() {
         return 171;
     }
 
-    if (!GetWindowRect(copySourceControl, &splitterSourceFooterRect) ||
-        !GetWindowRect(GetDlgItem(native, 3104), &splitterControlRect)) {
+    if (!GetWindowRect(copySourceControl, &splitterSourceFooterRect)) {
         return 172;
     }
     splitterPoint = {
         (splitterSourceFooterRect.left + splitterSourceFooterRect.right) / 2,
-        (splitterSourceFooterRect.bottom + splitterControlRect.top) / 2,
+        splitterSourceFooterRect.bottom + splitterGap / 2,
     };
     ScreenToClient(native, &splitterPoint);
     SendMessageW(native, WM_LBUTTONDBLCLK, MK_LBUTTON,
@@ -2048,12 +2143,11 @@ int TestResultWindowLayoutContract() {
     window.SetShowSourceText(true);
 
     RECT targetComboRect = {};
-    // The card layout reserves room for the in-window "Show source" switch,
-    // so narrow-DPI environments cannot keep the old two-column 220px floor.
-    // It must still leave a usable target-language selector before the window
-    // is resized by the DPI matrix below.
+    // The compact title bar reserves room for the in-window source switch,
+    // OCR controls, and system actions. The target selector still needs a
+    // 120-DIP hit target before the DPI matrix below.
     if (!GetWindowRect(GetDlgItem(native, 3104), &targetComboRect) ||
-        targetComboRect.right - targetComboRect.left < 120) {
+        targetComboRect.right - targetComboRect.left < scaleForInitialDpi(120)) {
         return 57;
     }
 
@@ -2113,7 +2207,8 @@ int TestResultWindowLayoutContract() {
         if (!GetWindowRect(GetDlgItem(native, 3109), &closeRect) ||
             closeRect.right - closeRect.left != scaleForResultDpi(30, targetDpi) ||
             closeRect.bottom - closeRect.top != scaleForResultDpi(30, targetDpi) ||
-            !VisibleChildrenInsideClient(native)) {
+            !VisibleChildrenInsideClient(native) ||
+            !VerifyCompactTitlebarHitTargets(native, true)) {
             return 109;
         }
 
@@ -2203,6 +2298,21 @@ int TestResultWindowLayoutContract() {
     SendMessageW(throwingNative, WM_CLOSE, 0, 0);
     PumpMessagesFor(20);
     if (throwingWindow.IsValid()) return 163;
+
+    const translation::TranslationLaunchContext selectedLaunchContext{
+        translation::TranslationSourceMode::SelectedText, sourceRect};
+    translation::TranslationResultWindow selectedWindow(
+        request, selectedLaunchContext,
+        [](translation::TranslationResultWindow::Command) {});
+    if (!selectedWindow.IsValid()) return 575;
+    const HWND selectedNative = selectedWindow.WindowHandle();
+    selectedWindow.Show(nullptr);
+    selectedWindow.SetShowWindowBorder(false);
+    selectedWindow.SetStage(L"Ready");
+    if (!VerifyCompactTitlebarHitTargets(selectedNative, false)) return 576;
+    SendMessageW(selectedNative, WM_CLOSE, 0, 0);
+    PumpMessagesFor(20);
+    if (selectedWindow.IsValid()) return 577;
     return 0;
 }
 
@@ -5427,6 +5537,13 @@ int TestResultWindowPreShowVisibilityContract() {
 }
 
 int main() {
+    wchar_t testDataDirectory[2] = {};
+    if (GetEnvironmentVariableW(
+            L"ZENCROP_DATA_DIR", testDataDirectory, ARRAYSIZE(testDataDirectory)) == 0) {
+        std::cerr << "ZENCROP_DATA_DIR must be set by tests\\build_and_run.bat; "
+                     "refusing to access the user's application data.\n";
+        return 2;
+    }
     if (OptionalChineseDisplay()) {
         S::InitLanguage();
         std::cout << "visual chinese=" << (S::IsChinese() ? 1 : 0) << "\n";
