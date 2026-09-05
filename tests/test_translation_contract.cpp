@@ -1746,6 +1746,32 @@ int TestResultWindowLayoutContract() {
         return 106;
     }
 
+    {
+        translation::TranslationResultWindow initiallyHiddenWindow(
+            request, launchContext,
+            [](translation::TranslationResultWindow::Command) {});
+        if (!initiallyHiddenWindow.IsValid()) return 182;
+        initiallyHiddenWindow.SetShowSourceText(false);
+        initiallyHiddenWindow.SetSourceText(
+            L"A short source paragraph that must not expand the window when shown.");
+        initiallyHiddenWindow.SetTranslationText(L"Short translation.");
+        initiallyHiddenWindow.Show(nullptr);
+        PumpMessagesFor(250);
+        RECT hiddenWindowRect = {};
+        if (!GetWindowRect(initiallyHiddenWindow.WindowHandle(), &hiddenWindowRect)) {
+            return 183;
+        }
+        initiallyHiddenWindow.SetShowSourceText(true);
+        PumpMessagesFor(250);
+        RECT shownWindowRect = {};
+        if (!GetWindowRect(initiallyHiddenWindow.WindowHandle(), &shownWindowRect) ||
+            shownWindowRect.bottom - shownWindowRect.top >
+                hiddenWindowRect.bottom - hiddenWindowRect.top +
+                    scaleForInitialDpi(120)) {
+            return 184;
+        }
+    }
+
     window.SetOcrEngineLabel(L"OCR: local");
     std::wstring source = OptionalOcrFixtureText();
     if (source.empty()) source = L"Hello \x4E16\x754C \U0001F30D";

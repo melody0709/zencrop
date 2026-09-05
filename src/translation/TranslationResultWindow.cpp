@@ -598,6 +598,7 @@ TranslationResultWindow::TranslationResultWindow(
             };
             sourcePreviewCallbacks.onContentMetrics = [this](
                 const OcrMarkdownPreviewHost::PreviewContentMetrics& metrics) {
+                if (!showSourceText_) return;
                 sourcePreviewMetricsValid_ = true;
                 sourcePreviewContentHeight_ = metrics.scrollHeight;
                 if (!sourcePreviewRenderReady_) {
@@ -1799,6 +1800,10 @@ void TranslationResultWindow::SetShowSourceText(bool show) {
         SetFocus(showSourceToggle_);
     }
     showSourceText_ = show;
+    // The hidden preview has no usable layout bounds.  Do not let a height
+    // measured for that state drive the first visible layout.
+    sourcePreviewMetricsValid_ = false;
+    sourcePreviewContentHeight_ = 0;
     SetControlVisible(copySourceButton_, show);
     SetControlVisible(sourceCountLabel_, show);
     UpdateSourceEditorFooterActions();
