@@ -226,12 +226,12 @@ void InitializePage(HWND page, PageState& state) {
     SetText(page, IDC_TRANSLATE_SELECTION_HOTKEY_LABEL,
         S::IsChinese() ? L"划词翻译快捷键：" : L"Selection hotkey:");
     SetText(page, IDC_TRANSLATE_SELECTION_COPY_FALLBACK,
-        S::IsChinese() ? L"UIA 失败时允许模拟复制" :
-            L"Allow simulated copy when UIA fails");
+        S::IsChinese() ? L"允许通过复制保留选区格式" :
+            L"Allow copy to preserve selection formatting");
     SetText(page, IDC_TRANSLATE_SELECTION_COPY_HINT,
         S::IsChinese()
-            ? L"模拟复制会触发 Ctrl+C；选中文字可能进入剪贴板历史、云同步或管理器，原剪贴板仅尽力恢复。"
-            : L"Ctrl+C may expose selected text to clipboard history, cloud sync, or managers; prior content is restored best-effort.");
+            ? L"会触发 Ctrl+C 读取 Markdown/HTML/编辑器格式；选区可能进入剪贴板历史、云同步或管理器，原内容仅尽力恢复。"
+            : L"Uses Ctrl+C to read Markdown, HTML, or editor formats; the selection may reach clipboard history, sync, or managers, and prior content is restored best-effort.");
     SetText(page, IDC_TRANSLATE_ENABLED,
         S::IsChinese() ? L"启用 OCR 来源翻译" :
             L"Enable OCR-source translation");

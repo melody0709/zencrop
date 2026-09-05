@@ -84,7 +84,7 @@
       bodyHost.appendChild(status);
       saveControl = options.addActions(toolbar, block, content, function () { return valid; }, validate);
       render();
-      return { actionsAdded: true, saveControl: saveControl, cleanup: function () { if (timer) window.clearTimeout(timer); },
+      return { saveControl: saveControl, cleanup: function () { if (timer) window.clearTimeout(timer); },
         focus: function () { source.focus(); source.select(); }, readContent: content, canSave: function () { return valid; }, validateBeforeSave: validate };
     };
   }

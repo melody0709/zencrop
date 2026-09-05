@@ -823,6 +823,11 @@ LRESULT OcrDashboardWindow::MessageHandler(HWND hwnd, UINT msg, WPARAM wParam, L
         ScheduleSourceRailThumbnailWarmup();
         return 0;
     case WM_TIMER: {
+        if (m_pendingPreviewSelectionTimer != 0 &&
+            static_cast<UINT_PTR>(wParam) == m_pendingPreviewSelectionTimer) {
+            CancelPendingPreviewSelection(L"timeout");
+            return 0;
+        }
         // D-I: timer-id classification (IDs match product TIMER_*).
         const DashboardTimerRouteKind timerKind =
             DashboardClassifyTimerId(static_cast<UINT_PTR>(wParam));
@@ -931,6 +936,12 @@ LRESULT OcrDashboardWindow::MessageHandler(HWND hwnd, UINT msg, WPARAM wParam, L
             if (id == ID_DASH_SOURCE) requestedMode = DashboardTextMode::Source;
             else if (id == ID_DASH_TEXT) requestedMode = DashboardTextMode::Text;
             else if (id == ID_DASH_JSON) requestedMode = DashboardTextMode::Json;
+
+            if (requestedMode != DashboardTextMode::Preview &&
+                DashboardStateTextModeEffective(m_dashboardState) == DashboardTextMode::Preview &&
+                !ResolvePreviewEditorBeforeTextMode(requestedMode)) {
+                return 0;
+            }
 
             const bool sameMode =
                 DashboardStateTextModeEffective(m_dashboardState) == requestedMode;
@@ -1280,6 +1291,7 @@ LRESULT OcrDashboardWindow::MessageHandler(HWND hwnd, UINT msg, WPARAM wParam, L
         KillTimer(hwnd, TIMER_SOURCE_THUMBNAIL_WARMUP);
         KillTimer(hwnd, TIMER_ACTIVE_WORK);
         KillTimer(hwnd, TIMER_SEARCH_DEBOUNCE);
+        CancelPendingPreviewSelection(L"window_destroyed");
         m_sourceRailThumbnailWarmupPending = false;
         DashboardStateSetSourceRailThumbnailWarmupPending(m_dashboardState, false);
         MSG pendingAsync = {};
@@ -2731,6 +2743,11 @@ LRESULT CALLBACK OcrDashboardWindow::EditSubclassProc(HWND hwnd, UINT msg, WPARA
         }
 
         if (msg == WM_MOUSEWHEEL) {
+            if ((GET_KEYSTATE_WPARAM(wParam) & MK_CONTROL) != 0) {
+                self->AdjustResultTextFontSize(
+                    GET_WHEEL_DELTA_WPARAM(wParam) > 0 ? 1 : -1, false);
+                return 0;
+            }
             if (!self->m_imageArea) return 0;
             POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
             if (!ScreenToClient(self->m_imageArea, &pt)) return 0;
@@ -2772,11 +2789,14 @@ LRESULT CALLBACK OcrDashboardWindow::EditSubclassProc(HWND hwnd, UINT msg, WPARA
             } else if (wParam == L'O') {
                 self->ImportImageFiles();
                 return 0;
+            } else if (wParam == VK_OEM_PLUS || wParam == VK_ADD) {
+                self->AdjustResultTextFontSize(1, false);
+                return 0;
+            } else if (wParam == VK_OEM_MINUS || wParam == VK_SUBTRACT) {
+                self->AdjustResultTextFontSize(-1, false);
+                return 0;
             } else if (wParam == L'0') {
-                self->m_dashboardState.canvasView.viewMode = ImageViewMode::Fit;
-                self->AutoFitImage();
-                self->ShowZoomHud();
-                InvalidateRect(self->m_imageArea, nullptr, FALSE);
+                self->AdjustResultTextFontSize(0, true);
                 return 0;
             } else if (wParam == VK_UP || wParam == VK_DOWN || wParam == VK_HOME || wParam == VK_END) {
                 const auto& visible = DashboardStateVisibleHistoryIndices(self->m_dashboardState);

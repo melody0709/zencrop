@@ -11,6 +11,12 @@
     var pendingSave = null;
     var pendingRestore = null;
 
+    function notifyPendingChanged() {
+      if (typeof options.onPendingChanged === "function") {
+        options.onPendingChanged(!!pendingSave || !!pendingRestore);
+      }
+    }
+
     function statusNode() {
       if (!active || !active.host) return null;
       var status = active.host.querySelector(".ocr-preview-editor-status");
@@ -45,8 +51,10 @@
       });
       if (active.host && active.host.parentNode) active.host.parentNode.removeChild(active.host);
       active = null;
+      var hadPending = !!pendingSave || !!pendingRestore;
       pendingSave = null;
       pendingRestore = null;
+      if (hadPending) notifyPendingChanged();
       options.onClosed(restoreOriginal);
     }
 
@@ -97,6 +105,7 @@
         return false;
       }
       pendingSave = { id: id, token: source.context.renderToken, content: content, block: block };
+      notifyPendingChanged();
       refreshControl();
       options.postMessage({
         type: "previewBlockSave", id: id, renderToken: source.context.renderToken, content: content,
@@ -112,6 +121,7 @@
       var source = validSource(block);
       if (!source) return false;
       pendingRestore = { id: id, token: source.context.renderToken, block: block };
+      notifyPendingChanged();
       refreshControl();
       options.postMessage({
         type: "previewBlockRestore", id: id, renderToken: source.context.renderToken,
@@ -126,6 +136,7 @@
       if (!pendingSave || String(data.renderToken || "") !== pendingSave.token || String(data.id || "") !== pendingSave.id) return null;
       var result = pendingSave;
       pendingSave = null;
+      notifyPendingChanged();
       refreshControl();
       return result;
     }
@@ -134,6 +145,7 @@
       if (!pendingRestore || String(data.renderToken || "") !== pendingRestore.token || String(data.id || "") !== pendingRestore.id) return null;
       var result = pendingRestore;
       pendingRestore = null;
+      notifyPendingChanged();
       refreshControl();
       return result;
     }

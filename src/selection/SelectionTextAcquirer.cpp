@@ -773,13 +773,6 @@ SelectionTextAcquirer::SelectionTextAcquirer(HWND deliveryWindow)
                     snapshot.generation) {
                 result.error = SelectionAcquisitionError::Cancelled;
                 result.diagnosticCode = L"ACQUISITION_SUPERSEDED";
-            } else if (uia.status == CandidateStatus::Success) {
-                result.error = SelectionAcquisitionError::None;
-                result.source = SelectionAcquisitionSource::UiAutomation;
-                result.text = uia.text;
-                result.anchorRect = ChooseSelectionAnchor(
-                    uia.rectangles, snapshot.cursor);
-                result.diagnosticCode = uia.diagnosticCode;
             } else if (uia.status == CandidateStatus::Secure) {
                 result.error = SelectionAcquisitionError::SecureField;
                 result.diagnosticCode = uia.diagnosticCode;
@@ -787,12 +780,31 @@ SelectionTextAcquirer::SelectionTextAcquirer(HWND deliveryWindow)
                 result.error = SelectionAcquisitionError::TextTooLong;
                 result.diagnosticCode = uia.diagnosticCode;
             } else if (!snapshot.copyFallbackEnabled) {
-                result.error = SelectionAcquisitionError::UiaSelectionUnavailable;
+                result.error = uia.status == CandidateStatus::Success
+                    ? SelectionAcquisitionError::None
+                    : SelectionAcquisitionError::UiaSelectionUnavailable;
+                if (uia.status == CandidateStatus::Success) {
+                    result.source = SelectionAcquisitionSource::UiAutomation;
+                    result.content.plainText = uia.text;
+                    result.content.kind = SelectionContentKind::Plain;
+                    result.content.fidelity = SelectionFidelity::Plain;
+                    result.anchorRect = ChooseSelectionAnchor(
+                        uia.rectangles, snapshot.cursor);
+                }
                 result.diagnosticCode = uia.diagnosticCode;
             } else if (ShouldSuppressSyntheticCopyForTarget(
                            snapshot.topLevelWindow)) {
-                result.error =
-                    SelectionAcquisitionError::SyntheticCopySuppressed;
+                result.error = uia.status == CandidateStatus::Success
+                    ? SelectionAcquisitionError::None
+                    : SelectionAcquisitionError::SyntheticCopySuppressed;
+                if (uia.status == CandidateStatus::Success) {
+                    result.source = SelectionAcquisitionSource::UiAutomation;
+                    result.content.plainText = uia.text;
+                    result.content.kind = SelectionContentKind::Plain;
+                    result.content.fidelity = SelectionFidelity::Plain;
+                    result.anchorRect = ChooseSelectionAnchor(
+                        uia.rectangles, snapshot.cursor);
+                }
                 result.diagnosticCode = uia.diagnosticCode;
                 if (!result.diagnosticCode.empty()) {
                     result.diagnosticCode += L";";
@@ -800,7 +812,26 @@ SelectionTextAcquirer::SelectionTextAcquirer(HWND deliveryWindow)
                 result.diagnosticCode +=
                     L"COPY_FALLBACK_SUPPRESSED_CONSOLE_TARGET";
             } else {
-                result = state->clipboard->Acquire(snapshot);
+                SelectionAcquisitionResult copied =
+                    state->clipboard->Acquire(snapshot);
+                if (IsSelectionResultSuccess(copied)) {
+                    result = std::move(copied);
+                    result.anchorRect = ChooseSelectionAnchor(
+                        uia.rectangles, snapshot.cursor);
+                } else if (uia.status == CandidateStatus::Success) {
+                    result.error = SelectionAcquisitionError::None;
+                    result.source = SelectionAcquisitionSource::UiAutomation;
+                    result.clipboardDisposition = copied.clipboardDisposition;
+                    result.content.plainText = uia.text;
+                    result.content.kind = SelectionContentKind::Plain;
+                    result.content.fidelity = SelectionFidelity::Plain;
+                    result.anchorRect = ChooseSelectionAnchor(
+                        uia.rectangles, snapshot.cursor);
+                    result.diagnosticCode = L"UIA_PLAIN_AFTER_" +
+                        copied.diagnosticCode;
+                } else {
+                    result = std::move(copied);
+                }
                 if (result.diagnosticCode.empty()) {
                     result.diagnosticCode = uia.diagnosticCode;
                 } else if (!uia.diagnosticCode.empty()) {

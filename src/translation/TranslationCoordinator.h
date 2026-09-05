@@ -4,11 +4,13 @@
 #include "TranslationLaunchContext.h"
 #include "TranslationResultWindow.h"
 #include "core/Settings.h"
+#include "selection/SelectionStructuredContent.h"
 
 #include <windows.h>
 
 #include <cstdint>
 #include <memory>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -67,6 +69,14 @@ public:
         HWND owner,
         const TranslationLaunchContext& context,
         std::wstring sourceText);
+    TranslationStartResult StartSelection(
+        HWND owner,
+        const TranslationLaunchContext& context,
+        selection::SelectionContent content);
+    bool RequestPreviewSelection(
+        HWND topLevelWindow,
+        uint64_t requestGeneration,
+        std::function<void(selection::SelectionContent)> callback);
     // Starts a block-aware, windowless translation workflow. Segment ids are
     // preserved in the final completion so a document projection can rebuild
     // Markdown and PreviewBlocks without touching the OCR model.
@@ -130,6 +140,22 @@ private:
     std::unordered_set<std::wstring> completedBatchRequestIds_;
     size_t nextSegmentIndex_ = 0;
     ULONGLONG translationStartedTick_ = 0;
+    enum class StructuredTranslationMode {
+        None,
+        LlmBlocks,
+        DirectLeaves,
+        LeafRetry,
+    };
+    std::shared_ptr<const selection::StructuredSelectionPlan> structuredPlan_;
+    StructuredTranslationMode structuredTranslationMode_ =
+        StructuredTranslationMode::None;
+    std::wstring structuredMarkerNonce_;
+    std::unordered_map<std::wstring, std::vector<std::wstring>>
+        structuredBlockLeaves_;
+    std::unordered_map<std::wstring, size_t> structuredLeafMarkerIndexes_;
+    std::unordered_map<std::wstring, std::wstring> structuredLeafTranslations_;
+    std::unordered_set<std::wstring> structuredInvalidBlocks_;
+    bool structuredRetryAttempted_ = false;
 
     void CancelActiveTranslation();
     void CloseOcrDeliveryGate();
@@ -144,6 +170,22 @@ private:
     void StartTranslationForSource(const std::wstring& source,
                                    const std::wstring& sourceLanguage,
                                    const std::wstring& targetLanguage);
+    void HandlePreparedStructuredSelection(
+        uint64_t workflowGeneration,
+        selection::SelectionContent content,
+        const std::wstring& token,
+        uint64_t planGeneration,
+        bool success,
+        const std::wstring& planJson,
+        const std::wstring& errorCode);
+    void StartStructuredTranslation(
+        std::shared_ptr<const selection::StructuredSelectionPlan> plan,
+        const std::wstring& sourceLanguage,
+        const std::wstring& targetLanguage);
+    bool AcceptStructuredTranslation(
+        const TranslationSegment& translation);
+    bool BeginStructuredLeafRetry(uint64_t generation);
+    void FinalizeStructuredTranslation(bool degraded);
 };
 
 } // namespace translation

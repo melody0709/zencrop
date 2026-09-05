@@ -5,6 +5,7 @@
 #include "core/Strings.h"
 #include "core/WideStringUtils.h"
 #include "ocr/ui/OcrMarkdownPreviewHost.h"
+#include "selection/SelectionTypes.h"
 #include "window/AlwaysOnTop.h"
 
 #include <commctrl.h>
@@ -66,11 +67,21 @@ constexpr int kDwmWindowCornerPreference = 33;
 constexpr int kDwmBorderColor = 34;
 constexpr DWORD kDwmRoundCornerPreference = 2;
 constexpr UINT kTranslationChildKeyboardMessage = WM_APP + 74;
+constexpr UINT kTranslationChildZoomMessage = WM_APP + 75;
 constexpr WPARAM kTranslationChildKeyShift = static_cast<WPARAM>(1) << 16;
 constexpr UINT_PTR kTranslationChildKeyboardSubclass = 1;
 
+// Track visibility through the control's own WS_VISIBLE style, not
+// IsWindowVisible(): the latter also reports FALSE for children of a
+// not-yet-shown top-level window, so hiding a control before Show() was
+// dropped as a no-op. The control then kept both its style and its startup
+// geometry and reappeared once the parent was displayed, leaving a stale
+// source footer ("Copy" / "Characters: N") over the translation card.
 void SetControlVisible(HWND control, bool visible) {
-    if (!control || (IsWindowVisible(control) != FALSE) == visible) return;
+    if (!control) return;
+    const bool currentlyVisible =
+        (GetWindowLongPtrW(control, GWL_STYLE) & WS_VISIBLE) != 0;
+    if (currentlyVisible == visible) return;
     ShowWindow(control, visible ? SW_SHOW : SW_HIDE);
 }
 
@@ -443,6 +454,32 @@ POINT CalculateWindowPositionNearSource(const RECT& sourceRect, int windowWidth,
 LRESULT CALLBACK TranslationChildKeyboardProc(HWND hwnd, UINT message,
                                               WPARAM wParam, LPARAM lParam,
                                               UINT_PTR, DWORD_PTR) {
+    if (message == WM_MOUSEWHEEL &&
+        (GET_KEYSTATE_WPARAM(wParam) & MK_CONTROL) != 0) {
+        HWND parent = GetParent(hwnd);
+        if (parent) {
+            SendMessageW(parent, kTranslationChildZoomMessage,
+                GET_WHEEL_DELTA_WPARAM(wParam) > 0 ? 1 : static_cast<WPARAM>(-1),
+                reinterpret_cast<LPARAM>(hwnd));
+        }
+        return 0;
+    }
+    if (message == WM_KEYDOWN &&
+        (GetKeyState(VK_CONTROL) & 0x8000) != 0 &&
+        (wParam == VK_OEM_PLUS || wParam == VK_ADD ||
+         wParam == VK_OEM_MINUS || wParam == VK_SUBTRACT || wParam == L'0')) {
+        HWND parent = GetParent(hwnd);
+        if (parent) {
+            const WPARAM step = (wParam == VK_OEM_PLUS || wParam == VK_ADD)
+                ? 1
+                : (wParam == VK_OEM_MINUS || wParam == VK_SUBTRACT)
+                    ? static_cast<WPARAM>(-1)
+                    : 0;
+            SendMessageW(parent, kTranslationChildZoomMessage, step,
+                reinterpret_cast<LPARAM>(hwnd));
+        }
+        return 0;
+    }
     if (message == WM_KEYDOWN && (wParam == VK_TAB || wParam == VK_ESCAPE)) {
         HWND parent = GetParent(hwnd);
         if (parent) {
@@ -495,6 +532,7 @@ TranslationResultWindow::TranslationResultWindow(
         kTranslationPreviewZoomMin, kTranslationPreviewZoomMax);
     sourceFontSize_ = (std::clamp)(initialSettings.sourceFontSize,
         kTranslationSourceFontSizeMin, kTranslationSourceFontSizeMax);
+    sourceEditFontSize_ = sourceFontSize_;
     const UINT initialDpi = MonitorDpi(
         MonitorFromRect(&sourceRect_, MONITOR_DEFAULTTONEAREST));
     const SIZE initialSize = CalculateInitialTranslationWindowSize(sourceRect_, initialDpi);
@@ -545,6 +583,10 @@ TranslationResultWindow::TranslationResultWindow(
                 [persistPreviewZoomFactor](double zoomFactor) {
                     persistPreviewZoomFactor(true, zoomFactor);
                 };
+            sourcePreviewCallbacks.onPreviewEditorState = [this](bool, bool, bool, bool, bool) {
+                UpdateSourceModeButton();
+                UpdateSourceEditorFooterActions();
+            };
             sourcePreviewCallbacks.onReady = [this]() {
                 sourcePreviewFailed_ = false;
                 if (sourcePreview_) {
@@ -591,9 +633,64 @@ TranslationResultWindow::TranslationResultWindow(
                 UpdateSourcePreviewVisibility();
                 if (!sourceMarkdownText_.empty()) ResizeToAutomaticWindowSize();
             };
-            sourcePreviewCallbacks.onPreviewDocumentEdit = [this]() {
-                SetSourceDisplayMode(SourceDisplayMode::Source, true);
+            sourcePreviewCallbacks.onPreviewDocumentEdit = [this](bool sourceRequired) {
+                if (busy_) return;
+                if (sourceRequired) {
+                    SetSourceDisplayMode(SourceDisplayMode::Source, true);
+                } else if (sourcePreview_ && sourceDisplayMode_ == SourceDisplayMode::Preview) {
+                    sourcePreview_->StartDocumentEditing();
+                }
             };
+            sourcePreviewCallbacks.onPreviewDocumentSave = [this](
+                const std::wstring& content,
+                const std::wstring& renderToken) {
+                if (!sourcePreview_) return;
+                if (busy_) {
+                    switchToSourceAfterDocumentSave_ = false;
+                    sourcePreview_->PostPreviewDocumentSaveResult(renderToken, false, L"busy");
+                    return;
+                }
+                const std::wstring normalized = NormalizeCardTextForWrap(content);
+                sourceMarkdownText_ = normalized;
+                suppressCommands_ = true;
+                SetControlText(sourceEdit_, normalized);
+                suppressCommands_ = false;
+                SetControlText(sourceCountLabel_, CharacterCountText(normalized));
+                UpdateActionAvailability();
+                MarkDirty();
+                sourcePreview_->PostPreviewDocumentSaveResult(renderToken, true);
+
+                const bool switchMode = switchToSourceAfterDocumentSave_;
+                switchToSourceAfterDocumentSave_ = false;
+                if (switchMode) {
+                    resolvingDocumentEditorSwitch_ = true;
+                    SetSourceDisplayMode(SourceDisplayMode::Source, true);
+                    resolvingDocumentEditorSwitch_ = false;
+                } else {
+                    sourcePreviewMetricsValid_ = false;
+                    sourcePreviewRenderReady_ = false;
+                    sourcePreview_->RenderMarkdown(-1, sourceMarkdownText_, true);
+                }
+                ResizeToAutomaticWindowSize();
+            };
+            sourcePreviewCallbacks.onPreviewDocumentCancel = [this]() {
+                switchToSourceAfterDocumentSave_ = false;
+                UpdateSourceEditorFooterActions();
+            };
+            sourcePreviewCallbacks.onPreviewSelectionState =
+                [this](bool hasSelection, uint64_t generation) {
+                    UpdatePreviewSelectionState(
+                        PreviewSelectionHost::Source,
+                        hasSelection, generation);
+                };
+            sourcePreviewCallbacks.onStructuredSelectionPrepared =
+                [this](const std::wstring& token, uint64_t generation,
+                       bool success, const std::wstring& planJson,
+                       const std::wstring& errorCode) {
+                    HandleStructuredSelectionPrepared(
+                        PreviewSelectionHost::Source, token, generation,
+                        success, planJson, errorCode);
+                };
             if (!sourcePreview_->Create(window_, sourceContentRect_,
                 std::move(sourcePreviewCallbacks))) {
                 sourcePreviewFailed_ = true;
@@ -651,6 +748,20 @@ TranslationResultWindow::TranslationResultWindow(
             UpdateTranslationPreviewVisibility();
             if (!translationMarkdownText_.empty()) ResizeToAutomaticWindowSize();
         };
+        previewCallbacks.onPreviewSelectionState =
+            [this](bool hasSelection, uint64_t generation) {
+                UpdatePreviewSelectionState(
+                    PreviewSelectionHost::Translation,
+                    hasSelection, generation);
+            };
+        previewCallbacks.onStructuredSelectionPrepared =
+            [this](const std::wstring& token, uint64_t generation,
+                   bool success, const std::wstring& planJson,
+                   const std::wstring& errorCode) {
+                HandleStructuredSelectionPrepared(
+                    PreviewSelectionHost::Translation, token, generation,
+                    success, planJson, errorCode);
+            };
         if (!translationPreview_->Create(window_, translationContentRect_,
             std::move(previewCallbacks))) {
             translationPreviewFailed_ = true;
@@ -778,7 +889,7 @@ void TranslationResultWindow::CreateControls(const TranslationRequest& request) 
     titleFont_ = TitleFont(LayoutDpi());
     textFontSize_ = (std::clamp)(LoadOcrSettings().ocrFontSize, 8, 32);
     textFont_ = TextFont(textFontSize_, LayoutDpi());
-    sourceTextFont_ = TextFont(sourceFontSize_, LayoutDpi());
+    sourceTextFont_ = TextFont(sourceEditFontSize_, LayoutDpi());
     auto create = [&](DWORD exStyle, const wchar_t* cls, const wchar_t* text,
                       DWORD style, int id) {
         HWND control = CreateWindowExW(exStyle, cls, text, style,
@@ -845,6 +956,12 @@ void TranslationResultWindow::CreateControls(const TranslationRequest& request) 
         S::IsChinese() ? L"\u590d\u5236" : L"Copy", buttonStyle, kCopySource);
     copyTranslationButton_ = create(0, L"BUTTON",
         S::IsChinese() ? L"\u590d\u5236" : L"Copy", buttonStyle, kCopyTranslation);
+    sourceEditorCancelButton_ = create(0, L"BUTTON",
+        S::IsChinese() ? L"\u53d6\u6d88" : L"Cancel", buttonStyle, kSourceEditorCancel);
+    sourceEditorSaveButton_ = create(0, L"BUTTON",
+        S::IsChinese() ? L"\u4fdd\u5b58" : L"Save", buttonStyle, kSourceEditorSave);
+    ShowWindow(sourceEditorCancelButton_, SW_HIDE);
+    ShowWindow(sourceEditorSaveButton_, SW_HIDE);
     if (sourceMode_ == TranslationSourceMode::OcrImage) {
         recognizeButton_ = create(0, L"BUTTON",
             S::IsChinese() ? L"\u91cd\u65b0\u8bc6\u522b" : L"Recognize again",
@@ -865,8 +982,9 @@ void TranslationResultWindow::CreateControls(const TranslationRequest& request) 
         S::IsChinese() ? L"关闭" : L"Close", buttonStyle, kClose);
 
     for (HWND control : {sourceEdit_, translationEdit_, engineLabel_, showSourceToggle_, sourceCombo_,
-                         targetCombo_, providerCombo_, copySourceButton_, copyTranslationButton_,
-                         recognizeButton_, retranslateButton_, cancelButton_, pinButton_,
+                          targetCombo_, providerCombo_, copySourceButton_, copyTranslationButton_,
+                          sourceEditorCancelButton_, sourceEditorSaveButton_, recognizeButton_,
+                          retranslateButton_, cancelButton_, pinButton_,
                          sourceModeButton_, minimizeButton_, closeButton_}) {
         if (control) {
             SetWindowSubclass(control, TranslationChildKeyboardProc,
@@ -1113,8 +1231,10 @@ void TranslationResultWindow::Show(
 
 void TranslationResultWindow::PrepareForReuse(const RECT& sourceRect) {
     StopAutomaticResizeAnimation(false);
+    CancelPendingStructuredSelection(L"superseded");
     sourceRect_ = sourceRect;
 }
+
 
 void TranslationResultWindow::PositionNearSourceRect() {
     if (!window_ || sourceRect_.right <= sourceRect_.left ||
@@ -1467,7 +1587,11 @@ void TranslationResultWindow::SetTranslationText(const std::wstring& text) {
     translationPreviewContentHeight_ = 0;
     SetControlText(translationEdit_, displayText);
     if (waitForPreview) {
-        translationPreview_->RenderMarkdown(-1, displayText, true);
+        if (busy_ && translationPreview_->IsReady()) {
+            translationPreview_->RenderTransientMarkdown(-1, displayText, true);
+        } else {
+            translationPreview_->RenderMarkdown(-1, displayText, true);
+        }
         UpdateTranslationPreviewVisibility();
     }
     SetControlText(translationCountLabel_, CharacterCountText(displayText));
@@ -1494,12 +1618,23 @@ void TranslationResultWindow::ClearTranslationElapsed() {
 void TranslationResultWindow::SetBusy(bool busy) {
     if (busy_ == busy) return;
     busy_ = busy;
-    if (!busy) EndOcrElapsed();
+    if (!busy) {
+        EndOcrElapsed();
+        if (translationPreview_ && translationPreview_->IsReady() &&
+            !translationPreviewFailed_ && !translationMarkdownText_.empty()) {
+            translationPreviewMetricsValid_ = false;
+            translationPreviewRenderReady_ = false;
+            translationPreviewContentHeight_ = 0;
+            translationPreview_->RenderMarkdown(-1, translationMarkdownText_, true);
+        }
+    }
     EnableWindow(engineLabel_, !busy);
     EnableWindow(recognizeButton_, !busy);
     EnableWindow(sourceCombo_, !busy);
     EnableWindow(targetCombo_, !busy);
     EnableWindow(sourceEdit_, !busy);
+    UpdateSourcePreviewVisibility();
+    UpdateTranslationPreviewVisibility();
     UpdateActionAvailability();
     SetControlVisible(retranslateButton_, !busy_ && !retryOcrMode_);
     SetControlVisible(cancelButton_, busy_);
@@ -1510,6 +1645,12 @@ void TranslationResultWindow::SetSourceDisplayMode(
     if (mode == SourceDisplayMode::Preview &&
         (!sourcePreview_ || sourcePreviewFailed_)) {
         mode = SourceDisplayMode::Source;
+    }
+    if (mode == SourceDisplayMode::Source &&
+        sourceDisplayMode_ == SourceDisplayMode::Preview &&
+        !resolvingDocumentEditorSwitch_ &&
+        !ResolveDocumentEditorBeforeSourceMode()) {
+        return;
     }
     sourceDisplayMode_ = mode;
     if (mode == SourceDisplayMode::Preview) {
@@ -1533,14 +1674,47 @@ void TranslationResultWindow::UpdateSourceModeButton() {
         sourceDisplayMode_ == SourceDisplayMode::Preview
             ? (S::IsChinese() ? L"\u539f\u6587" : L"Source")
             : (S::IsChinese() ? L"\u9884\u89c8" : L"Preview"));
-    const bool available = showSourceText_ && sourcePreview_ && !sourcePreviewFailed_;
+    const bool available = !busy_ && showSourceText_ && sourcePreview_ &&
+        !sourcePreviewFailed_ && !sourcePreview_->IsEditorActionPending();
     const bool enabledChanged = (IsWindowEnabled(sourceModeButton_) != FALSE) != available;
     if (enabledChanged) EnableWindow(sourceModeButton_, available);
     if (textChanged || enabledChanged) InvalidateRect(sourceModeButton_, nullptr, TRUE);
 }
 
+bool TranslationResultWindow::ResolveDocumentEditorBeforeSourceMode() {
+    if (!sourcePreview_ || !sourcePreview_->HasActiveEditor()) return true;
+    if (sourcePreview_->IsEditorActionPending()) {
+        MessageBeep(MB_ICONWARNING);
+        return false;
+    }
+    if (sourcePreview_->IsEditorComposing()) {
+        MessageBeep(MB_ICONWARNING);
+        return false;
+    }
+    if (!sourcePreview_->HasDirtyEditor()) {
+        sourcePreview_->CancelActiveEditor();
+        return true;
+    }
+
+    const int choice = MessageBoxW(
+        window_,
+        S::IsChinese()
+            ? L"Markdown 编辑尚未保存。\n\n是：保存并切换\n否：放弃修改并切换\n取消：继续编辑"
+            : L"The Markdown edit has not been saved.\n\nYes: save and switch\nNo: discard and switch\nCancel: keep editing",
+        S::IsChinese() ? L"ZenCrop 翻译" : L"ZenCrop Translate",
+        MB_YESNOCANCEL | MB_ICONQUESTION);
+    if (choice == IDCANCEL) return false;
+    if (choice == IDNO) {
+        sourcePreview_->CancelActiveEditor();
+        return true;
+    }
+    switchToSourceAfterDocumentSave_ = true;
+    sourcePreview_->RequestActiveEditorSave();
+    return false;
+}
+
 void TranslationResultWindow::UpdateSourcePreviewVisibility() {
-    const bool previewReady = showSourceText_ &&
+    const bool previewReady = !busy_ && showSourceText_ &&
         sourceDisplayMode_ == SourceDisplayMode::Preview &&
         sourcePreview_ && sourcePreview_->IsReady() &&
         sourcePreviewRenderReady_ && !sourcePreviewFailed_ &&
@@ -1551,6 +1725,28 @@ void TranslationResultWindow::UpdateSourcePreviewVisibility() {
         sourcePreview_->SetBounds(sourceContentRect_);
     }
     UpdateSourceModeButton();
+    UpdateSourceEditorFooterActions();
+}
+
+void TranslationResultWindow::UpdateSourceEditorFooterActions() {
+    const bool editing = showSourceText_ && !busy_ &&
+        sourceDisplayMode_ == SourceDisplayMode::Preview && sourcePreview_ &&
+        sourcePreview_->IsReady() && sourcePreview_->HasActiveEditor();
+    const bool pending = editing && sourcePreview_->IsEditorActionPending();
+    const bool canSave = editing && !pending && sourcePreview_->HasDirtyEditor() &&
+        !sourcePreview_->IsEditorComposing() && sourcePreview_->CanSaveActiveEditor();
+    SetControlVisible(sourceEditorCancelButton_, editing);
+    SetControlVisible(sourceEditorSaveButton_, editing);
+    if (sourceEditorCancelButton_) EnableWindow(sourceEditorCancelButton_, editing && !pending);
+    if (sourceEditorSaveButton_) EnableWindow(sourceEditorSaveButton_, canSave);
+    if (copySourceButton_) EnableWindow(copySourceButton_, !editing);
+}
+
+void TranslationResultWindow::CancelSourceDocumentEditor() {
+    if (!sourcePreview_ || !sourcePreview_->HasActiveEditor() ||
+        sourcePreview_->IsEditorActionPending()) return;
+    sourcePreview_->CancelActiveEditor();
+    UpdateSourceEditorFooterActions();
 }
 
 void TranslationResultWindow::UpdateTranslationPreviewVisibility() {
@@ -1598,12 +1794,14 @@ void TranslationResultWindow::SetShowSourceText(bool show) {
         if (GetCapture() == window_) ReleaseCapture();
     }
     if (!show && (GetFocus() == sourceEdit_ || GetFocus() == copySourceButton_ ||
-                  GetFocus() == sourceModeButton_)) {
+                  GetFocus() == sourceEditorCancelButton_ ||
+                  GetFocus() == sourceEditorSaveButton_ || GetFocus() == sourceModeButton_)) {
         SetFocus(showSourceToggle_);
     }
     showSourceText_ = show;
     SetControlVisible(copySourceButton_, show);
     SetControlVisible(sourceCountLabel_, show);
+    UpdateSourceEditorFooterActions();
     ResizeToAutomaticWindowSize();
     if (showSourceToggle_) InvalidateRect(showSourceToggle_, nullptr, TRUE);
 }
@@ -1751,10 +1949,11 @@ void TranslationResultWindow::InvokeCommandSafely(Command command) noexcept {
 }
 
 void TranslationResultWindow::FocusRelative(HWND current, bool previous) {
-    const std::array<HWND, 14> controls = {
+    const std::array<HWND, 16> controls = {
         showSourceToggle_, providerCombo_, sourceCombo_, targetCombo_, sourceEdit_,
-        copySourceButton_, translationEdit_, copyTranslationButton_, retranslateButton_,
-        cancelButton_, sourceModeButton_, pinButton_, minimizeButton_, closeButton_,
+        copySourceButton_, sourceEditorCancelButton_, sourceEditorSaveButton_,
+        translationEdit_, copyTranslationButton_, retranslateButton_, cancelButton_,
+        sourceModeButton_, pinButton_, minimizeButton_, closeButton_,
     };
     std::vector<HWND> focusable;
     focusable.reserve(controls.size());
@@ -1791,7 +1990,11 @@ void TranslationResultWindow::HandleEscape() {
 void TranslationResultWindow::HandleChildKey(HWND child, WPARAM key) {
     const WPARAM virtualKey = LOWORD(key);
     if (virtualKey == VK_ESCAPE) {
-        HandleEscape();
+        if (!busy_ && sourcePreview_ && sourcePreview_->HasActiveEditor()) {
+            CancelSourceDocumentEditor();
+        } else {
+            HandleEscape();
+        }
     } else if (virtualKey == VK_TAB) {
         FocusRelative(child, (key & kTranslationChildKeyShift) != 0);
     }
@@ -1802,7 +2005,7 @@ void TranslationResultWindow::RefreshFontForLayoutDpi() {
     HFONT replacementCompact = CompactDefaultFont(LayoutDpi());
     HFONT replacementTitle = TitleFont(LayoutDpi());
     HFONT replacementText = TextFont(textFontSize_, LayoutDpi());
-    HFONT replacementSourceText = TextFont(sourceFontSize_, LayoutDpi());
+    HFONT replacementSourceText = TextFont(sourceEditFontSize_, LayoutDpi());
     if (!replacement || !replacementCompact || !replacementTitle || !replacementText ||
         !replacementSourceText) {
         if (replacement) DeleteObject(replacement);
@@ -1849,6 +2052,25 @@ void TranslationResultWindow::RefreshFontForLayoutDpi() {
     if (previousTitle) DeleteObject(previousTitle);
     if (previousText) DeleteObject(previousText);
     if (previousSourceText) DeleteObject(previousSourceText);
+}
+
+void TranslationResultWindow::AdjustSourceEditFontSize(int step, bool reset) {
+    const int next = reset
+        ? sourceFontSize_
+        : (std::clamp)(sourceEditFontSize_ + step,
+            kTranslationSourceFontSizeMin, kTranslationSourceFontSizeMax);
+    if (next == sourceEditFontSize_) return;
+    HFONT replacement = TextFont(next, LayoutDpi());
+    if (!replacement) return;
+    HFONT previous = sourceTextFont_;
+    sourceTextFont_ = replacement;
+    sourceEditFontSize_ = next;
+    if (sourceEdit_) {
+        SendMessageW(sourceEdit_, WM_SETFONT,
+            reinterpret_cast<WPARAM>(sourceTextFont_), TRUE);
+    }
+    if (previous) DeleteObject(previous);
+    ResizeToAutomaticWindowSize();
 }
 
 void TranslationResultWindow::LayoutControls(bool redraw) {
@@ -1970,6 +2192,7 @@ void TranslationResultWindow::LayoutControls(bool redraw) {
     const int arrowWidth = ScaleForDpi(16, dpi);
     const int actionWidth = (std::min)(retranslateWidth,
         (std::max)(ScaleForDpi(128, dpi), contentWidth / 5));
+    const int sourceEditorActionWidth = ScaleForDpi(64, dpi);
     const int showSourceToComboGap = ScaleForDpi(24, dpi);
     const int minimumComboWidth = ScaleForDpi(68, dpi);
     const int minimumProviderWidth = ScaleForDpi(96, dpi);
@@ -2155,6 +2378,14 @@ void TranslationResultWindow::LayoutControls(bool redraw) {
         move(copy, card.left + cardPadding, footerButtonTop, copyWidth, actionHeight);
         move(count, card.left + cardPadding + copyWidth + rowGap, footerTop,
             countWidth, cardFooterHeight);
+        if (edit == sourceEdit_) {
+            const int sourceSaveX = card.right - cardPadding - sourceEditorActionWidth;
+            const int sourceCancelX = sourceSaveX - rowGap - sourceEditorActionWidth;
+            move(sourceEditorCancelButton_, sourceCancelX, footerButtonTop,
+                sourceEditorActionWidth, actionHeight);
+            move(sourceEditorSaveButton_, sourceSaveX, footerButtonTop,
+                sourceEditorActionWidth, actionHeight);
+        }
         if (edit == translationEdit_) {
             // Translate again / Cancel share one slot at the footer's right
             // edge. The row already exists, so the action adds no height.
@@ -2424,7 +2655,7 @@ void TranslationResultWindow::DrawOwnerDrawControl(const DRAWITEMSTRUCT& draw) {
     const bool isHeaderButton = id == kMinimize || id == kClose;
     const bool isHeaderModeButton = id == kSourceMode;
     const bool isCopyButton = id == kCopySource || id == kCopyTranslation;
-    const bool isPrimary = id == kRetranslate;
+    const bool isPrimary = id == kRetranslate || id == kSourceEditorSave;
     COLORREF background = isHeaderButton ? kWindowBackground :
         (isPrimary ? (pressed ? kAccentPressed : hot ? kAccentHover : kAccent)
                    : (pressed ? kControlPressed : hot ? kControlHover : kControlBackground));
@@ -2516,6 +2747,14 @@ LRESULT TranslationResultWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wPara
     }
     case kTranslationChildKeyboardMessage:
         HandleChildKey(reinterpret_cast<HWND>(lParam), wParam);
+        return 0;
+    case kTranslationChildZoomMessage:
+        if (reinterpret_cast<HWND>(lParam) == sourceEdit_) {
+            const auto signedStep = static_cast<INT_PTR>(wParam);
+            AdjustSourceEditFontSize(
+                signedStep > 0 ? 1 : signedStep < 0 ? -1 : 0,
+                signedStep == 0);
+        }
         return 0;
     case WM_NCCALCSIZE:
         if (wParam) return 0;
@@ -2711,6 +2950,10 @@ LRESULT TranslationResultWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wPara
             UpdateOcrElapsedStage();
             return 0;
         }
+        if (wParam == kStructuredSelectionTimer) {
+            CancelPendingStructuredSelection(L"conversion_timeout");
+            return 0;
+        }
         break;
     case WM_DPICHANGED: {
         StopAutomaticResizeAnimation(false);
@@ -2772,6 +3015,14 @@ LRESULT TranslationResultWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wPara
             CopyControlText(sourceEdit_);
             return 0;
         }
+        if (LOWORD(wParam) == kSourceEditorCancel && HIWORD(wParam) == BN_CLICKED) {
+            CancelSourceDocumentEditor();
+            return 0;
+        }
+        if (LOWORD(wParam) == kSourceEditorSave && HIWORD(wParam) == BN_CLICKED) {
+            if (sourcePreview_) sourcePreview_->RequestActiveEditorSave();
+            return 0;
+        }
         if (LOWORD(wParam) == kCopyTranslation && HIWORD(wParam) == BN_CLICKED) {
             CopyControlText(translationEdit_);
             return 0;
@@ -2814,7 +3065,11 @@ LRESULT TranslationResultWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wPara
         break;
     case WM_KEYDOWN:
         if (wParam == VK_ESCAPE) {
-            HandleEscape();
+            if (!busy_ && sourcePreview_ && sourcePreview_->HasActiveEditor()) {
+                CancelSourceDocumentEditor();
+            } else {
+                HandleEscape();
+            }
             return 0;
         }
         if (wParam == VK_TAB) {
@@ -2828,6 +3083,11 @@ LRESULT TranslationResultWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wPara
         return 0;
     case WM_DESTROY:
         KillTimer(hwnd, kResizeAnimationTimer);
+        KillTimer(hwnd, kStructuredSelectionTimer);
+        pendingStructuredSelectionCallback_ = {};
+        pendingStructuredSelectionHost_ = PreviewSelectionHost::None;
+        pendingStructuredSelectionToken_.clear();
+        pendingStructuredSelectionGeneration_ = 0;
         resizeAnimationActive_ = false;
         NotifyClose();
         // Do not leave a stale entry or a border window behind if the user

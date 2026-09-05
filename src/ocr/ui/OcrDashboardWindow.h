@@ -9,6 +9,7 @@
 #include <map>
 #include <set>
 #include <atomic>
+#include <functional>
 #include "DashboardLayoutState.h"
 #include "DashboardModels.h"
 #include "DashboardTextMode.h"
@@ -99,6 +100,10 @@ public:
     static void HandleTranslationDone(
         uint64_t generation,
         translation::TranslationResult* result);
+    static bool RequestPreviewSelection(
+        HWND topLevelWindow,
+        uint64_t requestGeneration,
+        std::function<void(selection::SelectionContent)> callback);
 
     // 外部 OCR 反馈（快捷键截图 OCR / 截图工具栏 OCR 在 Dashboard 已开时调用）。
     // imagePath 非空时立即建立并选中 transient Source，让已保存的截图无需等待 OCR 完成即可显示；
@@ -307,6 +312,7 @@ private:
     HFONT m_hSourceTitleFont = nullptr;
     HFONT m_hSourceMetaFont = nullptr;
     HFONT m_hEditFont = nullptr;
+    int m_resultTextFontSize = 0;
     DashboardFontMetrics m_uiFontMetrics;
     DashboardFontMetrics m_sourceTitleFontMetrics;
     DashboardFontMetrics m_sourceMetaFontMetrics;
@@ -332,6 +338,21 @@ private:
     // Markdown preview
     std::unique_ptr<OcrMarkdownPreviewHost> m_previewHost;
     std::unique_ptr<OcrMarkdownPreviewHost> m_translationPreviewHost;
+    enum class PreviewSelectionHost { None, Source, Translation };
+    PreviewSelectionHost m_recentPreviewSelectionHost =
+        PreviewSelectionHost::None;
+    uint64_t m_recentPreviewSelectionGeneration = 0;
+    uint64_t m_sourcePreviewSelectionGeneration = 0;
+    uint64_t m_translationPreviewSelectionGeneration = 0;
+    ULONGLONG m_sourcePreviewSelectionTick = 0;
+    ULONGLONG m_translationPreviewSelectionTick = 0;
+    PreviewSelectionHost m_pendingPreviewSelectionHost =
+        PreviewSelectionHost::None;
+    std::wstring m_pendingPreviewSelectionToken;
+    uint64_t m_pendingPreviewSelectionGeneration = 0;
+    std::function<void(selection::SelectionContent)>
+        m_pendingPreviewSelectionCallback;
+    UINT_PTR m_pendingPreviewSelectionTimer = 0;
     std::unique_ptr<translation::TranslationCoordinator> m_dashboardTranslation;
     struct DashboardTranslationRange {
         std::wstring segmentId;
@@ -350,6 +371,8 @@ private:
     std::wstring m_translationSourceRevisionSha256;
     // D-H-1: pure protocol decisions via DashboardPreviewCoordinator (no HWND).
     DashboardPreviewCoordinator m_preview;
+    DashboardTextMode m_pendingTextModeAfterPreviewSave = DashboardTextMode::Preview;
+    bool m_hasPendingTextModeAfterPreviewSave = false;
     // D-D-2: m_preferredTextMode + m_textMode removed — DashboardState.textMode sole authority.
     // D-D-3: m_previewAvailable removed — DashboardState.previewAvailable sole authority.
     // D-H-1: m_previewEditRollbackFailed / m_previewPersistenceBlocked removed —
@@ -791,8 +814,19 @@ private:
     std::wstring BuildActiveWorkText() const;
     void UpdateStatus(const std::wstring& text);
     bool EnsurePreviewHost();
+    bool RequestPreviewSelectionInternal(
+        uint64_t requestGeneration,
+        std::function<void(selection::SelectionContent)> callback);
+    void UpdatePreviewSelectionState(
+        PreviewSelectionHost host, bool hasSelection, uint64_t generation);
+    void HandlePreparedPreviewSelection(
+        PreviewSelectionHost host,
+        const std::wstring& token, uint64_t generation, bool success,
+        const std::wstring& planJson, const std::wstring& errorCode);
+    void CancelPendingPreviewSelection(const std::wstring& errorCode);
     void FallbackPreviewToSource(const std::wstring& message);
     void SetTextMode(DashboardTextMode mode);
+    bool ResolvePreviewEditorBeforeTextMode(DashboardTextMode mode);
     void PersistResultTextMode() const;
     std::wstring GetCurrentResultText() const;
     std::wstring GetCurrentPreviewSourceMarkdown() const;
@@ -805,6 +839,7 @@ private:
     void UpdatePreviewControls();
     void SelectVisibleHistoryOffset(int delta);
     bool HandlePreviewAccelerator(UINT virtualKey, bool ctrlDown);
+    void AdjustResultTextFontSize(int step, bool reset);
     int GetSelectedVisiblePosition() const;
     void ReformatHistoryText(); // Reformat text with current separator width
     void ApplyFilter(const std::wstring& filterText);

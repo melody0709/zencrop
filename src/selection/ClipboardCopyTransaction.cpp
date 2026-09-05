@@ -2,6 +2,8 @@
 
 #include "ClipboardDataSnapshot.h"
 #include "ClipboardCopyPolicy.h"
+#include "ClipboardStructuredContentReader.h"
+#include "SelectionStructuredContent.h"
 
 #include <objidl.h>
 #include <ole2.h>
@@ -383,6 +385,36 @@ ClipboardTextReadStatus ReadClipboardText(
     return status;
 }
 
+ClipboardTextReadStatus ReadClipboardContent(
+    HWND owner, ULONGLONG deadline, HANDLE stopEvent,
+    UINT transactionFormat, const std::wstring* expectedTransactionId,
+    const std::wstring& requestToken,
+    SelectionContent& content,
+    ClipboardObservedState& observed) {
+    observed = {};
+    if (!OpenClipboardUntil(owner, deadline, stopEvent)) {
+        return ClipboardTextReadStatus::Busy;
+    }
+    content = {};
+    const ClipboardTextReadStatus textStatus =
+        ReadClipboardTextOpen(content.plainText);
+    const std::wstring fingerprintText = content.plainText;
+    content.requestToken = requestToken;
+    const bool structured =
+        TryReadStructuredClipboardContentOpen(requestToken, content);
+    const ClipboardTextReadStatus status = structured
+        ? ClipboardTextReadStatus::Success : textStatus;
+    if (!structured) {
+        content.kind = SelectionContentKind::Plain;
+        content.fidelity = SelectionFidelity::Plain;
+    }
+    observed = ObserveOpenClipboard(
+        textStatus, fingerprintText, transactionFormat,
+        expectedTransactionId);
+    CloseClipboard();
+    return status;
+}
+
 bool BeginClipboardTransaction(
     HWND owner, ULONGLONG deadline, HANDLE stopEvent,
     const std::wstring& transactionId, UINT transactionFormat,
@@ -723,6 +755,7 @@ SelectionAcquisitionResult RunTransaction(
 
     const ULONGLONG copyDeadline = (std::min)(snapshot.deadlineTick,
         GetTickCount64() + static_cast<ULONGLONG>(kCopyUpdateBudgetMs));
+    const std::wstring requestToken = MakeSelectionRequestToken();
     ClipboardObservedState lastOwnedState = sentinelState;
     ClipboardObservedState observedState;
     ClipboardTextReadStatus readStatus = ClipboardTextReadStatus::NoText;
@@ -731,10 +764,10 @@ SelectionAcquisitionResult RunTransaction(
            !job->cancelled.load() && !StopRequested(stopEvent)) {
         const DWORD sequence = GetClipboardSequenceNumber();
         if (sequence != lastOwnedState.sequence) {
-            std::wstring copiedText;
-            readStatus = ReadClipboardText(listenerWindow, copyDeadline,
+            SelectionContent copiedContent;
+            readStatus = ReadClipboardContent(listenerWindow, copyDeadline,
                 stopEvent, transactionFormat, &transactionId,
-                copiedText, observedState);
+                requestToken, copiedContent, observedState);
             if (readStatus != ClipboardTextReadStatus::Busy) {
                 // A clipboard manager may rewrite or re-publish our sentinel.
                 // The private format must be gone before any text can be
@@ -743,17 +776,17 @@ SelectionAcquisitionResult RunTransaction(
                     observedState.transactionMarkerMatches) {
                     lastOwnedState = observedState;
                     observedState = {};
-                    result.text.clear();
+                    result.content = {};
                     readStatus = ClipboardTextReadStatus::NoText;
                     continue;
                 }
                 if (observedState.valid &&
                     observedState.transactionMarkerPresent) {
                     externalTransactionMarker = true;
-                    result.text.clear();
+                    result.content = {};
                     break;
                 }
-                result.text = std::move(copiedText);
+                result.content = std::move(copiedContent);
                 break;
             }
         }
@@ -798,7 +831,20 @@ SelectionAcquisitionResult RunTransaction(
 
     result.error = SelectionAcquisitionError::None;
     result.source = SelectionAcquisitionSource::ClipboardCopy;
-    result.diagnosticCode = L"COPY_SUCCESS";
+    switch (result.content.kind) {
+    case SelectionContentKind::Markdown:
+        result.diagnosticCode = L"COPY_SUCCESS_MARKDOWN";
+        break;
+    case SelectionContentKind::Code:
+        result.diagnosticCode = L"COPY_SUCCESS_VSCODE";
+        break;
+    case SelectionContentKind::Html:
+        result.diagnosticCode = L"COPY_SUCCESS_CFHTML";
+        break;
+    default:
+        result.diagnosticCode = L"COPY_SUCCESS_PLAIN";
+        break;
+    }
     if (!restoreDiagnostic.empty()) {
         result.diagnosticCode += L"_" + restoreDiagnostic;
     }

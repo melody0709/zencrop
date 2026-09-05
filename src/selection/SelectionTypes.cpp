@@ -1,5 +1,6 @@
 #include "SelectionTypes.h"
 
+#include <algorithm>
 #include <cwctype>
 #include <limits>
 
@@ -51,7 +52,14 @@ bool IsNativePasswordEdit(HWND window) {
 bool IsSelectionResultSuccess(const SelectionAcquisitionResult& result) {
     return result.error == SelectionAcquisitionError::None &&
         result.source != SelectionAcquisitionSource::None &&
-        HasNonWhitespace(result.text) && IsValidSelectionUtf16(result.text);
+        ((HasNonWhitespace(result.content.plainText) &&
+          IsValidSelectionUtf16(result.content.plainText)) ||
+         (HasNonWhitespace(result.content.markdown) &&
+          IsValidSelectionUtf16(result.content.markdown)) ||
+         (HasNonWhitespace(result.content.html) &&
+          IsValidSelectionUtf16(result.content.html)) ||
+         (HasNonWhitespace(result.content.structuredPlanJson) &&
+          IsValidSelectionUtf16(result.content.structuredPlanJson)));
 }
 
 RECT ChooseSelectionAnchor(

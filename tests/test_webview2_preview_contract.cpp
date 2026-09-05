@@ -1,7 +1,9 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <psapi.h>
 #include <shlwapi.h>
 
+#include <cmath>
 #include <functional>
 #include <filesystem>
 #include <fstream>
@@ -49,6 +51,25 @@ static void PumpFor(DWORD durationMs) {
     PumpUntil([&]() {
         return GetTickCount() - start >= durationMs;
     }, durationMs + 100);
+}
+
+struct ProcessMemorySnapshot {
+    SIZE_T workingSet = 0;
+    SIZE_T privateBytes = 0;
+};
+
+static ProcessMemorySnapshot CurrentProcessMemory() {
+    PROCESS_MEMORY_COUNTERS_EX counters = {};
+    counters.cb = sizeof(counters);
+    ProcessMemorySnapshot snapshot;
+    if (K32GetProcessMemoryInfo(
+            GetCurrentProcess(),
+            reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&counters),
+            sizeof(counters))) {
+        snapshot.workingSet = counters.WorkingSetSize;
+        snapshot.privateBytes = counters.PrivateUsage;
+    }
+    return snapshot;
 }
 
 static bool ExecuteScriptSync(
@@ -361,6 +382,24 @@ int wmain() {
     std::wstring hoveredPreviewBlockId;
     int previewSelectCount = 0;
     std::wstring selectedPreviewBlockId;
+    int documentEditCount = 0;
+    bool documentSourceRequired = false;
+    int documentSaveCount = 0;
+    std::wstring savedDocumentContent;
+    int editorStateChangeCount = 0;
+    bool observedEditorActive = false;
+    bool observedEditorDirty = false;
+    bool observedEditorComposing = false;
+    bool observedEditorCanSave = false;
+    bool observedEditorActionPending = false;
+    bool observedDirtyEditorState = false;
+    bool observedPendingEditorState = false;
+    bool deferNextDocumentSaveResult = false;
+    std::wstring deferredDocumentSaveToken;
+    int zoomFactorChangeCount = 0;
+    double observedZoomFactor = 1.0;
+    ProcessMemorySnapshot editorMemoryBaseline;
+    ProcessMemorySnapshot editorMemoryOpen;
 
     OcrMarkdownPreviewHost host;
     OcrMarkdownPreviewHost::Callbacks callbacks;
@@ -388,8 +427,42 @@ int wmain() {
         processFailed = true;
     };
     callbacks.onOpenExternal = [](const std::wstring&) {};
-    callbacks.onAcceleratorKey = [](UINT, bool) {
-        return true;
+    callbacks.onZoomFactorChanged = [&](double zoomFactor) {
+        observedZoomFactor = zoomFactor;
+        zoomFactorChangeCount++;
+    };
+    callbacks.onAcceleratorKey = [](UINT virtualKey, bool ctrlDown) {
+        return !(ctrlDown && (virtualKey == L'0' || virtualKey == VK_OEM_PLUS ||
+            virtualKey == VK_ADD || virtualKey == VK_OEM_MINUS || virtualKey == VK_SUBTRACT));
+    };
+    callbacks.onPreviewDocumentEdit = [&](bool sourceRequired) {
+        documentEditCount++;
+        documentSourceRequired = sourceRequired;
+    };
+    callbacks.onPreviewEditorState = [&](
+        bool active, bool dirty, bool composing, bool canSave, bool actionPending) {
+        editorStateChangeCount++;
+        observedEditorActive = active;
+        observedEditorDirty = dirty;
+        observedEditorComposing = composing;
+        observedEditorCanSave = canSave;
+        observedEditorActionPending = actionPending;
+        observedDirtyEditorState = observedDirtyEditorState || (active && dirty);
+        observedPendingEditorState = observedPendingEditorState || (active && actionPending);
+    };
+    callbacks.onPreviewDocumentSave = [
+        &host, &documentSaveCount, &savedDocumentContent,
+        &deferNextDocumentSaveResult, &deferredDocumentSaveToken](
+        const std::wstring& content,
+        const std::wstring& renderToken) {
+        documentSaveCount++;
+        savedDocumentContent = content;
+        if (deferNextDocumentSaveResult) {
+            deferNextDocumentSaveResult = false;
+            deferredDocumentSaveToken = renderToken;
+            return;
+        }
+        host.PostPreviewDocumentSaveResult(renderToken, true);
     };
     callbacks.onPreviewBlockHover = [&](const std::wstring& id) {
         previewHoverCount++;
@@ -471,6 +544,110 @@ int wmain() {
         std::wcerr << L"Preview runtime did not load the trusted versioned asset origin\n";
         return 1;
     }
+    std::wstring structuredSelectionResult;
+    if (!ExecuteScriptSync(
+            host,
+            LR"JS((function(){
+              try {
+              var api=window.ZenCropStructuredSelection;
+              if(!api||typeof api.prepare!=="function")return 10;
+              var token="0123456789abcdef0123456789abcdef";
+              var generation=77;
+              function base64(value){
+                var bytes=new TextEncoder().encode(value),binary="";
+                for(var i=0;i<bytes.length;i+=1)binary+=String.fromCharCode(bytes[i]);
+                return btoa(binary);
+              }
+              function convert(body,sourceUrl){
+                var html="<html><body><!--ZENCROP_SELECTION_START_"+token+"-->"+
+                  body+"<!--ZENCROP_SELECTION_END_"+token+"--></body></html>";
+                return JSON.parse(api.prepare({
+                  token:token,generation:generation,format:"html",
+                  payloadBase64:base64(html),sourceUrl:sourceUrl||""
+                }));
+              }
+              function convertMarked(body){
+                return JSON.parse(api.prepare({
+                  token:token,generation:generation,format:"html",
+                  payloadBase64:base64("<html><body>"+body+"</body></html>"),
+                  sourceUrl:""
+                }));
+              }
+              var markdownSource="## Title\n\nBody with $x^2$.";
+              var markdownPlan=JSON.parse(api.prepare({
+                token:token,generation:generation,format:"markdown",
+                payloadBase64:base64(markdownSource),sourceUrl:""
+              }));
+              if(markdownPlan.sourceMarkdown!==markdownSource||
+                 markdownPlan.sourceMarkdown.indexOf("\\##")===0)return 20;
+              var list=convert("<ul><li><p>Alpha</p></li><li><p>Beta</p></li></ul>");
+              if(list.sourceMarkdown!=="-   Alpha\n-   Beta")return 11;
+              var code=convert("<pre><div><code class=\"language-js\">const x = 1;\nconst y = 2;</code></div></pre>");
+              if(code.sourceMarkdown!=="```js\nconst x = 1;\nconst y = 2;\n```")return 12;
+              var table=convert("<table><thead><tr><th>A</th><th>B</th></tr></thead><tbody><tr><td>1</td><td>2</td></tr></tbody></table>");
+              if(table.sourceMarkdown.indexOf("| A")!==0||
+                 table.sourceMarkdown.indexOf("| 1")<0)return 13;
+              var pipeTable=convert("<table><thead><tr><th>A</th></tr></thead><tbody><tr><td>x|y</td></tr></tbody></table>");
+              if(pipeTable.sourceMarkdown.indexOf("x\\|y")<0||
+                 !pipeTable.leaves.some(function(leaf){
+                   return leaf.text==="x|y"&&leaf.projection==="markdownTableCell";
+                 }))return 131;
+              var complexTable=convert("<table><tbody><tr><td rowspan=\"2\">A &amp; B</td><td>C</td></tr><tr><td>D</td></tr></tbody></table>");
+              if(complexTable.sourceMarkdown.indexOf("<table>")<0||
+                 complexTable.sourceMarkdown.indexOf("A &amp; B")<0||
+                 !complexTable.leaves.some(function(leaf){
+                   return leaf.text==="A & B"&&leaf.projection==="htmlText";
+                 }))return 132;
+              var formula=convert("<span class=\"katex\"><span class=\"katex-mathml\"><math><semantics><annotation encoding=\"application/x-tex\">x^2</annotation></semantics></math></span><span class=\"katex-html\">VISUAL</span></span>");
+              if(formula.sourceMarkdown!=="$x^2$"||
+                 formula.sourceMarkdown.indexOf("VISUAL")>=0)return 14;
+              var vscodeFormula=convertMarked("<p class=\"katex-block\"><span class=\"katex-display\"><span class=\"katex\"><span class=\"katex-mathml\"><math display=\"block\"><semantics><annotation encoding=\"application/x-tex\">m(x,y)=\\\\ln(m(x,y)')</annotation></semantics></math></span><span class=\"katex-html\" aria-hidden=\"true\"><span class=\"base\"><!--ZENCROP_SELECTION_START_"+token+"-->VISUAL<!--ZENCROP_SELECTION_END_"+token+"--></span></span></span></span></p>");
+              if(vscodeFormula.sourceMarkdown!=="$$m(x,y)=\\\\ln(m(x,y)')$$"||
+                 vscodeFormula.sourceMarkdown.indexOf("VISUAL")>=0)return 16;
+              var unsafe=convert("<a href=\"/docs\" onclick=\"bad()\">safe</a><a href=\"javascript:bad()\">bad</a><script>evil()</script>","https://example.com/base/page?secret=1");
+              if(unsafe.sourceMarkdown.indexOf("https://example.com/docs")<0||
+                 unsafe.sourceMarkdown.indexOf("javascript:")>=0||
+                 unsafe.sourceMarkdown.indexOf("evil")>=0)return 15;
+              var punctuation=convert("<p>*Alpha* [x] | y # z</p>");
+              if(punctuation.sourceMarkdown!=="\\*Alpha\\* \\[x\\] | y # z"||
+                 punctuation.leaves.length!==1||
+                 punctuation.leaves[0].text!=="*Alpha* [x] | y # z"||
+                 punctuation.leaves[0].projection!=="markdown")return 18;
+              var longText="Alpha ".repeat(1500);
+              var longPlan=convert("<p>"+longText+"</p>");
+              if(longPlan.sourceMarkdown!==longText.trim())return 171;
+              if(longPlan.leaves.length<2)return 172;
+              if(longPlan.leaves.some(function(leaf){return leaf.text.length>4000;}))return 173;
+              var escapedLong=convert("<p>"+"*".repeat(5000)+"</p>");
+              if(escapedLong.leaves.some(function(leaf){return leaf.text.length>4000;}))return 174;
+              var previewRoot=document.createElement("div");
+              previewRoot.innerHTML="<span class=\"katex\"><span class=\"katex-mathml\"><math><semantics><annotation encoding=\"application/x-tex\">q^2</annotation></semantics></math></span><span class=\"katex-html\">VISUAL</span></span>";
+              document.body.appendChild(previewRoot);
+              var visual=previewRoot.querySelector(".katex-html").firstChild;
+              var previewRange=document.createRange();
+              previewRange.setStart(visual,1);previewRange.setEnd(visual,3);
+              var liveSelection=window.getSelection();
+              liveSelection.removeAllRanges();liveSelection.addRange(previewRange);
+              var previewFormula=JSON.parse(api.preparePreviewSelection({
+                token:token,generation:generation,selectionGeneration:9,
+                currentSelectionGeneration:9
+              },previewRoot,"",false));
+              liveSelection.removeAllRanges();previewRoot.remove();
+              if(previewFormula.sourceMarkdown!=="$q^2$")return 19;
+              return 1;
+              } catch(error) {
+                return "E:"+String(error&&error.message||error);
+              }
+            })())JS",
+            structuredSelectionResult) ||
+        _wtoi(structuredSelectionResult.c_str()) != 1) {
+        host.Destroy();
+        DestroyWindow(hwnd);
+        CoUninitialize();
+        std::wcerr << L"Structured selection runtime contract failed: "
+                   << structuredSelectionResult << L"\n";
+        return 1;
+    }
     host.RenderMarkdown(1, L"# Runtime smoke\n\ntrusted preview payload");
     if (!WaitForScriptInt(
             host,
@@ -487,9 +664,10 @@ int wmain() {
             host,
             LR"JS((function(){
               var preview=document.querySelector("#preview");
-              if(!preview)return 0;
+              var shell=document.querySelector("#preview-shell");
+              if(!preview||!shell)return 0;
               var style=window.getComputedStyle(preview);
-              return preview.style.getPropertyValue("--preview-font-size").trim()==="22px"&&
+              return shell.style.getPropertyValue("--preview-font-size").trim()==="22px"&&
                 style.fontSize==="22px"?1:0;
             })())JS",
             1)) {
@@ -507,6 +685,71 @@ int wmain() {
         DestroyWindow(hwnd);
         CoUninitialize();
         std::wcerr << L"Preview content metrics callback contract failed\n";
+        return 1;
+    }
+
+    const std::wstring transientRenderToken = contentMetrics.renderToken;
+    const int transientBlockSaveCount = previewSaveCount;
+    const int transientDocumentSaveCount = documentSaveCount;
+    host.RenderTransientMarkdown(1, L"# Runtime smoke\n\nfirst streamed fragment");
+    if (!WaitForScriptInt(
+            host,
+            LR"JS((function(){return document.querySelector("#preview").textContent.indexOf("first streamed fragment")>=0?1:0;})())JS",
+            1)) {
+        host.Destroy();
+        DestroyWindow(hwnd);
+        CoUninitialize();
+        std::wcerr << L"Preview transient render did not display the first streamed fragment\n";
+        return 1;
+    }
+    host.RenderTransientMarkdown(1, L"# Runtime smoke\n\nsecond streamed fragment");
+    if (!WaitForScriptInt(
+            host,
+            LR"JS((function(){return document.querySelector("#preview").textContent.indexOf("second streamed fragment")>=0?1:0;})())JS",
+            1) ||
+        contentMetrics.renderToken != transientRenderToken ||
+        previewSaveCount != transientBlockSaveCount ||
+        documentSaveCount != transientDocumentSaveCount ||
+        host.HasActiveEditor() || host.HasDirtyEditor()) {
+        host.Destroy();
+        DestroyWindow(hwnd);
+        CoUninitialize();
+        std::wcerr << L"Preview transient render changed committed editor state or render token\n";
+        return 1;
+    }
+    const int transientDocumentEditCount = documentEditCount;
+    std::wstring transientEditResult;
+    ExecuteScriptSync(
+        host,
+        LR"JS((function(){
+          var preview=document.querySelector('#preview');
+          preview.dispatchEvent(new MouseEvent('dblclick',{bubbles:true,cancelable:true}));
+          return document.querySelector('.ocr-preview-document-editor')?0:1;
+        })())JS",
+        transientEditResult);
+    if (_wtoi(transientEditResult.c_str()) != 1 ||
+        !PumpUntil([&]() { return documentEditCount == transientDocumentEditCount + 1; }, 2000) ||
+        !documentSourceRequired || host.HasActiveEditor()) {
+        host.Destroy();
+        DestroyWindow(hwnd);
+        CoUninitialize();
+        std::wcerr << L"Preview transient render allowed editing stale committed Markdown\n";
+        return 1;
+    }
+    contentMetricsReceived = false;
+    host.RenderMarkdown(1, L"# Runtime smoke\n\nfinal committed fragment");
+    if (!WaitForScriptInt(
+            host,
+            LR"JS((function(){return document.querySelector("#preview").textContent.indexOf("final committed fragment")>=0?1:0;})())JS",
+            1) ||
+        !PumpUntil([&]() {
+            return contentMetricsReceived &&
+                contentMetrics.renderToken != transientRenderToken;
+        }, 2000)) {
+        host.Destroy();
+        DestroyWindow(hwnd);
+        CoUninitialize();
+        std::wcerr << L"Final Preview render did not replace transient content with a new token\n";
         return 1;
     }
 
@@ -819,6 +1062,67 @@ int wmain() {
         }
     }
     host.SetZoomFactor(1.0);
+
+    int zoomCount = zoomFactorChangeCount;
+    std::wstring zoomResult;
+    ExecuteScriptSync(
+        host,
+        LR"JS((function(){
+          var event=new WheelEvent('wheel',{deltaY:-120,ctrlKey:true,bubbles:true,cancelable:true});
+          window.dispatchEvent(event);
+          return event.defaultPrevented?1:0;
+        })())JS",
+        zoomResult);
+    if (_wtoi(zoomResult.c_str()) != 1 ||
+        !PumpUntil([&]() {
+            return zoomFactorChangeCount > zoomCount && std::abs(observedZoomFactor - 1.1) < 0.011;
+        }, 3000) || host.HasActiveEditor()) {
+        host.Destroy();
+        DestroyWindow(hwnd);
+        CoUninitialize();
+        std::wcerr << L"Preview Ctrl+wheel did not apply the shared 10% zoom step: script="
+                   << zoomResult << L", callbacks=" << zoomFactorChangeCount
+                   << L", factor=" << observedZoomFactor << L"\n";
+        return 1;
+    }
+    zoomCount = zoomFactorChangeCount;
+    ExecuteScriptSync(
+        host,
+        LR"JS((function(){
+          var event=new KeyboardEvent('keydown',{key:'=',ctrlKey:true,bubbles:true,cancelable:true});
+          window.dispatchEvent(event);
+          return event.defaultPrevented?1:0;
+        })())JS",
+        zoomResult);
+    if (_wtoi(zoomResult.c_str()) != 1 ||
+        !PumpUntil([&]() {
+            return zoomFactorChangeCount > zoomCount && std::abs(observedZoomFactor - 1.2) < 0.011;
+        }, 3000)) {
+        host.Destroy();
+        DestroyWindow(hwnd);
+        CoUninitialize();
+        std::wcerr << L"Preview Ctrl+= did not apply the shared 10% zoom step\n";
+        return 1;
+    }
+    zoomCount = zoomFactorChangeCount;
+    ExecuteScriptSync(
+        host,
+        LR"JS((function(){
+          var event=new KeyboardEvent('keydown',{key:'0',ctrlKey:true,bubbles:true,cancelable:true});
+          window.dispatchEvent(event);
+          return event.defaultPrevented?1:0;
+        })())JS",
+        zoomResult);
+    if (_wtoi(zoomResult.c_str()) != 1 ||
+        !PumpUntil([&]() {
+            return zoomFactorChangeCount > zoomCount && std::abs(observedZoomFactor - 1.0) < 0.011;
+        }, 3000)) {
+        host.Destroy();
+        DestroyWindow(hwnd);
+        CoUninitialize();
+        std::wcerr << L"Preview Ctrl+0 did not restore the shared zoom baseline\n";
+        return 1;
+    }
 
     // Source uses single line breaks for OCR visual lines. The shared
     // Dashboard/translation Preview renderer must retain them instead of
@@ -1415,7 +1719,7 @@ still text $.)MD";
         if (!WaitForScriptInt(
                 host,
                 LR"JS((function(){
-                  var restore=Array.from(document.querySelectorAll(".ocr-preview-inline-editor-toolbar button"))
+                  var restore=Array.from(document.querySelectorAll(".ocr-preview-transaction-capsule button"))
                     .find(function(button){return button.textContent==="Restore OCR";});
                   if(restore)restore.click();
                   return restore?1:0;
@@ -1445,11 +1749,19 @@ still text $.)MD";
         if (!ExecuteScriptSync(
                 host,
                 LR"JS((function(){
-                  var select=document.querySelector(".ocr-preview-editor-select");
                   var body=document.querySelector(".ocr-preview-rich-editor-body");
-                  select.value="3";
-                  select.dispatchEvent(new Event("change",{bubbles:true}));
-                  return body&&body.querySelector("h3")?1:0;
+                  var heading=body&&body.querySelector("h1");
+                  if(!heading||!heading.firstChild)return 0;
+                  body.focus();
+                  var range=document.createRange();
+                  range.selectNodeContents(heading.firstChild);
+                  getSelection().removeAllRanges();
+                  getSelection().addRange(range);
+                  body.dispatchEvent(new MouseEvent("mouseup",{bubbles:true}));
+                  var h3=Array.from(document.querySelectorAll(".ocr-preview-selection-toolbar button"))
+                    .find(function(button){return button.title==="Heading 3";});
+                  if(h3)h3.click();
+                  return h3&&body.querySelector("h3")?1:0;
                 })())JS",
                 result) ||
             _wtoi(result.c_str()) != 1) {
@@ -1461,7 +1773,7 @@ still text $.)MD";
         ExecuteScriptSync(
             host,
             LR"JS((function(){
-              var buttons=Array.from(document.querySelectorAll(".ocr-preview-inline-editor-toolbar button"));
+              var buttons=Array.from(document.querySelectorAll(".ocr-preview-transaction-capsule button"));
               var save=buttons.find(function(button){return button.textContent==="Save";});
               if(save)save.click();
               return save?1:0;
@@ -1684,9 +1996,10 @@ still text $.)MD";
         ExecuteScriptSync(
             host,
             LR"JS((function(){
-              var save=document.querySelector(".ocr-preview-inline-editor-toolbar .ocr-preview-editor-button.is-primary");
-              if(save)save.click();
-              return save?1:0;
+              var body=document.querySelector(".ocr-preview-rich-editor-body");
+              var event=new KeyboardEvent("keydown",{key:"s",ctrlKey:true,bubbles:true,cancelable:true});
+              if(body)body.dispatchEvent(event);
+              return body&&event.defaultPrevented?1:0;
             })())JS",
             result);
         if (!PumpUntil([&]() { return previewSaveCount >= 5; }, 3000) ||
@@ -1970,11 +2283,11 @@ $$ Ny=1 $$)MD";
                 host,
                 LR"JS((function(){
                   var editor=document.querySelector(".ocr-preview-inline-editor");
-                  var save=Array.from(document.querySelectorAll(".ocr-preview-inline-editor-toolbar button"))
-                    .find(function(button){return button.textContent==="Save";});
-                  if(!editor||!save)return 0;
-                  if(save.disabled)return 2;
-                  save.click();
+                  var body=editor&&editor.querySelector(".ocr-preview-rich-editor-body");
+                  if(!editor||!body)return 0;
+                  var event=new KeyboardEvent("keydown",{key:"s",ctrlKey:true,bubbles:true,cancelable:true});
+                  body.dispatchEvent(event);
+                  if(!event.defaultPrevented)return 2;
                   return editor.getAttribute("data-block-id")==="preview-edit:literal"?1:3;
                 })())JS",
                 result);
@@ -2014,7 +2327,7 @@ $$ Ny=1 $$)MD";
                   var body=document.querySelector(".ocr-preview-rich-editor-body");
                   body.textContent="unsaved replacement";
                   body.dispatchEvent(new Event("input",{bubbles:true}));
-                  var save=Array.from(document.querySelectorAll(".ocr-preview-inline-editor-toolbar button"))
+                  var save=Array.from(document.querySelectorAll(".ocr-preview-transaction-capsule button"))
                     .find(function(button){return button.textContent==="Save";});
                   if(save)save.click();
                   return save?1:0;
@@ -2035,7 +2348,7 @@ $$ Ny=1 $$)MD";
         ExecuteScriptSync(
             host,
             LR"JS((function(){
-              var cancel=Array.from(document.querySelectorAll(".ocr-preview-inline-editor-toolbar button"))
+              var cancel=Array.from(document.querySelectorAll(".ocr-preview-transaction-capsule button"))
                 .find(function(button){return button.textContent==="Cancel";});
               if(cancel)cancel.click();
               return cancel?1:0;
@@ -2116,8 +2429,17 @@ $$ Ny=1 $$)MD";
                   cell.dispatchEvent(new Event("input",{bubbles:true}));
                   var editor=cell.closest(".ocr-preview-inline-editor");
                   var save=editor&&editor.querySelector(".ocr-preview-inline-editor-toolbar .is-primary");
-                  if(save)save.click();
-                  return save?1:0;
+                  if(!save)return 0;
+                  if(save.disabled)return 2;
+                  var failure="";
+                  var capture=function(event){failure=event.message||"script error";};
+                  window.addEventListener("error",capture);
+                  save.click();
+                  window.removeEventListener("error",capture);
+                  if(failure)return "error:"+failure;
+                  var status=editor.querySelector(".ocr-preview-editor-status");
+                  if(status&&status.textContent.indexOf("no longer aligned")>=0)return 3;
+                  return save.disabled?1:4;
                 })())JS",
                 result);
             if (_wtoi(result.c_str()) != 1 ||
@@ -2154,6 +2476,694 @@ $$ Ny=1 $$)MD";
         }
     }
 
+    // The shared document editor keeps composition transient, exposes
+    // contextual commands without a persistent toolbar, serializes supported
+    // Markdown, and publishes one native-visible active/dirty state.
+    if (runtimeError.empty()) {
+        const int editCount = documentEditCount;
+        host.RenderMarkdown(12, L"| A | B |\n| --- | --- |\n| 1 | 2 |", true);
+        WaitForScriptInt(
+            host,
+            LR"JS((function(){return document.querySelector('#preview table')?1:0;})())JS",
+            1);
+        std::wstring result;
+        ExecuteScriptSync(
+            host,
+            LR"JS((function(){
+              document.querySelector('#preview').dispatchEvent(
+                new MouseEvent('dblclick',{bubbles:true,cancelable:true}));
+              return 1;
+            })())JS",
+            result);
+        if (_wtoi(result.c_str()) != 1 ||
+            !PumpUntil([&]() { return documentEditCount == editCount + 1; }, 2000) ||
+            documentSourceRequired || host.HasActiveEditor()) {
+            runtimeError = L"Simple GFM table was not accepted by the rich document editor.";
+        }
+    }
+    if (runtimeError.empty()) {
+        host.SetEditingBlock(L"");
+        const std::wstring documentMarkdown = L"# Document title\n\nInitial text";
+        host.RenderMarkdown(12, documentMarkdown, true);
+        WaitForScriptInt(
+            host,
+            LR"JS((function(){return document.querySelector('#preview').textContent.indexOf('Document title')>=0?1:0;})())JS",
+            1);
+        PumpFor(100);
+        editorMemoryBaseline = CurrentProcessMemory();
+        host.SetTextFontSize(22);
+        editorStateChangeCount = 0;
+        observedEditorActive = false;
+        observedEditorDirty = false;
+        observedEditorComposing = false;
+        observedEditorCanSave = false;
+        observedEditorActionPending = false;
+        observedDirtyEditorState = false;
+        observedPendingEditorState = false;
+        host.StartDocumentEditing();
+        std::wstring documentEditorDebug;
+        ExecuteScriptSync(
+            host,
+            LR"JS((function(){
+              var editor=document.querySelector('.ocr-preview-document-editor .ocr-preview-rich-editor-body');
+              var root=document.querySelector('.ocr-preview-document-editor');
+              var preview=document.querySelector('#preview');
+              return [!!editor,!!(root&&root.querySelector('.ocr-preview-transaction-capsule')),
+                editor?getComputedStyle(editor).fontSize:'none',
+                preview?getComputedStyle(preview).fontSize:'none'].join('|');
+            })())JS",
+            documentEditorDebug);
+        if (!WaitForScriptInt(
+                host,
+                LR"JS((function(){
+                  var editor=document.querySelector('.ocr-preview-document-editor .ocr-preview-rich-editor-body');
+                  var root=document.querySelector('.ocr-preview-document-editor');
+                  var capsule=root&&root.querySelector('.ocr-preview-transaction-capsule');
+                  var preview=document.querySelector('#preview');
+                  return editor&&!capsule&&preview&&
+                    getComputedStyle(editor).fontSize==='22px'&&
+                    getComputedStyle(editor).fontSize===getComputedStyle(preview).fontSize&&
+                    !root.querySelector('.ocr-preview-rich-editor-toolbar')&&
+                    !root.querySelector('.ocr-preview-inline-editor-toolbar')&&
+                    !root.querySelector('.ocr-preview-editor-overflow')&&
+                    !root.querySelector('.ocr-preview-link-popover')?1:0;
+                })())JS",
+                1) ||
+            !PumpUntil([&]() {
+                return host.HasActiveEditor() && host.CanSaveActiveEditor() &&
+                    editorStateChangeCount > 0 && observedEditorActive &&
+                    !observedEditorDirty && !observedEditorComposing && observedEditorCanSave &&
+                    !observedEditorActionPending;
+            }, 3000) || host.HasDirtyEditor()) {
+            runtimeError = L"Document rich editor did not open at the Preview font size with native footer actions: " +
+                documentEditorDebug;
+        } else {
+            PumpFor(100);
+            editorMemoryOpen = CurrentProcessMemory();
+        }
+    }
+    if (runtimeError.empty()) {
+        const int saveCount = documentSaveCount;
+        std::wstring result;
+        if (!ExecuteScriptSync(
+                host,
+                LR"JS((function(){
+                  var root=document.querySelector('.ocr-preview-document-editor');
+                  var body=root&&root.querySelector('.ocr-preview-rich-editor-body');
+                  if(!body)return 0;
+                  function place(text,offset){
+                    var range=document.createRange();
+                    range.setStart(text,offset);
+                    range.collapse(true);
+                    getSelection().removeAllRanges();
+                    getSelection().addRange(range);
+                  }
+                  body.innerHTML='<p>/</p>';
+                  body.focus();
+                  var text=body.firstElementChild.firstChild;
+                  place(text,text.nodeValue.length);
+                  body.dispatchEvent(new InputEvent('input',{
+                    bubbles:true,inputType:'insertText',data:'/'
+                  }));
+                  var down=new KeyboardEvent('keydown',{key:'ArrowDown',bubbles:true,cancelable:true});
+                  body.dispatchEvent(down);
+                  body.dispatchEvent(new KeyboardEvent('keyup',{key:'ArrowDown',bubbles:true}));
+                  var selected=root.querySelector('.ocr-preview-slash-item.is-selected');
+                  if(!down.defaultPrevented||!selected||selected.textContent!=='Heading 1')return 14;
+                  body.innerHTML='<p>/ta</p>';
+                  text=body.firstElementChild.firstChild;
+                  place(text,text.nodeValue.length);
+                  body.dispatchEvent(new InputEvent('input',{
+                    bubbles:true,inputType:'insertText',data:'a'
+                  }));
+                  var items=Array.from(root.querySelectorAll('.ocr-preview-slash-item'));
+                  if(items.length!==1||items[0].textContent!=='Table')return 2;
+                  items[0].click();
+                  var picker=root.querySelector('.ocr-preview-table-picker');
+                  var label=picker&&picker.querySelector('.ocr-preview-table-picker-label');
+                  if(!picker||!label||label.textContent!=='3 × 3')return 3;
+                  var choose=new KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true});
+                  body.dispatchEvent(choose);
+                  var table=body.querySelector('table');
+                  if(!choose.defaultPrevented||!table||table.rows.length!==3||table.rows[0].cells.length!==3)return 4;
+                  function clickTableAction(title){
+                    var control=Array.from(root.querySelectorAll('.ocr-preview-table-toolbar button'))
+                      .find(function(button){return button.title===title;});
+                    if(!control)return false;
+                    control.click();
+                    return true;
+                  }
+                  if(!clickTableAction('Insert row below')||table.rows.length!==4)return 5;
+                  if(!clickTableAction('Insert column right')||table.rows[0].cells.length!==4)return 6;
+                  var first=table.rows[0].cells[0];
+                  var last=table.rows[1].cells[1];
+                  first.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,button:0}));
+                  last.dispatchEvent(new PointerEvent('pointerover',{bubbles:true}));
+                  document.dispatchEvent(new PointerEvent('pointerup',{bubbles:true}));
+                  if(table.querySelectorAll('.is-active,.is-range-selected').length!==4)return 7;
+                  if(!clickTableAction('Delete row')||table.rows.length!==3)return 8;
+                  if(!clickTableAction('Delete column')||table.rows[0].cells.length!==3)return 9;
+                  if(!clickTableAction('Align column center'))return 10;
+                  var aligned=table.querySelector('.is-active');
+                  if(!aligned||aligned.style.textAlign!=='center')return 11;
+                  var tab=new KeyboardEvent('keydown',{key:'Tab',bubbles:true,cancelable:true});
+                  body.dispatchEvent(tab);
+                  if(!tab.defaultPrevented||table.querySelector('.is-active')===aligned)return 12;
+                  if(!window.ZenCropPreviewEditorMarkdown.canSerialize(body))return '14:'+body.innerHTML;
+                  var save=new KeyboardEvent('keydown',{key:'s',ctrlKey:true,bubbles:true,cancelable:true});
+                  body.dispatchEvent(save);
+                  return save.defaultPrevented?1:13;
+                })())JS",
+                result) ||
+            _wtoi(result.c_str()) != 1 ||
+            !PumpUntil([&]() { return documentSaveCount == saveCount + 1; }, 3000) ||
+            savedDocumentContent.find(L"| --- | :---: | --- |") == std::wstring::npos ||
+            !PumpUntil([&]() { return !host.HasActiveEditor(); }, 3000) ||
+            !observedDirtyEditorState) {
+            runtimeError = L"Slash table workflow did not preserve GFM editing behavior; result=" +
+                result + L"; content=" + savedDocumentContent;
+        }
+    }
+    if (runtimeError.empty()) {
+        host.RenderMarkdown(12, L"# Document title\n\nInitial text", true);
+        host.StartDocumentEditing();
+        if (!WaitForScriptInt(
+                host,
+                LR"JS((function(){return document.querySelector('.ocr-preview-document-editor .ocr-preview-rich-editor-body')?1:0;})())JS",
+                1) ||
+            !PumpUntil([&]() { return host.HasActiveEditor(); }, 3000)) {
+            runtimeError = L"Document rich editor did not reopen after the Slash table contract.";
+        }
+    }
+    if (runtimeError.empty()) {
+        const int saveCount = documentSaveCount;
+        std::wstring result;
+        if (!ExecuteScriptSync(
+                host,
+                LR"JS((function(){
+                  var root=document.querySelector('.ocr-preview-document-editor');
+                  var body=root&&root.querySelector('.ocr-preview-rich-editor-body');
+                  if(!body)return 0;
+                  function paragraph(text,offset){
+                    var p=document.createElement('p');
+                    p.textContent=text;
+                    body.appendChild(p);
+                    var range=document.createRange();
+                    range.setStart(p.firstChild,offset);
+                    range.collapse(true);
+                    getSelection().removeAllRanges();
+                    getSelection().addRange(range);
+                    return p;
+                  }
+                  function typeMarker(text,offset,data){
+                    var p=paragraph(text,offset);
+                    p.dispatchEvent(new InputEvent('input',{
+                      bubbles:true,inputType:'insertText',data:data
+                    }));
+                    return p;
+                  }
+                  body.innerHTML='<p><br></p>';
+                  var initial=body.firstElementChild;
+                  var initialRange=document.createRange();
+                  initialRange.selectNodeContents(initial);
+                  initialRange.collapse(true);
+                  getSelection().removeAllRanges();
+                  getSelection().addRange(initialRange);
+                  document.execCommand('insertText',false,'#');
+                  document.execCommand('insertText',false,' ');
+                  var heading=body.querySelector('h1');
+                  if(!heading||heading.textContent!==''||
+                    getSelection().anchorNode!==heading||getSelection().anchorOffset!==0)return 2;
+                  var undo=new KeyboardEvent('keydown',{key:'z',ctrlKey:true,bubbles:true,cancelable:true});
+                  body.dispatchEvent(undo);
+                  if(!body.querySelector('p')||
+                    body.querySelector('p').textContent.replace(/\u00a0/g,' ')!=='# ')return 3;
+                  var redo=new KeyboardEvent('keydown',{key:'y',ctrlKey:true,bubbles:true,cancelable:true});
+                  body.dispatchEvent(redo);
+                  if(!undo.defaultPrevented||!redo.defaultPrevented)return 3;
+                  document.execCommand('insertText',false,'Heading');
+                  if(!body.querySelector('h1')||body.querySelector('h1').textContent!=='Heading')return 4;
+                  typeMarker('### Third',4,' ');
+                  typeMarker('> Quote',2,' ');
+                  typeMarker('- Bullet',2,' ');
+                  typeMarker('7. Seven',3,' ');
+                  typeMarker('```int x;',3,'`');
+                  var line=paragraph('---',3);
+                  var enter=new KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true});
+                  line.dispatchEvent(enter);
+                  typeMarker('**bold**',8,'*');
+                  typeMarker('_italic_',8,'_');
+                  typeMarker('~~strike~~',10,'~');
+                  typeMarker('`inline`',8,'`');
+                  typeMarker('[site](https://example.com)',27,')');
+                  var ime=paragraph('# IME',2);
+                  ime.dispatchEvent(new InputEvent('input',{
+                    bubbles:true,inputType:'insertText',data:' ',isComposing:true
+                  }));
+                  var imeStayedPlain=ime.parentNode===body&&ime.nodeName==='P';
+                  ime.remove();
+                  var ordered=body.querySelector('ol');
+                  var code=body.querySelector('pre code');
+                  var link=body.querySelector('a[href="https://example.com"]');
+                  var structureOk=enter.defaultPrevented&&imeStayedPlain&&body.querySelector('h3')&&
+                    body.querySelector('blockquote')&&body.querySelector('ul')&&ordered&&
+                    ordered.getAttribute('start')==='7'&&code&&code.textContent==='int x;'&&
+                    body.querySelector('hr')&&body.querySelector('strong')&&body.querySelector('em')&&
+                    body.querySelector('s')&&body.querySelector('p code')&&link;
+                  if(!structureOk)return 5;
+                  var terminal=document.createElement('pre');
+                  var terminalCode=document.createElement('code');
+                  terminalCode.textContent='tail';
+                  terminal.appendChild(terminalCode);
+                  body.appendChild(terminal);
+                  var terminalRange=document.createRange();
+                  terminalRange.selectNodeContents(terminalCode);
+                  terminalRange.collapse(false);
+                  getSelection().removeAllRanges();
+                  getSelection().addRange(terminalRange);
+                  var down=new KeyboardEvent('keydown',{key:'ArrowDown',bubbles:true,cancelable:true});
+                  body.dispatchEvent(down);
+                  var exitParagraph=terminal.nextElementSibling;
+                  var anchor=getSelection().anchorNode;
+                  var arrowExited=down.defaultPrevented&&exitParagraph&&exitParagraph.nodeName==='P'&&
+                    (anchor===exitParagraph||exitParagraph.contains(anchor));
+                  if(exitParagraph)exitParagraph.remove();
+                  body.dispatchEvent(new MouseEvent('click',{
+                    bubbles:true,cancelable:true,clientY:terminal.getBoundingClientRect().bottom+20
+                  }));
+                  exitParagraph=terminal.nextElementSibling;
+                  anchor=getSelection().anchorNode;
+                  var clickExited=exitParagraph&&exitParagraph.nodeName==='P'&&
+                    (anchor===exitParagraph||exitParagraph.contains(anchor));
+                  if(exitParagraph)exitParagraph.remove();
+                  terminal.remove();
+                  return !arrowExited?6:(!clickExited?7:1);
+                })())JS",
+                result) || _wtoi(result.c_str()) != 1) {
+            runtimeError = L"Markdown typing rules did not produce the expected rich blocks; result=" + result;
+        } else {
+            ExecuteScriptSync(
+                host,
+                LR"JS((function(){
+                  var body=document.querySelector('.ocr-preview-document-editor .ocr-preview-rich-editor-body');
+                  var event=new KeyboardEvent('keydown',{key:'s',ctrlKey:true,bubbles:true,cancelable:true});
+                  body.dispatchEvent(event);
+                  return event.defaultPrevented?1:0;
+                })())JS",
+                result);
+            if (_wtoi(result.c_str()) != 1 ||
+                !PumpUntil([&]() { return documentSaveCount == saveCount + 1; }, 3000) ||
+                savedDocumentContent.find(L"# Heading") == std::wstring::npos ||
+                savedDocumentContent.find(L"### Third") == std::wstring::npos ||
+                savedDocumentContent.find(L"> Quote") == std::wstring::npos ||
+                savedDocumentContent.find(L"- Bullet") == std::wstring::npos ||
+                savedDocumentContent.find(L"7. Seven") == std::wstring::npos ||
+                savedDocumentContent.find(L"```\nint x;\n```") == std::wstring::npos ||
+                savedDocumentContent.find(L"---") == std::wstring::npos ||
+                savedDocumentContent.find(L"**bold**") == std::wstring::npos ||
+                savedDocumentContent.find(L"*italic*") == std::wstring::npos ||
+                savedDocumentContent.find(L"~~strike~~") == std::wstring::npos ||
+                savedDocumentContent.find(L"`inline`") == std::wstring::npos ||
+                savedDocumentContent.find(L"[site](<https://example.com>)") == std::wstring::npos ||
+                !PumpUntil([&]() { return !host.HasActiveEditor(); }, 3000)) {
+                runtimeError = L"Markdown typing rules did not serialize through document Save; result=" +
+                    result + L"; content=" + savedDocumentContent;
+            }
+        }
+    }
+    if (runtimeError.empty()) {
+        host.RenderMarkdown(12, L"# Document title\n\nInitial text", true);
+        host.StartDocumentEditing();
+        if (!WaitForScriptInt(
+                host,
+                LR"JS((function(){return document.querySelector('.ocr-preview-document-editor .ocr-preview-rich-editor-body')?1:0;})())JS",
+                1) || !PumpUntil([&]() { return host.HasActiveEditor(); }, 3000)) {
+            runtimeError = L"Document rich editor did not reopen after the Markdown typing-rule contract.";
+        }
+    }
+    if (runtimeError.empty()) {
+        std::wstring result;
+        ExecuteScriptSync(
+            host,
+            LR"JS((function(){
+              var body=document.querySelector('.ocr-preview-document-editor .ocr-preview-rich-editor-body');
+              body.dispatchEvent(new CompositionEvent('compositionstart',{bubbles:true,data:''}));
+              body.textContent='IME draft';
+              body.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertCompositionText',data:'draft'}));
+              return body?1:0;
+            })())JS",
+            result);
+        if (_wtoi(result.c_str()) != 1 ||
+            !PumpUntil([&]() { return host.IsEditorComposing(); }, 3000) ||
+            host.HasDirtyEditor()) {
+            runtimeError = L"IME composition leaked a dirty snapshot before compositionend.";
+        }
+    }
+    if (runtimeError.empty()) {
+        std::wstring result;
+        ExecuteScriptSync(
+            host,
+            LR"JS((function(){
+              var body=document.querySelector('.ocr-preview-document-editor .ocr-preview-rich-editor-body');
+              body.dispatchEvent(new CompositionEvent('compositionend',{bubbles:true,data:'IME draft'}));
+              return body.textContent==='IME draft'?1:0;
+            })())JS",
+            result);
+        if (_wtoi(result.c_str()) != 1 ||
+            !PumpUntil([&]() { return !host.IsEditorComposing() && host.HasDirtyEditor(); }, 3000)) {
+            runtimeError = L"IME compositionend did not publish exactly one final dirty state.";
+        }
+    }
+    if (runtimeError.empty()) {
+        std::wstring result;
+        if (!ExecuteScriptSync(
+                host,
+                LR"JS((function(){
+                  var root=document.querySelector('.ocr-preview-document-editor');
+                  var body=document.querySelector('.ocr-preview-document-editor .ocr-preview-rich-editor-body');
+                  body.innerHTML='<h2>Title</h2><h3 id="paragraph-style">Paragraph</h3>'+
+                    '<p id="italic-style">Italic</p><p id="strike-style">Strike</p>'+
+                    '<blockquote><p>Quote</p></blockquote>'+
+                    '<ul><li>One</li></ul><ol><li>Two</li></ol>'+
+                    '<p><code>x</code> <a href="https://example.com/a%20b">site</a></p>'+
+                    '<pre><code class="language-cpp">int x;</code></pre>';
+                  body.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertFromPaste'}));
+                  function selectNode(node){
+                    if(!node||!node.firstChild)return false;
+                    body.focus();
+                    var range=document.createRange();
+                    range.selectNodeContents(node.firstChild);
+                    getSelection().removeAllRanges();
+                    getSelection().addRange(range);
+                    body.dispatchEvent(new MouseEvent('mouseup',{bubbles:true}));
+                    return true;
+                  }
+                  function command(title){
+                    var control=Array.from(root.querySelectorAll('.ocr-preview-selection-toolbar button'))
+                      .find(function(button){return button.title===title;});
+                    if(!control)return false;
+                    control.click();
+                    return true;
+                  }
+                  function shortcut(key,shift){
+                    var event=new KeyboardEvent('keydown',{
+                      key:key,ctrlKey:true,shiftKey:!!shift,bubbles:true,cancelable:true
+                    });
+                    body.dispatchEvent(event);
+                    return event.defaultPrevented;
+                  }
+                  if(!selectNode(body.querySelector('h2'))||!command('Bold'))return 2;
+                  var selected=getSelection().toString();
+                  var bolded=!!body.querySelector('h2 strong,h2 b');
+                  if(!shortcut('z'))return 3;
+                  var undone=!body.querySelector('h2 strong,h2 b');
+                  if(!shortcut('y'))return 3;
+                  var redone=!!body.querySelector('h2 strong,h2 b');
+                  if(selected!=='Title'||!bolded||!undone||!redone)return selected!=='Title'?4:(!bolded?5:(!undone?6:7));
+                  shortcut('z');
+                  if(!selectNode(body.querySelector('#italic-style'))||!command('Italic'))return 8;
+                  if(!body.querySelector('#italic-style i,#italic-style em'))return 9;
+                  shortcut('y');
+                  if(body.querySelector('h2 strong,h2 b')||!body.querySelector('#italic-style i,#italic-style em'))return 10;
+                  if(!selectNode(body.querySelector('h2'))||!command('Bold'))return 11;
+                  if(!selectNode(body.querySelector('#strike-style'))||!command('Strike'))return 12;
+                  if(!body.querySelector('#strike-style s,#strike-style strike,#strike-style del'))return 13;
+                  if(!selectNode(body.querySelector('#paragraph-style'))||!command('Text'))return 14;
+                  if(!Array.from(body.querySelectorAll('p')).some(function(node){return node.textContent==='Paragraph';}))return 15;
+                  var anchor=body.querySelector('a');
+                  if(!selectNode(anchor)||!command('Link'))return 16;
+                  var popover=root.querySelector('.ocr-preview-link-popover');
+                  if(!popover)return 17;
+                  var input=popover.querySelector('.ocr-preview-editor-input');
+                  var apply=Array.from(popover.querySelectorAll('button'))
+                    .find(function(button){return button.textContent==='Update';});
+                  if(!input||!apply||input.value!=='https://example.com/a%20b')return 18;
+                  input.value='https://example.com/updated';
+                  input.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText'}));
+                  apply.click();
+                  anchor=body.querySelector('a[href="https://example.com/updated"]');
+                  if(!anchor||root.querySelector('.ocr-preview-link-popover'))return 19;
+                  if(!selectNode(anchor)||!command('Link'))return 20;
+                  popover=root.querySelector('.ocr-preview-link-popover');
+                  var remove=Array.from(popover.querySelectorAll('button'))
+                    .find(function(button){return button.textContent==='Remove';});
+                  if(!remove||remove.hidden)return 21;
+                  remove.click();
+                  if(body.querySelector('a')||root.querySelector('.ocr-preview-link-popover'))return 22;
+                  var site=Array.from(body.querySelectorAll('p')).filter(function(node){return node.textContent.indexOf('site')>=0;})[0];
+                  var text=site.lastChild;
+                  var range=document.createRange();
+                  range.setStart(text,Math.max(0,text.nodeValue.length-4));
+                  range.setEnd(text,text.nodeValue.length);
+                  body.focus();
+                  getSelection().removeAllRanges(); getSelection().addRange(range);
+                  var shortcut=new KeyboardEvent('keydown',{key:'k',ctrlKey:true,bubbles:true,cancelable:true});
+                  body.dispatchEvent(shortcut);
+                  popover=root.querySelector('.ocr-preview-link-popover');
+                  if(!shortcut.defaultPrevented||!popover)return 23;
+                  input=popover.querySelector('.ocr-preview-editor-input');
+                  input.value='https://example.com/a%20b';
+                  input.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText'}));
+                  input.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true}));
+                  anchor=body.querySelector('a[href="https://example.com/a%20b"]');
+                  if(!anchor||root.querySelector('.ocr-preview-link-popover'))return 24;
+                  if(!selectNode(anchor)||!command('Link'))return 25;
+                  popover=root.querySelector('.ocr-preview-link-popover');
+                  input=popover&&popover.querySelector('.ocr-preview-editor-input');
+                  if(!input)return 26;
+                  input.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}));
+                  if(root.querySelector('.ocr-preview-link-popover')||!document.querySelector('.ocr-preview-document-editor'))return 27;
+                  body.querySelectorAll('[id]').forEach(function(node){node.removeAttribute('id');});
+                  return 1;
+                })())JS",
+                result) || _wtoi(result.c_str()) != 1) {
+            runtimeError = L"Contextual formatting, links, or undo/redo lost editor state; result=" + result;
+        }
+    }
+    if (runtimeError.empty()) {
+        const int saveCount = documentSaveCount;
+        std::wstring result;
+        ExecuteScriptSync(
+            host,
+            LR"JS((function(){
+              var body=document.querySelector('.ocr-preview-document-editor .ocr-preview-rich-editor-body');
+              var event=new KeyboardEvent('keydown',{key:'s',ctrlKey:true,bubbles:true,cancelable:true});
+              body.dispatchEvent(event);
+              return event.defaultPrevented?1:0;
+            })())JS",
+            result);
+        if (_wtoi(result.c_str()) != 1 ||
+            !PumpUntil([&]() { return documentSaveCount == saveCount + 1; }, 3000) ||
+            savedDocumentContent.find(L"## **Title**") == std::wstring::npos ||
+            savedDocumentContent.find(L"Paragraph") == std::wstring::npos ||
+            savedDocumentContent.find(L"*Italic*") == std::wstring::npos ||
+            savedDocumentContent.find(L"~~Strike~~") == std::wstring::npos ||
+            savedDocumentContent.find(L"> Quote") == std::wstring::npos ||
+            savedDocumentContent.find(L"- One") == std::wstring::npos ||
+            savedDocumentContent.find(L"1. Two") == std::wstring::npos ||
+            savedDocumentContent.find(L"`x`") == std::wstring::npos ||
+            savedDocumentContent.find(L"[site](<https://example.com/a%20b>)") == std::wstring::npos ||
+            savedDocumentContent.find(L"```cpp") == std::wstring::npos ||
+            !PumpUntil([&]() { return !host.HasActiveEditor(); }, 3000)) {
+            runtimeError = L"Document editor did not save the supported Markdown round-trip or close cleanly; key=" +
+                result + L"; count=" + std::to_wstring(documentSaveCount - saveCount) +
+                L"; active=" + (host.HasActiveEditor() ? L"1" : L"0") +
+                L"; content=" + savedDocumentContent;
+        }
+    }
+    if (runtimeError.empty()) {
+        const int saveCount = documentSaveCount;
+        host.RenderMarkdown(12, L"Safe document before unsupported paste", true);
+        host.StartDocumentEditing();
+        if (!WaitForScriptInt(
+                host,
+                LR"JS((function(){return document.querySelector('.ocr-preview-document-editor')?1:0;})())JS",
+                1)) {
+            runtimeError = L"Document editor did not open for unsupported-paste protection.";
+        } else {
+            std::wstring result;
+            ExecuteScriptSync(
+                host,
+                LR"JS((function(){
+                  var body=document.querySelector('.ocr-preview-document-editor .ocr-preview-rich-editor-body');
+                  if(!body)return 0;
+                  body.innerHTML='<p>Safe text</p><img src="https://example.com/image.png">';
+                  body.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertFromPaste'}));
+                  return 1;
+                })())JS",
+                result);
+            if (_wtoi(result.c_str()) != 1 ||
+                !PumpUntil([&]() {
+                    return host.HasActiveEditor() && host.HasDirtyEditor() &&
+                        !host.CanSaveActiveEditor();
+                }, 3000)) {
+                runtimeError = L"Document editor did not report unsupported pasted content.";
+            } else {
+                host.RequestActiveEditorSave();
+            }
+            if (runtimeError.empty() && (documentSaveCount != saveCount ||
+                !host.HasActiveEditor() ||
+                !WaitForScriptInt(
+                    host,
+                    LR"JS((function(){var status=document.querySelector('.ocr-preview-document-editor .ocr-preview-editor-status');return status&&status.textContent.indexOf('Source mode')>=0?1:0;})())JS",
+                    1))) {
+                runtimeError = L"Programmatic document Save did not surface the Source-mode requirement.";
+            }
+            host.CancelActiveEditor();
+            WaitForScriptInt(
+                host,
+                LR"JS((function(){return document.querySelector('.ocr-preview-document-editor')?0:1;})())JS",
+                1);
+        }
+    }
+    if (runtimeError.empty()) {
+        const int saveCount = documentSaveCount;
+        host.RenderMarkdown(12, L"Pending document save", true);
+        host.StartDocumentEditing();
+        if (!WaitForScriptInt(
+                host,
+                LR"JS((function(){return document.querySelector('.ocr-preview-document-editor')?1:0;})())JS",
+                1)) {
+            runtimeError = L"Document editor did not open for pending-save protection.";
+        } else {
+            std::wstring result;
+            ExecuteScriptSync(
+                host,
+                LR"JS((function(){
+                  var body=document.querySelector('.ocr-preview-document-editor .ocr-preview-rich-editor-body');
+                  if(!body)return 0;
+                  body.innerHTML='<p>Pending document save changed</p>';
+                  body.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText'}));
+                  return 1;
+                })())JS",
+                result);
+            if (_wtoi(result.c_str()) != 1 ||
+                !PumpUntil([&]() {
+                    return host.HasDirtyEditor() && host.CanSaveActiveEditor();
+                }, 3000)) {
+                runtimeError = L"Document editor did not become saveable for pending-save protection.";
+            } else {
+                observedPendingEditorState = false;
+                deferredDocumentSaveToken.clear();
+                deferNextDocumentSaveResult = true;
+                host.RequestActiveEditorSave();
+                if (!PumpUntil([&]() {
+                        return documentSaveCount == saveCount + 1 &&
+                            host.IsEditorActionPending() && observedPendingEditorState &&
+                            !deferredDocumentSaveToken.empty();
+                    }, 3000)) {
+                    runtimeError = L"Document Save did not expose its pending transaction state.";
+                } else {
+                    host.CancelActiveEditor();
+                    PumpFor(100);
+                    if (!host.HasActiveEditor() || !host.IsEditorActionPending() ||
+                        !WaitForScriptInt(
+                            host,
+                            LR"JS((function(){return document.querySelector('.ocr-preview-document-editor')?1:0;})())JS",
+                            1)) {
+                        runtimeError = L"Pending document Save allowed the editor to be cancelled.";
+                    }
+                }
+                if (!deferredDocumentSaveToken.empty()) {
+                    host.PostPreviewDocumentSaveResult(deferredDocumentSaveToken, true);
+                }
+                if (runtimeError.empty() &&
+                    !PumpUntil([&]() {
+                        return !host.HasActiveEditor() && !host.IsEditorActionPending();
+                    }, 3000)) {
+                    runtimeError = L"Document editor did not close after the pending Save completed.";
+                }
+            }
+        }
+    }
+    if (runtimeError.empty()) {
+        const int saveCount = documentSaveCount;
+        std::wstring result;
+        ExecuteScriptSync(
+            host,
+            LR"JS((function(){
+              window.chrome.webview.postMessage({
+                type:'previewDocumentSave',renderToken:'stale',content:'stale',revisionSha256:'stale'
+              });
+              return 1;
+            })())JS",
+            result);
+        PumpFor(100);
+        if (documentSaveCount != saveCount) {
+            runtimeError = L"Host accepted a document save from a stale render token.";
+        }
+    }
+    if (runtimeError.empty()) {
+        const int saveCount = documentSaveCount;
+        host.RenderMarkdown(13, L"Cancel document draft", true);
+        host.StartDocumentEditing();
+        if (!WaitForScriptInt(
+                host,
+                LR"JS((function(){return document.querySelector('.ocr-preview-document-editor')?1:0;})())JS",
+                1)) {
+            runtimeError = L"Document editor did not reopen for Escape cancellation.";
+        } else {
+            std::wstring result;
+            ExecuteScriptSync(
+                host,
+                LR"JS((function(){
+                  var body=document.querySelector('.ocr-preview-document-editor .ocr-preview-rich-editor-body');
+                  body.textContent='discarded draft';
+                  body.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText'}));
+                  var event=new KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true});
+                  body.dispatchEvent(event);
+                  return event.defaultPrevented?1:0;
+                })())JS",
+                result);
+            if (_wtoi(result.c_str()) != 1 ||
+                !WaitForScriptInt(
+                    host,
+                    LR"JS((function(){return !document.querySelector('.ocr-preview-document-editor')&&document.querySelector('#preview').textContent.indexOf('Cancel document draft')>=0?1:0;})())JS",
+                    1) || documentSaveCount != saveCount || host.HasActiveEditor()) {
+                runtimeError = L"Document editor Escape did not discard the temporary draft.";
+            }
+        }
+    }
+    if (runtimeError.empty()) {
+        const int saveCount = documentSaveCount;
+        host.RenderMarkdown(13, L"Draft before transient replacement", true);
+        host.StartDocumentEditing();
+        if (!WaitForScriptInt(
+                host,
+                LR"JS((function(){return document.querySelector('.ocr-preview-document-editor')?1:0;})())JS",
+                1)) {
+            runtimeError = L"Document editor did not reopen before transient replacement.";
+        } else {
+            std::wstring result;
+            ExecuteScriptSync(
+                host,
+                LR"JS((function(){
+                  var body=document.querySelector('.ocr-preview-document-editor .ocr-preview-rich-editor-body');
+                  body.textContent='obsolete draft';
+                  body.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText'}));
+                  return body?1:0;
+                })())JS",
+                result);
+            host.RenderTransientMarkdown(13, L"Transient must not replace active draft", true);
+            PumpFor(100);
+            if (!WaitForScriptInt(
+                    host,
+                    LR"JS((function(){var editor=document.querySelector('.ocr-preview-document-editor .ocr-preview-rich-editor-body');return editor&&editor.textContent==='obsolete draft'&&document.querySelector('#preview').textContent.indexOf('Transient must not replace active draft')<0?1:0;})())JS",
+                    1) || !host.HasActiveEditor() || documentSaveCount != saveCount) {
+                runtimeError = L"Transient render replaced an active document draft.";
+            }
+            host.RenderMarkdown(14, L"Final transient replacement", true);
+            if (runtimeError.empty() && (_wtoi(result.c_str()) != 1 ||
+                !WaitForScriptInt(
+                    host,
+                    LR"JS((function(){return !document.querySelector('.ocr-preview-document-editor')&&document.querySelector('#preview').textContent.indexOf('Final transient replacement')>=0?1:0;})())JS",
+                    1) ||
+                host.HasActiveEditor() || documentSaveCount != saveCount)) {
+                runtimeError = L"A newer render did not invalidate the obsolete document draft.";
+            }
+        }
+    }
+
     PumpFor(100);
 
     host.Destroy();
@@ -2171,6 +3181,14 @@ $$ Ny=1 $$)MD";
         std::wcerr << L"Preview WYSIWYG runtime contract failed: " << runtimeError << L"\n";
         return 1;
     }
+
+    const SIZE_T workingSetDelta = editorMemoryOpen.workingSet > editorMemoryBaseline.workingSet
+        ? editorMemoryOpen.workingSet - editorMemoryBaseline.workingSet : 0;
+    const SIZE_T privateBytesDelta = editorMemoryOpen.privateBytes > editorMemoryBaseline.privateBytes
+        ? editorMemoryOpen.privateBytes - editorMemoryBaseline.privateBytes : 0;
+    std::wcout << L"Rich editor memory delta: workingSet="
+               << (workingSetDelta / 1024) << L" KiB, privateBytes="
+               << (privateBytesDelta / 1024) << L" KiB.\n";
 
     std::wcout << L"WebView2 preview contract passed.\n";
     return 0;

@@ -17,7 +17,7 @@ Testing/
 /build_output*.txt
 /datetime
 /review_diff.patch
-/.plan/
+
 /reverse/
 /.research/
 /docs/screenshot/reverse_sources/

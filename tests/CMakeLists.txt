@@ -266,7 +266,9 @@ zencrop_add_simple_hermetic(test_translation_contract
         ${CMAKE_SOURCE_DIR}/src/translation/TranslationProviderSettingsPage.cpp
         ${CMAKE_SOURCE_DIR}/src/translation/TranslationPromptSettingsPage.cpp
         ${CMAKE_SOURCE_DIR}/src/translation/TranslationResultWindow.cpp
+        ${CMAKE_SOURCE_DIR}/src/translation/TranslationResultWindow.StructuredSelection.cpp
         ${CMAKE_SOURCE_DIR}/src/translation/TranslationCoordinator.cpp
+        ${CMAKE_SOURCE_DIR}/src/translation/TranslationCoordinator.StructuredSelection.cpp
         ${CMAKE_SOURCE_DIR}/src/ocr/ui/OcrMarkdownPreviewHost.cpp
         ${CMAKE_SOURCE_DIR}/src/ocr/ui/OcrMarkdownPreviewProtocol.cpp
         ${CMAKE_SOURCE_DIR}/src/ocr/ui/dashboard/DashboardTranslationCache.cpp
@@ -274,8 +276,10 @@ zencrop_add_simple_hermetic(test_translation_contract
         ${CMAKE_SOURCE_DIR}/src/core/Sha256.cpp
         ${CMAKE_SOURCE_DIR}/src/window/AlwaysOnTop.cpp
         ${CMAKE_SOURCE_DIR}/src/selection/SelectionTypes.cpp
+        ${CMAKE_SOURCE_DIR}/src/selection/SelectionStructuredContent.cpp
         ${CMAKE_SOURCE_DIR}/src/selection/ClipboardCopyPolicy.cpp
         ${CMAKE_SOURCE_DIR}/src/selection/ClipboardDataSnapshot.cpp
+        ${CMAKE_SOURCE_DIR}/src/selection/ClipboardStructuredContentReader.cpp
         ${CMAKE_SOURCE_DIR}/src/selection/ClipboardCopyTransaction.cpp
         ${CMAKE_SOURCE_DIR}/src/selection/SelectionTextAcquirer.cpp
     INCLUDES ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/src/core

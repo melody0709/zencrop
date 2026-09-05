@@ -79,6 +79,17 @@ std::wstring BuildRenderMessage(int recordId, const std::wstring& markdown, cons
     return json;
 }
 
+std::wstring BuildTransientRenderMessage(int recordId, const std::wstring& markdown, const std::wstring& renderToken, bool compactLayout) {
+    std::wstring json = L"{\"type\":\"renderTransient\",\"recordId\":";
+    json += WideFormatIntLabel(recordId);
+    AppendJsonStringField(json, L"renderToken", renderToken);
+    AppendJsonStringField(json, L"markdown", markdown);
+    json += L",\"compactLayout\":";
+    json += WideJsonBoolLiteral(compactLayout);
+    json += L",\"options\":{\"enableMermaid\":true,\"enableChartJs\":true}}";
+    return json;
+}
+
 static std::wstring BuildResult(const wchar_t* type, const std::wstring& id, const std::wstring& token, bool success, const std::wstring& error) {
     std::wstring json = L"{\"type\":\""; json += type; json += L"\"";
     AppendJsonStringField(json, L"id", id); AppendJsonStringField(json, L"renderToken", token);
@@ -98,6 +109,10 @@ std::wstring BuildBlockSaveResult(const std::wstring& id, const std::wstring& to
 
 std::wstring BuildBlockRestoreResult(const std::wstring& id, const std::wstring& token, bool success, const std::wstring& error) {
     return BuildResult(L"previewBlockRestoreResult", id, token, success, error);
+}
+
+std::wstring BuildDocumentSaveResult(const std::wstring& token, bool success, const std::wstring& error) {
+    return BuildResult(L"previewDocumentSaveResult", L"", token, success, error);
 }
 
 } // namespace OcrMarkdownPreviewProtocol

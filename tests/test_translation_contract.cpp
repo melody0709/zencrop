@@ -23,6 +23,7 @@
 #include "selection/ClipboardCopyPolicy.h"
 #include "selection/ClipboardDataSnapshot.h"
 #include "selection/ClipboardCopyTransaction.h"
+#include "selection/ClipboardStructuredContentReader.h"
 #include "selection/SelectionTextAcquirer.h"
 #include "selection/SelectionTypes.h"
 #include <nlohmann/json.hpp>
@@ -427,6 +428,7 @@ public:
     std::atomic<bool> failNext{false};
     std::atomic<bool> duplicateNextSuccess{false};
     std::atomic<bool> synchronousNext{false};
+    std::atomic<bool> corruptStructuredMarkersNext{false};
 
     std::wstring LastTargetLanguage() const {
         std::lock_guard<std::mutex> lock(requestMutex_);
@@ -458,6 +460,11 @@ public:
                                        : requestHistory_.back();
     }
 
+    std::vector<std::vector<translation::TranslationSegment>> RequestHistory() const {
+        std::lock_guard<std::mutex> lock(requestMutex_);
+        return requestHistory_;
+    }
+
     std::shared_ptr<translation::AsyncHttpRequest> Translate(
         const translation::TranslationRequest& request,
         Callback callback) override {
@@ -479,8 +486,12 @@ public:
         }
         result.requestId = request.requestId;
         result.model = L"fake-model";
+        const bool corruptMarkers =
+            corruptStructuredMarkersNext.exchange(false);
         for (const auto& segment : request.segments) {
-            result.translations.push_back({segment.id, L"[fake] " + segment.text});
+            result.translations.push_back({
+                segment.id,
+                corruptMarkers ? L"markers removed" : L"[fake] " + segment.text});
         }
         const bool duplicate = result.success && duplicateNextSuccess.exchange(false);
         const translation::TranslationResult duplicateResult = result;
@@ -879,15 +890,68 @@ int TestCoordinatorMessageChain() {
             cleanup();
             return 166;
         }
-        SendMessageW(resultWindow, WM_COMMAND,
-            MAKEWPARAM(3120, BN_CLICKED),
-            reinterpret_cast<LPARAM>(sourceModeButton));
-        const std::wstring restoredSourceMode = ControlText(resultWindow, 3120);
-        if (restoredSourceMode != L"Source" && restoredSourceMode != L"Preview") {
+        HWND sourceEdit = GetDlgItem(resultWindow, 3101);
+        LOGFONTW sourceFontBefore = {};
+        const HFONT beforeFont = reinterpret_cast<HFONT>(
+            SendMessageW(sourceEdit, WM_GETFONT, 0, 0));
+        if (!beforeFont ||
+            GetObjectW(beforeFont, sizeof(sourceFontBefore), &sourceFontBefore) == 0) {
             coordinator.Shutdown();
             DestroyWindow(messageWindow);
             cleanup();
-            return 167;
+            return 168;
+        }
+        const std::wstring sourceTextBeforeZoom = ControlText(resultWindow, 3101);
+        const auto sendCtrlKey = [sourceEdit](WPARAM key) {
+            BYTE keyboardState[256] = {};
+            GetKeyboardState(keyboardState);
+            const BYTE savedControl = keyboardState[VK_CONTROL];
+            keyboardState[VK_CONTROL] |= 0x80;
+            SetKeyboardState(keyboardState);
+            SendMessageW(sourceEdit, WM_KEYDOWN, key, 0);
+            keyboardState[VK_CONTROL] = savedControl;
+            SetKeyboardState(keyboardState);
+        };
+        const auto sourceFontHeight = [sourceEdit]() {
+            LOGFONTW font = {};
+            const HFONT handle = reinterpret_cast<HFONT>(
+                SendMessageW(sourceEdit, WM_GETFONT, 0, 0));
+            return handle && GetObjectW(handle, sizeof(font), &font) != 0
+                ? std::abs(font.lfHeight)
+                : 0L;
+        };
+        sendCtrlKey(VK_OEM_PLUS);
+        const LONG enlargedHeight = sourceFontHeight();
+        sendCtrlKey(VK_OEM_MINUS);
+        if (enlargedHeight <= std::abs(sourceFontBefore.lfHeight) ||
+            sourceFontHeight() != std::abs(sourceFontBefore.lfHeight) ||
+            ControlText(resultWindow, 3101) != sourceTextBeforeZoom) {
+            coordinator.Shutdown();
+            DestroyWindow(messageWindow);
+            cleanup();
+            return 169;
+        }
+        sendCtrlKey(VK_ADD);
+        SendMessageW(resultWindow, WM_COMMAND,
+            MAKEWPARAM(3120, BN_CLICKED),
+            reinterpret_cast<LPARAM>(sourceModeButton));
+        SendMessageW(resultWindow, WM_COMMAND,
+            MAKEWPARAM(3120, BN_CLICKED),
+            reinterpret_cast<LPARAM>(sourceModeButton));
+        if (ControlText(resultWindow, 3120) != L"Preview" ||
+            sourceFontHeight() != enlargedHeight) {
+            coordinator.Shutdown();
+            DestroyWindow(messageWindow);
+            cleanup();
+            return 566;
+        }
+        sendCtrlKey(L'0');
+        if (sourceFontHeight() != std::abs(sourceFontBefore.lfHeight) ||
+            ControlText(resultWindow, 3101) != sourceTextBeforeZoom) {
+            coordinator.Shutdown();
+            DestroyWindow(messageWindow);
+            cleanup();
+            return 567;
         }
     }
 
@@ -1338,6 +1402,158 @@ int TestCoordinatorMessageChain() {
     selectedTextSettings.enabled = true;
     SaveTranslationSettings(selectedTextSettings);
 
+    const auto makeStructuredSelection = [](
+        const std::wstring& token, uint64_t generation) {
+        selection::SelectionContent content;
+        content.kind = selection::SelectionContentKind::Html;
+        content.fidelity = selection::SelectionFidelity::Semantic;
+        content.requestToken = token;
+        content.requestGeneration = generation;
+        content.structuredPlanJson =
+            L"{\"version\":1,\"token\":\"" + token +
+            L"\",\"generation\":" + std::to_wstring(generation) +
+            L",\"sourceMarkdown\":\"# Hello **world**\","
+            L"\"parts\":[{\"literal\":\"# \"},{\"segmentId\":\"t00001\"},"
+            L"{\"literal\":\" **\"},{\"segmentId\":\"t00002\"},"
+            L"{\"literal\":\"**\"}],\"leaves\":["
+            L"{\"id\":\"t00001\",\"blockId\":\"b1\",\"text\":\"Hello\"},"
+            L"{\"id\":\"t00002\",\"blockId\":\"b1\",\"text\":\"world\"}]}";
+        return content;
+    };
+    translator->ResetRequestHistory();
+    const auto directStructuredStart = coordinator.StartSelection(
+        nullptr, selectedTextContext,
+        makeStructuredSelection(
+            L"11111111111111111111111111111111", 901));
+    PumpTranslationMessages(500);
+    auto structuredHistory = translator->RequestHistory();
+    if (!directStructuredStart.started || structuredHistory.size() != 1 ||
+        structuredHistory[0].size() != 2 ||
+        structuredHistory[0][0].id != L"t00001" ||
+        structuredHistory[0][1].id != L"t00002" ||
+        ControlText(selectedTextWindow, 3101) != L"# Hello **world**" ||
+        ControlText(selectedTextWindow, 3102) !=
+            L"# [fake] Hello **[fake] world**") {
+        coordinator.Shutdown();
+        DestroyWindow(messageWindow);
+        cleanup();
+        return 553;
+    }
+    translator->ResetRequestHistory();
+    SendMessageW(selectedTextWindow, WM_COMMAND,
+        MAKEWPARAM(3108, BN_CLICKED),
+        reinterpret_cast<LPARAM>(GetDlgItem(selectedTextWindow, 3108)));
+    PumpTranslationMessages(500);
+    structuredHistory = translator->RequestHistory();
+    if (structuredHistory.size() != 1 || structuredHistory[0].size() != 2 ||
+        structuredHistory[0][0].id != L"t00001" ||
+        structuredHistory[0][1].id != L"t00002" ||
+        ControlText(selectedTextWindow, 3102) !=
+            L"# [fake] Hello **[fake] world**") {
+        coordinator.Shutdown();
+        DestroyWindow(messageWindow);
+        cleanup();
+        return 559;
+    }
+
+    TranslationSettings llmSettings = selectedTextSettings;
+    auto* llmProfile = translation::FindActiveTranslationProvider(llmSettings);
+    const auto* llmPreset =
+        translation::FindTranslationProviderPreset(L"deepseek");
+    if (!llmProfile || !llmPreset) {
+        coordinator.Shutdown();
+        DestroyWindow(messageWindow);
+        cleanup();
+        return 554;
+    }
+    *llmProfile = translation::CreateTranslationProviderProfile(
+        *llmPreset, L"provider.test.structured");
+    llmProfile->enabled = true;
+    llmSettings.activeProviderId = llmProfile->id;
+    llmProfile->displayName = L"DeepSeek test";
+    if (!SaveTranslationSettings(llmSettings)) {
+        coordinator.Shutdown();
+        DestroyWindow(messageWindow);
+        cleanup();
+        return 556;
+    }
+    translator->ResetRequestHistory();
+    translator->corruptStructuredMarkersNext.store(true);
+    translator->DuplicateNextSuccessfulResult();
+    const auto llmStructuredStart = coordinator.StartSelection(
+        nullptr, selectedTextContext,
+        makeStructuredSelection(
+            L"22222222222222222222222222222222", 902));
+    PumpTranslationMessages(800);
+    structuredHistory = translator->RequestHistory();
+    const bool firstHasMarker = structuredHistory.size() == 2 &&
+        structuredHistory[0].size() == 1 &&
+        structuredHistory[0][0].id.rfind(L"zb", 0) == 0 &&
+        structuredHistory[0][0].text.find(L"ZC") != std::wstring::npos;
+    const bool retryUsesLeaves = structuredHistory.size() == 2 &&
+        structuredHistory[1].size() == 2 &&
+        structuredHistory[1][0].id == L"t00001" &&
+        structuredHistory[1][1].id == L"t00002" &&
+        structuredHistory[1][0].text == L"Hello" &&
+        structuredHistory[1][1].text == L"world";
+    if (!llmStructuredStart.started || !firstHasMarker || !retryUsesLeaves ||
+        ControlText(selectedTextWindow, 3105) != L"Ready" ||
+        ControlText(selectedTextWindow, 3102) !=
+            L"# [fake] Hello **[fake] world**") {
+        coordinator.Shutdown();
+        DestroyWindow(messageWindow);
+        cleanup();
+        return 555;
+    }
+
+    selection::SelectionContent largeStructured;
+    largeStructured.kind = selection::SelectionContentKind::Html;
+    largeStructured.fidelity = selection::SelectionFidelity::Semantic;
+    largeStructured.requestToken =
+        L"33333333333333333333333333333333";
+    largeStructured.requestGeneration = 903;
+    std::wstring largeSource;
+    std::wstring largeParts;
+    std::wstring largeLeaves;
+    for (int index = 1; index <= 4; ++index) {
+        const std::wstring id = L"t" + std::to_wstring(10000 + index).substr(1);
+        const std::wstring text(3200, static_cast<wchar_t>(L'a' + index - 1));
+        largeSource += text;
+        if (!largeParts.empty()) largeParts += L",";
+        if (!largeLeaves.empty()) largeLeaves += L",";
+        largeParts += L"{\"segmentId\":\"" + id + L"\"}";
+        largeLeaves += L"{\"id\":\"" + id +
+            L"\",\"blockId\":\"b1\",\"text\":\"" + text + L"\"}";
+    }
+    largeStructured.structuredPlanJson =
+        L"{\"version\":1,\"token\":\"" + largeStructured.requestToken +
+        L"\",\"generation\":903,\"sourceMarkdown\":\"" + largeSource +
+        L"\",\"parts\":[" + largeParts + L"],\"leaves\":[" +
+        largeLeaves + L"]}";
+    translator->ResetRequestHistory();
+    const auto largeStructuredStart = coordinator.StartSelection(
+        nullptr, selectedTextContext, std::move(largeStructured));
+    PumpTranslationMessages(1200);
+    structuredHistory = translator->RequestHistory();
+    size_t largeRequestSegments = 0;
+    bool structuredRequestTooLarge = false;
+    for (const auto& requestSegments : structuredHistory) {
+        largeRequestSegments += requestSegments.size();
+        for (const auto& segment : requestSegments) {
+            structuredRequestTooLarge = structuredRequestTooLarge ||
+                segment.text.size() > 10000;
+        }
+    }
+    if (!largeStructuredStart.started || largeRequestSegments < 2 ||
+        structuredRequestTooLarge ||
+        ControlText(selectedTextWindow, 3105) != L"Ready") {
+        coordinator.Shutdown();
+        DestroyWindow(messageWindow);
+        cleanup();
+        return 558;
+    }
+    SaveTranslationSettings(selectedTextSettings);
+
     // Optional diagnostic hold for a real ready-state screenshot. Hermetic
     // runs leave this unset, so the contract remains time-bounded as before.
     if (OptionalReadyDisplay() && OptionalChineseDisplay()) {
@@ -1560,7 +1776,11 @@ int TestResultWindowLayoutContract() {
     HWND sourceControl = GetDlgItem(native, 3101);
     HWND translationControl = GetDlgItem(native, 3102);
     HWND copySourceControl = GetDlgItem(native, 3106);
+    HWND sourceEditorCancelControl = GetDlgItem(native, 3123);
+    HWND sourceEditorSaveControl = GetDlgItem(native, 3124);
     if (!sourceControl || !translationControl || !copySourceControl ||
+        !sourceEditorCancelControl || !sourceEditorSaveControl ||
+        IsWindowVisible(sourceEditorCancelControl) || IsWindowVisible(sourceEditorSaveControl) ||
         (GetWindowLongPtrW(sourceControl, GWL_STYLE) & WS_TABSTOP) == 0 ||
         (GetWindowLongPtrW(translationControl, GWL_STYLE) & WS_TABSTOP) == 0) {
         return 92;
@@ -1576,6 +1796,17 @@ int TestResultWindowLayoutContract() {
         copySourceRect.bottom - copySourceRect.top !=
             targetComboHeightRect.bottom - targetComboHeightRect.top) {
         return 124;
+    }
+    RECT sourceEditorCancelRect = {};
+    RECT sourceEditorSaveRect = {};
+    if (!GetWindowRect(sourceEditorCancelControl, &sourceEditorCancelRect) ||
+        !GetWindowRect(sourceEditorSaveControl, &sourceEditorSaveRect) ||
+        sourceEditorCancelRect.top != copySourceRect.top ||
+        sourceEditorSaveRect.top != copySourceRect.top ||
+        sourceEditorCancelRect.bottom != copySourceRect.bottom ||
+        sourceEditorSaveRect.bottom != copySourceRect.bottom ||
+        sourceEditorCancelRect.right > sourceEditorSaveRect.left) {
+        return 570;
     }
 
     window.SetSourceText(L"short source");
@@ -1762,7 +1993,10 @@ int TestResultWindowLayoutContract() {
     SendMessageW(copySourceControl, WM_KEYDOWN, VK_TAB, 0);
     SetKeyboardState(originalKeyboardState);
     if (GetFocus() != sourceControl) return 97;
+    const bool sourceModeEnabledBeforeBusy =
+        IsWindowEnabled(GetDlgItem(native, 3120)) != FALSE;
     window.SetBusy(true);
+    if (IsWindowEnabled(GetDlgItem(native, 3120))) return 568;
     SetFocus(sourceControl);
     SendMessageW(sourceControl, WM_KEYDOWN, VK_ESCAPE, 0);
     if (cancelCallbacks != 1 || !window.IsValid()) return 56;
@@ -1776,6 +2010,8 @@ int TestResultWindowLayoutContract() {
     if (AlwaysOnTopManager::Instance().IsPinned(native)) return 70;
     if (ControlText(native, 3119).find(L"Pin") == std::wstring::npos) return 99;
     window.SetBusy(false);
+    if ((IsWindowEnabled(GetDlgItem(native, 3120)) != FALSE) !=
+        sourceModeEnabledBeforeBusy) return 569;
     SetWindowTextW(sourceControl, L"edited");
     SendMessageW(native, WM_COMMAND,
         MAKEWPARAM(3101, EN_CHANGE), reinterpret_cast<LPARAM>(sourceControl));
@@ -4590,7 +4826,7 @@ int TestSelectionIntegrationProbe() {
             selection::SelectionAcquisitionSource::UiAutomation ||
         uiaResult->clipboardDisposition !=
             selection::ClipboardDisposition::Untouched ||
-        uiaResult->text != L"Alpha") {
+        uiaResult->content.plainText != L"Alpha") {
         acquirer.Shutdown();
         return 524;
     }
@@ -4669,14 +4905,14 @@ int TestSelectionIntegrationProbe() {
             selection::SelectionAcquisitionSource::ClipboardCopy ||
         copyResult.clipboardDisposition !=
             selection::ClipboardDisposition::Restored ||
-        copyResult.text != g_selectionCopyProbeText) {
+        copyResult.content.plainText != g_selectionCopyProbeText) {
         std::wcerr << L"selection copy diagnostic: error="
                    << static_cast<int>(copyResult.error)
                    << L" source=" << static_cast<int>(copyResult.source)
                    << L" disposition="
                    << static_cast<int>(copyResult.clipboardDisposition)
                    << L" diagnostic=" << copyResult.diagnosticCode
-                   << L" text='" << copyResult.text
+                   << L" text='" << copyResult.content.plainText
                    << L"' restored-text='" << ReadTestClipboardText(windows.target)
                    << L"' html=" << IsClipboardFormatAvailable(htmlFormat)
                    << L" rtf=" << IsClipboardFormatAvailable(rtfFormat) << L"\n";
@@ -4724,6 +4960,26 @@ int TestExternalSelectionIntegrationProbe() {
         targetRect.bottom <= targetRect.top) {
         return 535;
     }
+
+    const HWND previousForeground = GetForegroundWindow();
+    const DWORD currentThreadId = GetCurrentThreadId();
+    const DWORD foregroundThreadId = previousForeground
+        ? GetWindowThreadProcessId(previousForeground, nullptr) : 0;
+    const bool attachedForeground = foregroundThreadId != 0 &&
+        foregroundThreadId != currentThreadId &&
+        AttachThreadInput(currentThreadId, foregroundThreadId, TRUE) != FALSE;
+    const bool attachedTarget = threadId != currentThreadId &&
+        threadId != foregroundThreadId &&
+        AttachThreadInput(currentThreadId, threadId, TRUE) != FALSE;
+    ShowWindow(target, SW_RESTORE);
+    BringWindowToTop(target);
+    const BOOL foregroundSet = SetForegroundWindow(target);
+    if (attachedTarget) AttachThreadInput(currentThreadId, threadId, FALSE);
+    if (attachedForeground) {
+        AttachThreadInput(currentThreadId, foregroundThreadId, FALSE);
+    }
+    PumpMessagesFor(50);
+    if (!foregroundSet || GetForegroundWindow() != target) return 563;
 
     if (!RegisterSelectionProbeClasses()) return 536;
     SelectionProbeWindows windows;
@@ -4800,8 +5056,8 @@ int TestExternalSelectionIntegrationProbe() {
         IsClipboardFormatAvailable(htmlFormat) &&
         IsClipboardFormatAvailable(rtfFormat);
     const bool textMatches = result && (expectedIsSubstring
-        ? result->text.find(expected) != std::wstring::npos
-        : result->text == expected);
+        ? result->content.plainText.find(expected) != std::wstring::npos
+        : result->content.plainText == expected);
     if (expectSyntheticCopySuppressed) {
         if (!result ||
             result->error !=
@@ -4829,16 +5085,166 @@ int TestExternalSelectionIntegrationProbe() {
                        << static_cast<int>(result->error)
                        << L" source=" << static_cast<int>(result->source)
                        << L" diagnostic=" << result->diagnosticCode
-                       << L" text='" << result->text << L"'\n";
+                       << L" kind=" << static_cast<int>(result->content.kind)
+                       << L" language='" << result->content.codeLanguage
+                       << L"' markdown-units="
+                       << result->content.markdown.size()
+                       << L" html-units=" << result->content.html.size()
+                       << L" text='" << result->content.plainText << L"'\n";
         }
         return 539;
     }
     std::cout << "external selection integration ok: source="
-              << static_cast<int>(result->source) << "\n";
+              << static_cast<int>(result->source)
+              << " kind=" << static_cast<int>(result->content.kind)
+              << " language=";
+    std::wcout << result->content.codeLanguage
+               << L" markdown-units=" << result->content.markdown.size()
+               << L" html-units=" << result->content.html.size() << L"\n";
     return 0;
 }
 
 int TestSelectionPlatformContracts() {
+    const std::wstring token = L"0123456789abcdef0123456789abcdef";
+    const std::string fragment =
+        "<table><tr><td>Alpha</td><td>Beta</td></tr></table>";
+    std::string header =
+        "Version:1.0\r\n"
+        "StartHTML:0000000000\r\n"
+        "EndHTML:0000000000\r\n"
+        "StartFragment:0000000000\r\n"
+        "EndFragment:0000000000\r\n"
+        "SourceURL:https://example.com/docs/page\r\n";
+    const std::string html = "<html><body>" + fragment + "</body></html>";
+    const size_t startHtml = header.size();
+    const size_t startFragment = startHtml + std::string("<html><body>").size();
+    const size_t endFragment = startFragment + fragment.size();
+    const size_t endHtml = startHtml + html.size();
+    const auto writeOffset = [&](const char* name, size_t value) {
+        const std::string needle = std::string(name) + ":";
+        const size_t offset = header.find(needle);
+        if (offset == std::string::npos) return false;
+        char digits[11] = {};
+        sprintf_s(digits, "%010zu", value);
+        header.replace(offset + needle.size(), 10, digits);
+        return true;
+    };
+    if (!writeOffset("StartHTML", startHtml) ||
+        !writeOffset("EndHTML", endHtml) ||
+        !writeOffset("StartFragment", startFragment) ||
+        !writeOffset("EndFragment", endFragment)) {
+        return 545;
+    }
+    selection::CfHtmlSelection parsedHtml;
+    std::wstring cfHtmlDiagnostic;
+    if (!selection::ParseCfHtmlSelection(
+            header + html, token, parsedHtml, &cfHtmlDiagnostic) ||
+        parsedHtml.sourceUrl != L"https://example.com/docs/page" ||
+        parsedHtml.markedHtml.find(
+            L"<!--ZENCROP_SELECTION_START_" + token + L"-->") ==
+            std::wstring::npos ||
+        parsedHtml.markedHtml.find(
+            L"<!--ZENCROP_SELECTION_END_" + token + L"-->") ==
+            std::wstring::npos) {
+        return 546;
+    }
+    std::string malformed = header + html;
+    malformed.replace(header.find("EndFragment:") + 12, 10, "9999999999");
+    if (selection::ParseCfHtmlSelection(
+            malformed, token, parsedHtml, nullptr)) {
+        return 547;
+    }
+
+    const std::wstring codeMarkdown = selection::BuildCodeSelectionMarkdown(
+        L"const fence = ```;", L"cpp<script>");
+    if (codeMarkdown.find(L"````cppscript\n") != 0 ||
+        codeMarkdown.rfind(L"\n````") != codeMarkdown.size() - 5) {
+        return 548;
+    }
+    selection::SelectionContent vsCodeMarkdown;
+    vsCodeMarkdown.plainText = L"## Title\n\nBody";
+    const std::wstring vsCodeMetadata =
+        L"{\"version\":1,\"mode\":\"markdown\"}";
+    const std::string vsCodeMetadataBytes(
+        reinterpret_cast<const char*>(vsCodeMetadata.c_str()),
+        reinterpret_cast<const char*>(vsCodeMetadata.c_str() +
+            vsCodeMetadata.size() + 1));
+    if (!selection::ApplyVsCodeClipboardMetadata(
+            vsCodeMetadataBytes, vsCodeMarkdown) ||
+        vsCodeMarkdown.kind != selection::SelectionContentKind::Markdown ||
+        vsCodeMarkdown.markdown != vsCodeMarkdown.plainText ||
+        vsCodeMarkdown.codeLanguage != L"markdown") {
+        return 562;
+    }
+    selection::SelectionContent vsCodeHtml;
+    vsCodeHtml.plainText = L"## Title\n\n### Abstract";
+    vsCodeHtml.html =
+        L"<html><body><div style=\"font-family: Consolas;white-space: pre;\">"
+        L"<div><span style=\"font-weight: bold;\">## Title</span></div>"
+        L"</div></body></html>";
+    vsCodeHtml.kind = selection::SelectionContentKind::Html;
+    vsCodeHtml.fidelity = selection::SelectionFidelity::Semantic;
+    selection::SelectionContent renderedHtml = vsCodeHtml;
+    renderedHtml.html = L"<html><body><h2>Title</h2></body></html>";
+    if (selection::ApplyPreformattedSourceClipboardHtml(renderedHtml) ||
+        !selection::ApplyPreformattedSourceClipboardHtml(vsCodeHtml) ||
+        vsCodeHtml.kind != selection::SelectionContentKind::Markdown ||
+        vsCodeHtml.markdown != vsCodeHtml.plainText ||
+        !vsCodeHtml.html.empty() ||
+        selection::ApplyPreformattedSourceClipboardHtml(vsCodeHtml)) {
+        return 564;
+    }
+
+    const std::wstring planJson =
+        L"{\"version\":1,\"token\":\"" + token +
+        L"\",\"generation\":77,\"sourceMarkdown\":\"# Hello `code`\","
+        L"\"parts\":[{\"literal\":\"# \"},{\"segmentId\":\"t00001\"},"
+        L"{\"literal\":\" `code`\"}],\"leaves\":[{\"id\":\"t00001\","
+        L"\"blockId\":\"b1\",\"text\":\"Hello\"}]}";
+    selection::StructuredSelectionPlan plan;
+    if (!selection::ParseStructuredSelectionPlan(
+            planJson, token, 77,
+            selection::SelectionContentKind::Html,
+            selection::SelectionFidelity::Semantic,
+            plan, nullptr) ||
+        selection::ProjectStructuredSelection(
+            plan, {{L"t00001", L"您好"}}) != L"# 您好 `code`") {
+        return 549;
+    }
+
+    const std::wstring escapedPlanJson =
+        L"{\"version\":1,\"token\":\"" + token +
+        L"\",\"generation\":78,\"sourceMarkdown\":\"\\\\*Alpha\\\\* "
+        L"\\\\[x\\\\]\",\"parts\":[{\"segmentId\":\"t00001\"}],"
+        L"\"leaves\":[{\"id\":\"t00001\",\"blockId\":\"b1\","
+        L"\"text\":\"*Alpha* [x]\",\"projection\":\"markdown\"}]}";
+    if (!selection::ParseStructuredSelectionPlan(
+            escapedPlanJson, token, 78,
+            selection::SelectionContentKind::Html,
+            selection::SelectionFidelity::Semantic,
+            plan, nullptr) ||
+        selection::ProjectStructuredSelection(
+            plan, {{L"t00001", L"[fake] - item"}}) !=
+            L"\\[fake\\] - item") {
+        return 560;
+    }
+    selection::StructuredSelectionPlan projectionPlan;
+    projectionPlan.leaves = {
+        {L"table", L"b1", L"source",
+         selection::StructuredSelectionProjection::MarkdownTableCell},
+        {L"html", L"b2", L"source",
+         selection::StructuredSelectionProjection::HtmlText},
+    };
+    projectionPlan.parts = {
+        {L"", L"table"}, {L"|", L""}, {L"", L"html"},
+    };
+    if (selection::ProjectStructuredSelection(
+            projectionPlan,
+            {{L"table", L"a|b\r\nc"}, {L"html", L"<&"}}) !=
+        L"a\\|b<br>c|&lt;&amp;") {
+        return 561;
+    }
+
     constexpr ULONG_PTR marker = static_cast<ULONG_PTR>(0x12345678);
     const auto copyInputs = selection::BuildSyntheticCopyInputs(marker);
     const WORD expectedKeys[] = {VK_CONTROL, 'C', 'C', VK_CONTROL};
@@ -4934,7 +5340,7 @@ int TestSelectionPlatformContracts() {
     selection::SelectionAcquisitionResult result;
     result.error = selection::SelectionAcquisitionError::None;
     result.source = selection::SelectionAcquisitionSource::UiAutomation;
-    result.text = L"selected";
+    result.content.plainText = L"selected";
     if (!selection::IsSelectionResultSuccess(result)) return 494;
     result.source = selection::SelectionAcquisitionSource::None;
     if (selection::IsSelectionResultSuccess(result)) return 495;
@@ -4942,6 +5348,57 @@ int TestSelectionPlatformContracts() {
 }
 
 } // namespace
+
+// Regression: the coordinator applies the "show source" preference before the
+// result window is shown, and the startup layout runs while showSourceText_ is
+// still true, so the source footer already has real geometry. Hiding it must
+// clear the controls' own WS_VISIBLE style even while the parent is hidden,
+// otherwise the stale footer reappears over the translation card on Show().
+int TestResultWindowPreShowVisibilityContract() {
+    using namespace translation;
+    translation::TranslationRequest request;
+    request.sourceLanguage = L"auto";
+    request.targetLanguage = L"zh-Hans";
+    POINT origin = { 0, 0 };
+    HMONITOR monitor = MonitorFromPoint(origin, MONITOR_DEFAULTTOPRIMARY);
+    MONITORINFO monitorInfo = { sizeof(monitorInfo) };
+    if (!monitor || !GetMonitorInfoW(monitor, &monitorInfo)) return 1;
+    const RECT sourceRect = {
+        monitorInfo.rcWork.left + 20, monitorInfo.rcWork.top + 20,
+        monitorInfo.rcWork.left + 180, monitorInfo.rcWork.top + 100,
+    };
+    const translation::TranslationLaunchContext launchContext{
+        translation::TranslationSourceMode::OcrImage, sourceRect};
+    translation::TranslationResultWindow window(
+        request, launchContext,
+        [](translation::TranslationResultWindow::Command) {});
+    if (!window.IsValid()) return 2;
+    HWND native = window.WindowHandle();
+    const auto styleVisible = [](HWND control) {
+        return control != nullptr &&
+            (GetWindowLongPtrW(control, GWL_STYLE) & WS_VISIBLE) != 0;
+    };
+    if (!styleVisible(GetDlgItem(native, 3106)) ||
+        !styleVisible(GetDlgItem(native, 3112))) {
+        return 3;
+    }
+    window.SetShowSourceText(false);
+    window.SetBusy(true);
+    if (styleVisible(GetDlgItem(native, 3106))) return 4;
+    if (styleVisible(GetDlgItem(native, 3112))) return 5;
+    if (styleVisible(GetDlgItem(native, 3101))) return 6;
+    window.SetShowSourceText(true);
+    if (!styleVisible(GetDlgItem(native, 3106)) ||
+        !styleVisible(GetDlgItem(native, 3112))) {
+        return 7;
+    }
+    window.SetShowSourceText(false);
+    if (styleVisible(GetDlgItem(native, 3106)) ||
+        styleVisible(GetDlgItem(native, 3112))) {
+        return 8;
+    }
+    return 0;
+}
 
 int main() {
     if (OptionalChineseDisplay()) {
@@ -5005,6 +5462,12 @@ int main() {
     if (siliconFlowResult != 0) {
         std::cerr << "siliconflow contract failed: " << siliconFlowResult << "\n";
         return siliconFlowResult;
+    }
+    const int preShowVisibilityResult = TestResultWindowPreShowVisibilityContract();
+    if (preShowVisibilityResult != 0) {
+        std::cerr << "pre-show visibility contract failed: "
+                  << preShowVisibilityResult << "\n";
+        return preShowVisibilityResult;
     }
     const int coordinatorResult = TestCoordinatorMessageChain();
     if (coordinatorResult != 0) {

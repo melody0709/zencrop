@@ -408,6 +408,15 @@ TranslationStartResult TranslationCoordinator::StartText(
     HWND owner,
     const TranslationLaunchContext& context,
     std::wstring sourceText) {
+    selection::SelectionContent content;
+    content.plainText = std::move(sourceText);
+    return StartSelection(owner, context, std::move(content));
+}
+
+TranslationStartResult TranslationCoordinator::StartSelection(
+    HWND owner,
+    const TranslationLaunchContext& context,
+    selection::SelectionContent content) {
     if (shuttingDown_) {
         return {false, TranslationStartError::ShuttingDown};
     }
@@ -419,9 +428,18 @@ TranslationStartResult TranslationCoordinator::StartText(
         return {false, preflight};
     }
 
-    sourceText = NormalizeEditText(sourceText);
-    if (sourceText.empty() ||
-        SplitSourceText(sourceText, latest.preserveParagraphs).chunks.empty()) {
+    content.plainText = NormalizeEditText(content.plainText);
+    content.markdown = NormalizeEditText(content.markdown);
+    const bool hasStructuredPayload =
+        !content.structuredPlanJson.empty() ||
+        !content.markdown.empty() || !content.html.empty();
+    if ((!hasStructuredPayload &&
+         (content.plainText.empty() ||
+          SplitSourceText(content.plainText,
+              latest.preserveParagraphs).chunks.empty())) ||
+        (hasStructuredPayload && content.plainText.empty() &&
+         content.markdown.empty() && content.html.empty() &&
+         content.structuredPlanJson.empty())) {
         return {false, TranslationStartError::EmptyText};
     }
 
@@ -499,10 +517,58 @@ TranslationStartResult TranslationCoordinator::StartText(
     resultWindow_->Show(GetAppMainHwnd(),
         retainedWindowPositionValid ? &retainedWindowPosition : nullptr);
     translationEngine_ = dependencies_.translationEngine;
-    StartTranslationForSource(sourceText, settings_.sourceLanguage,
-        settings_.targetLanguage);
+    if (!hasStructuredPayload) {
+        StartTranslationForSource(content.plainText,
+            settings_.sourceLanguage, settings_.targetLanguage);
+        return {true, TranslationStartError::None};
+    }
+
+    ++generation_;
+    active_ = true;
+    resultWindow_->SetWorkflowGeneration(generation_);
+    if (content.requestToken.empty()) {
+        content.requestToken = selection::MakeSelectionRequestToken();
+    }
+    if (content.requestGeneration == 0) {
+        content.requestGeneration = generation_;
+    }
+    resultWindow_->SetTranslationText(L"");
+    resultWindow_->ClearTranslationElapsed();
+    resultWindow_->SetSourceText(!content.markdown.empty()
+        ? content.markdown : content.plainText);
+    resultWindow_->SetStage(StageText(
+        L"正在保留选区格式…", L"Preserving selection formatting..."));
+
+    if (!content.structuredPlanJson.empty()) {
+        const std::wstring token = content.requestToken;
+        const uint64_t planGeneration = content.requestGeneration;
+        const std::wstring planJson = content.structuredPlanJson;
+        HandlePreparedStructuredSelection(
+            generation_, std::move(content), token,
+            planGeneration, true, planJson, L"");
+        return {true, TranslationStartError::None};
+    }
+
+    TranslationResultWindow::StructuredSelectionInput input;
+    input.token = content.requestToken;
+    input.generation = content.requestGeneration;
+    input.format = content.html.empty() ? L"markdown" : L"html";
+    input.payload = content.html.empty() ? content.markdown : content.html;
+    input.sourceUrl = content.sourceUrl;
+    const uint64_t workflowGeneration = generation_;
+    resultWindow_->PrepareStructuredSelection(
+        input,
+        [this, workflowGeneration, content = std::move(content)](
+            const std::wstring& token, uint64_t planGeneration,
+            bool success, const std::wstring& planJson,
+            const std::wstring& errorCode) mutable {
+            HandlePreparedStructuredSelection(
+                workflowGeneration, std::move(content), token,
+                planGeneration, success, planJson, errorCode);
+        });
     return {true, TranslationStartError::None};
 }
+
 
 bool TranslationCoordinator::StartEmbeddedSegments(
     HWND owner,
@@ -766,6 +832,38 @@ void TranslationCoordinator::HandleTranslationDone(
         }
     }
 
+    if (structuredPlan_) {
+        for (const auto& translation : owned->translations) {
+            completedTranslations_.push_back(translation);
+            if (!AcceptStructuredTranslation(translation)) {
+                if (structuredTranslationMode_ ==
+                        StructuredTranslationMode::LlmBlocks) {
+                    structuredInvalidBlocks_.insert(translation.id);
+                } else {
+                    invalidateCurrentTranslation();
+                    ShowError(StageText(
+                        L"翻译 Provider 返回了无法映射到结构计划的结果。",
+                        L"The translation result could not be mapped to the structured plan."));
+                    return;
+                }
+            }
+        }
+        nextSegmentIndex_ += owned->translations.size();
+        if (nextSegmentIndex_ < request_.segments.size()) {
+            BeginNextTranslationBatch(generation);
+            return;
+        }
+        currentBatchRequestId_.clear();
+        if (structuredTranslationMode_ ==
+                StructuredTranslationMode::LlmBlocks &&
+            !structuredInvalidBlocks_.empty() &&
+            BeginStructuredLeafRetry(generation)) {
+            return;
+        }
+        FinalizeStructuredTranslation(!structuredInvalidBlocks_.empty());
+        return;
+    }
+
     std::wstring translated;
     for (size_t i = 0; i < owned->translations.size(); ++i) {
         translated += owned->translations[i].text;
@@ -1012,6 +1110,15 @@ void TranslationCoordinator::ClearTranslationTextState() {
     currentBatchRequestId_.clear();
     completedBatchRequestIds_.clear();
     translationStartedTick_ = 0;
+    structuredPlan_.reset();
+    structuredTranslationMode_ = StructuredTranslationMode::None;
+    clear(structuredMarkerNonce_);
+    structuredBlockLeaves_.clear();
+    structuredLeafMarkerIndexes_.clear();
+    for (auto& [id, value] : structuredLeafTranslations_) clear(value);
+    structuredLeafTranslations_.clear();
+    structuredInvalidBlocks_.clear();
+    structuredRetryAttempted_ = false;
 }
 
 void TranslationCoordinator::CancelActiveTranslation() {
@@ -1165,6 +1272,12 @@ void TranslationCoordinator::StartTranslationForSource(
     const std::wstring& sourceLanguage,
     const std::wstring& targetLanguage) {
     if (shuttingDown_) return;
+    structuredPlan_.reset();
+    structuredTranslationMode_ = StructuredTranslationMode::None;
+    structuredBlockLeaves_.clear();
+    structuredLeafMarkerIndexes_.clear();
+    structuredLeafTranslations_.clear();
+    structuredInvalidBlocks_.clear();
     const std::wstring normalizedSource = NormalizeLanguageCode(sourceLanguage, true);
     const std::wstring selectedTarget = NormalizeLanguageCode(targetLanguage, false);
     const std::wstring normalizedText = NormalizeEditText(source);
@@ -1383,6 +1496,17 @@ void TranslationCoordinator::OnWindowCommand(TranslationResultWindow::Command co
     }
     if (command == TranslationResultWindow::Command::Retranslate &&
         resultWindow_ && resultWindow_->IsValid()) {
+        if (structuredPlan_ &&
+            resultWindow_->SourceText() == structuredPlan_->sourceMarkdown) {
+            auto plan = structuredPlan_;
+            ++generation_;
+            active_ = true;
+            resultWindow_->SetWorkflowGeneration(generation_);
+            StartStructuredTranslation(
+                std::move(plan), resultWindow_->SourceLanguage(),
+                resultWindow_->TargetLanguage());
+            return;
+        }
         StartTranslationForSource(resultWindow_->SourceText(),
                                   resultWindow_->SourceLanguage(),
                                   resultWindow_->TargetLanguage());

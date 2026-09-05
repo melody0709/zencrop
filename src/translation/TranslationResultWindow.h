@@ -22,6 +22,17 @@ std::wstring FriendlyOcrProviderLabel(const std::wstring& provider);
 
 class TranslationResultWindow {
 public:
+    struct StructuredSelectionInput {
+        std::wstring token;
+        uint64_t generation = 0;
+        std::wstring format;
+        std::wstring payload;
+        std::wstring sourceUrl;
+    };
+    using StructuredSelectionCallback = std::function<void(
+        const std::wstring&, uint64_t, bool,
+        const std::wstring&, const std::wstring&)>;
+
     enum class Command {
         Retranslate,
         RecognizeAgain,
@@ -82,6 +93,12 @@ public:
     bool IsShowingSourceText() const { return showSourceText_; }
     void SetSourceLanguage(const std::wstring& value);
     void SetTargetLanguage(const std::wstring& value);
+    bool PrepareStructuredSelection(
+        const StructuredSelectionInput& input,
+        StructuredSelectionCallback callback);
+    bool RequestPreviewSelection(
+        uint64_t generation,
+        StructuredSelectionCallback callback);
 
 private:
     enum class SourceDisplayMode {
@@ -111,6 +128,8 @@ private:
     HWND providerCombo_ = nullptr;
     HWND copySourceButton_ = nullptr;
     HWND copyTranslationButton_ = nullptr;
+    HWND sourceEditorCancelButton_ = nullptr;
+    HWND sourceEditorSaveButton_ = nullptr;
     HWND recognizeButton_ = nullptr;
     HWND retranslateButton_ = nullptr;
     HWND cancelButton_ = nullptr;
@@ -142,6 +161,7 @@ private:
     int providerIndex_ = -1;
     int textFontSize_ = 18;
     int sourceFontSize_ = 14;
+    int sourceEditFontSize_ = 14;
     double sourcePreviewZoomFactor_ = 1.0;
     double translationPreviewZoomFactor_ = 1.0;
     bool showTranslationElapsed_ = false;
@@ -159,6 +179,8 @@ private:
     bool translationPreviewMetricsValid_ = false;
     bool sourcePreviewRenderReady_ = false;
     bool translationPreviewRenderReady_ = false;
+    bool switchToSourceAfterDocumentSave_ = false;
+    bool resolvingDocumentEditorSwitch_ = false;
     int sourcePreviewContentHeight_ = 0;
     int translationPreviewContentHeight_ = 0;
     bool sourceSplitterDragging_ = false;
@@ -175,6 +197,18 @@ private:
     ULONGLONG resizeAnimationStartedTick_ = 0;
     bool suppressCommands_ = false;
     bool closeNotified_ = false;
+    enum class PreviewSelectionHost { None, Source, Translation };
+    PreviewSelectionHost recentPreviewSelectionHost_ =
+        PreviewSelectionHost::None;
+    uint64_t sourcePreviewSelectionGeneration_ = 0;
+    uint64_t translationPreviewSelectionGeneration_ = 0;
+    ULONGLONG sourcePreviewSelectionTick_ = 0;
+    ULONGLONG translationPreviewSelectionTick_ = 0;
+    PreviewSelectionHost pendingStructuredSelectionHost_ =
+        PreviewSelectionHost::None;
+    std::wstring pendingStructuredSelectionToken_;
+    uint64_t pendingStructuredSelectionGeneration_ = 0;
+    StructuredSelectionCallback pendingStructuredSelectionCallback_;
     int popupMenuAnchorWidth_ = 0;
     bool popupMenuAnchorEngineLabel_ = false;
     std::atomic<uint64_t> workflowGeneration_{0};
@@ -202,6 +236,8 @@ private:
     static constexpr int kMinimize = 3117;
     static constexpr int kPin = 3119;
     static constexpr int kSourceMode = 3120;
+    static constexpr int kSourceEditorCancel = 3123;
+    static constexpr int kSourceEditorSave = 3124;
     static constexpr int kSourceLanguageMenuBase = 3300;
     static constexpr int kTargetLanguageMenuBase = 3320;
     static constexpr int kOcrRouteMenuBase = 3340;
@@ -210,6 +246,7 @@ private:
     static constexpr int kProviderCombo = 3122;
     static constexpr UINT_PTR kOcrElapsedTimer = 1;
     static constexpr UINT_PTR kResizeAnimationTimer = 2;
+    static constexpr UINT_PTR kStructuredSelectionTimer = 3;
     static constexpr UINT kAsyncErrorMessage = WM_APP + 0x2A;
 
     static const wchar_t* ClassName();
@@ -219,8 +256,16 @@ private:
     UINT LayoutDpi() const;
     void SetLayoutDpi(UINT dpi);
     void CreateControls(const TranslationRequest& request);
+    void UpdatePreviewSelectionState(
+        PreviewSelectionHost host, bool hasSelection, uint64_t generation);
+    void HandleStructuredSelectionPrepared(
+        PreviewSelectionHost host,
+        const std::wstring& token, uint64_t generation, bool success,
+        const std::wstring& planJson, const std::wstring& errorCode);
+    void CancelPendingStructuredSelection(const std::wstring& errorCode);
     void LayoutControls(bool redraw = true);
     void RefreshFontForLayoutDpi();
+    void AdjustSourceEditFontSize(int step, bool reset);
     void Paint();
     void DrawOwnerDrawControl(const DRAWITEMSTRUCT& draw);
     void ApplyDarkWindowChrome();
@@ -250,7 +295,10 @@ private:
     void HandleEscape();
     void UpdateOcrElapsedStage();
     void SetSourceDisplayMode(SourceDisplayMode mode, bool focusEdit = false);
+    bool ResolveDocumentEditorBeforeSourceMode();
     void UpdateSourceModeButton();
+    void UpdateSourceEditorFooterActions();
+    void CancelSourceDocumentEditor();
     void UpdateSourcePreviewVisibility();
     void UpdateTranslationPreviewVisibility();
     bool IsPointInSourceSplitter(POINT point) const;

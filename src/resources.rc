@@ -193,8 +193,8 @@ FONT 10, "Segoe UI"
 BEGIN
     LTEXT         "Selection hotkey:", IDC_TRANSLATE_SELECTION_HOTKEY_LABEL, 14, 12, 92, 12
     PUSHBUTTON    "X", IDC_TRANSLATE_SELECTION_HOTKEY_CLEAR, 214, 8, 24, 20
-    AUTOCHECKBOX  "Allow simulated copy when UIA fails", IDC_TRANSLATE_SELECTION_COPY_FALLBACK, 14, 36, 224, 14
-    LTEXT         "Ctrl+C may expose selected text to clipboard history, cloud sync, or managers; prior content is restored best-effort.", IDC_TRANSLATE_SELECTION_COPY_HINT, 14, 54, 240, 26
+    AUTOCHECKBOX  "Allow copy to preserve selection formatting", IDC_TRANSLATE_SELECTION_COPY_FALLBACK, 14, 36, 224, 14
+    LTEXT         "Uses Ctrl+C to read Markdown, HTML, or editor formats; prior clipboard content is restored best-effort.", IDC_TRANSLATE_SELECTION_COPY_HINT, 14, 54, 240, 26
 
     AUTOCHECKBOX  "Enable OCR-source translation", IDC_TRANSLATE_ENABLED, 14, 86, 220, 14
     LTEXT         "Languages", IDC_TRANSLATE_LANGUAGES_LABEL, 14, 108, 80, 12

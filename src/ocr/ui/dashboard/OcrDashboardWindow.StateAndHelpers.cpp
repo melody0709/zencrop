@@ -826,11 +826,32 @@ void OcrDashboardWindow::RebuildFonts() {
     m_hSourceMetaFont = DashboardCreateHostFont(17, m_dpi);
 
     OcrSettings ocrSettings = LoadOcrSettings();
-    int fontSize = ocrSettings.ocrFontSize;
-    if (fontSize <= 0) fontSize = 14;
-    m_hEditFont = DashboardCreateHostFont(fontSize, m_dpi);
+    if (m_resultTextFontSize <= 0) {
+        const int configured = ocrSettings.ocrFontSize > 0
+            ? ocrSettings.ocrFontSize : 14;
+        m_resultTextFontSize = (std::clamp)(configured, 8, 32);
+    }
+    m_hEditFont = DashboardCreateHostFont(m_resultTextFontSize, m_dpi);
 
     RefreshFontMetrics();
+}
+
+void OcrDashboardWindow::AdjustResultTextFontSize(int step, bool reset) {
+    const int configured = LoadOcrSettings().ocrFontSize;
+    const int baseline = (std::clamp)(configured > 0 ? configured : 14, 8, 32);
+    const int next = reset
+        ? baseline
+        : (std::clamp)(m_resultTextFontSize + step, 8, 32);
+    if (next == m_resultTextFontSize) return;
+    HFONT replacement = DashboardCreateHostFont(next, m_dpi);
+    if (!replacement) return;
+    HFONT previous = m_hEditFont;
+    m_hEditFont = replacement;
+    m_resultTextFontSize = next;
+    if (m_edit) SendMessageW(m_edit, WM_SETFONT, reinterpret_cast<WPARAM>(m_hEditFont), TRUE);
+    if (previous) DeleteObject(previous);
+    RefreshFontMetrics();
+    ReformatHistoryText();
 }
 
 void OcrDashboardWindow::RefreshFontMetrics() {

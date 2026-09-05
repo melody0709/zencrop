@@ -13,6 +13,7 @@
 
 #include <gdiplus.h>
 #include <shlwapi.h>
+#include <utility>
 #include <vector>
 #include <windows.h>
 
@@ -47,6 +48,16 @@ void OcrDashboardWindow::HandleTranslationDone(
     } else {
         delete result;
     }
+}
+
+bool OcrDashboardWindow::RequestPreviewSelection(
+    HWND topLevelWindow,
+    uint64_t requestGeneration,
+    std::function<void(selection::SelectionContent)> callback)
+{
+    return s_instance && s_instance->m_hwnd == topLevelWindow &&
+        s_instance->RequestPreviewSelectionInternal(
+            requestGeneration, std::move(callback));
 }
 
 void OcrDashboardWindow::AddAndShowRecord(HBITMAP hBitmap, const std::wstring& text, const std::vector<RECT>& bboxes, const std::vector<std::wstring>& bboxClasses, DWORD elapsedMs) {

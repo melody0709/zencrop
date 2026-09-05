@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.15)
-project(ZenCrop VERSION 2.9.19)
+project(ZenCrop VERSION 2.9.23)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -155,6 +155,7 @@ add_executable(ZenCrop WIN32
     src/ocr/ui/dashboard/OcrDashboardWindow.Layout.cpp
     src/ocr/ui/dashboard/OcrDashboardWindow.SourceRail.cpp
     src/ocr/ui/dashboard/OcrDashboardWindow.ImagePreview.cpp
+    src/ocr/ui/dashboard/OcrDashboardWindow.PreviewSelection.cpp
     src/ocr/ui/dashboard/OcrDashboardWindow.Import.cpp
     src/ocr/ui/dashboard/OcrDashboardWindow.Blocks.cpp
     src/ocr/ui/dashboard/OcrDashboardWindow.Batch.cpp
@@ -197,8 +198,10 @@ add_executable(ZenCrop WIN32
     src/ocr/ui/OcrMarkdownPreviewProtocol.h src/ocr/ui/OcrMarkdownPreviewProtocol.cpp
     src/core/HttpTransport.h src/net/Network.cpp
     src/selection/SelectionTypes.h src/selection/SelectionTypes.cpp
+    src/selection/SelectionStructuredContent.h src/selection/SelectionStructuredContent.cpp
     src/selection/ClipboardCopyPolicy.h src/selection/ClipboardCopyPolicy.cpp
     src/selection/ClipboardDataSnapshot.h src/selection/ClipboardDataSnapshot.cpp
+    src/selection/ClipboardStructuredContentReader.h src/selection/ClipboardStructuredContentReader.cpp
     src/selection/ClipboardCopyTransaction.h src/selection/ClipboardCopyTransaction.cpp
     src/selection/SelectionTextAcquirer.h src/selection/SelectionTextAcquirer.cpp
     src/selection/SelectionTranslationToastWindow.h src/selection/SelectionTranslationToastWindow.cpp
@@ -220,7 +223,9 @@ add_executable(ZenCrop WIN32
     src/translation/TranslationProviderSettingsPage.h src/translation/TranslationProviderSettingsPage.cpp
     src/translation/TranslationPromptSettingsPage.h src/translation/TranslationPromptSettingsPage.cpp
     src/translation/TranslationResultWindow.h src/translation/TranslationResultWindow.cpp
+    src/translation/TranslationResultWindow.StructuredSelection.cpp
     src/translation/TranslationCoordinator.h src/translation/TranslationCoordinator.cpp
+    src/translation/TranslationCoordinator.StructuredSelection.cpp
     src/net/WinHttpFileDownloader.h src/net/WinHttpFileDownloader.cpp
     src/net/TcpHelper.h src/net/TcpHelper.cpp
     src/net/LlamaServerManager.h src/net/LlamaServerManager.cpp

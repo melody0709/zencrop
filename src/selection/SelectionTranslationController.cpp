@@ -4,6 +4,7 @@
 #include "core/HotkeyEdit.h"
 #include "core/Settings.h"
 #include "core/Strings.h"
+#include "ocr/ui/OcrDashboardWindow.h"
 #include "translation/TranslationLaunchContext.h"
 #include "translation/TranslationPreflight.h"
 
@@ -12,6 +13,10 @@
 
 namespace selection {
 namespace {
+
+// UIA 询问与剪贴板复制事务共享的采集总预算。预览选择超时（2500ms）可能
+// 晚于该预算耗尽，回退采集前必须重新起算，否则回退天生带着过期 deadline。
+constexpr DWORD kSelectionAcquireDeadlineMs = 2200;
 
 std::wstring StageText(const wchar_t* chinese, const wchar_t* english) {
     return S::IsChinese() ? chinese : english;
@@ -61,7 +66,7 @@ bool SelectionTranslationController::CaptureTarget(
     snapshot.copyFallbackEnabled = copyFallbackEnabled;
     snapshot.copyShortcutConflict = copyShortcutConflict;
     snapshot.generation = generation_;
-    snapshot.deadlineTick = GetTickCount64() + 2200;
+    snapshot.deadlineTick = GetTickCount64() + kSelectionAcquireDeadlineMs;
     return true;
 }
 
@@ -99,6 +104,40 @@ void SelectionTranslationController::Start(
     snapshot.copyShortcutConflict =
         translationSettings.selectionCopyFallbackEnabled &&
         HasExactCtrlCHotkey(hotkeys);
+    auto handlePreviewSelection = [this, snapshot](
+        SelectionContent content) mutable {
+        if (shuttingDown_ || snapshot.generation != generation_) return;
+        if (content.structuredPlanJson.empty()) {
+            // 预览选择可能等到超时（2500ms）才失败，此时快照自带的
+            // 采集 deadline（2200ms）已过期；回退采集前重新起算预算，
+            // 否则 UIA/剪贴板路径注定失败，还会白注入一次 Ctrl+C。
+            snapshot.deadlineTick =
+                GetTickCount64() + kSelectionAcquireDeadlineMs;
+            if (!acquirer_->Start(snapshot)) {
+                toast_.Show(StageText(
+                    L"划词翻译暂时不可用，请稍后重试。",
+                    L"Selection translation is temporarily unavailable. Try again."),
+                    snapshot.cursor, SelectionToastKind::Error);
+            }
+            return;
+        }
+        translation::TranslationLaunchContext context;
+        context.mode = translation::TranslationSourceMode::SelectedText;
+        context.anchorRect = CursorAnchorRect(snapshot.cursor);
+        const auto start = translation_.StartSelection(
+            deliveryWindow_, context, std::move(content));
+        if (!start.started) {
+            ShowPreflightError(start.error, snapshot.cursor);
+        }
+    };
+    if (translation_.RequestPreviewSelection(
+            snapshot.topLevelWindow, snapshot.generation,
+            handlePreviewSelection) ||
+        OcrDashboardWindow::RequestPreviewSelection(
+            snapshot.topLevelWindow, snapshot.generation,
+            std::move(handlePreviewSelection))) {
+        return;
+    }
     if (!acquirer_->Start(snapshot)) {
         toast_.Show(StageText(
             L"划词翻译暂时不可用，请稍后重试。",
@@ -123,17 +162,7 @@ void SelectionTranslationController::HandleAcquisitionResult(
         return;
     }
 
-    translation::TranslationLaunchContext context;
-    context.mode = translation::TranslationSourceMode::SelectedText;
-    context.anchorRect = owned->anchorRect;
-    const auto start = translation_.StartText(
-        deliveryWindow_, context, std::move(owned->text));
-    if (!start.started) {
-        ShowPreflightError(start.error, owned->cursor);
-        return;
-    }
-    ShowClipboardDispositionWarning(
-        owned->clipboardDisposition, owned->cursor);
+    StartAcquiredSelection(std::move(*owned));
 }
 
 void SelectionTranslationController::HandleTranslationResult(
@@ -143,6 +172,23 @@ void SelectionTranslationController::HandleTranslationResult(
         return;
     }
     translation_.HandleTranslationDone(generation, result);
+}
+
+void SelectionTranslationController::StartAcquiredSelection(
+    SelectionAcquisitionResult result) {
+    translation::TranslationLaunchContext context;
+    context.mode = translation::TranslationSourceMode::SelectedText;
+    context.anchorRect = result.anchorRect;
+    result.content.requestGeneration = result.generation;
+    const POINT cursor = result.cursor;
+    const ClipboardDisposition disposition = result.clipboardDisposition;
+    const auto start = translation_.StartSelection(
+        deliveryWindow_, context, std::move(result.content));
+    if (!start.started) {
+        ShowPreflightError(start.error, cursor);
+        return;
+    }
+    ShowClipboardDispositionWarning(disposition, cursor);
 }
 
 void SelectionTranslationController::NotifyHotkeyRegistrationFailed(

@@ -2,6 +2,7 @@
   "use strict";
 
   var preview = document.getElementById("preview");
+  var previewShell = document.getElementById("preview-shell");
   var currentRecordId = -1;
   var currentSourceMarkdown = "";
   var currentCanonicalSource = "markdown-body-lf";
@@ -26,6 +27,11 @@
   var overlayScrollbarPointerHovered = false;
   var overlayScrollbarDragPointerId = -1;
   var overlayScrollbarDragOffset = 0;
+  var activeEditorState = null;
+  var pendingDocumentSave = null;
+  var transientRenderActive = false;
+  var previewSelectionGeneration = 0;
+  var previewHasSelection = false;
 
   var kOverlayScrollbarBoundaryWidth = 8;
   var kOverlayScrollbarBoundaryRevealDelay = 180;
@@ -37,6 +43,76 @@
     if (window.chrome && window.chrome.webview) {
       window.chrome.webview.postMessage(message);
     }
+  }
+
+  function selectionIsInsidePreview() {
+    var selection = window.getSelection();
+    if (!selection || selection.rangeCount !== 1 || selection.isCollapsed) return false;
+    return !!(preview && preview.contains(selection.getRangeAt(0).commonAncestorContainer));
+  }
+
+  function reportPreviewSelectionState(forceEmpty) {
+    previewSelectionGeneration += 1;
+    previewHasSelection = forceEmpty ? false : selectionIsInsidePreview();
+    postMessage({
+      type: "previewSelectionState",
+      hasSelection: previewHasSelection,
+      selectionGeneration: previewSelectionGeneration,
+      renderToken: currentRenderToken
+    });
+  }
+
+  function setActiveEditorState(kind, id, dirty, composing, canSave, pending) {
+    var next = {
+      kind: String(kind || ""),
+      id: String(id || ""),
+      renderToken: currentRenderToken,
+      dirty: !!dirty,
+      composing: !!composing,
+      canSave: canSave !== false,
+      pending: !!pending
+    };
+    if (activeEditorState && activeEditorState.kind === next.kind &&
+        activeEditorState.id === next.id && activeEditorState.renderToken === next.renderToken &&
+        activeEditorState.dirty === next.dirty &&
+        activeEditorState.composing === next.composing &&
+        activeEditorState.canSave === next.canSave &&
+        activeEditorState.pending === next.pending) return;
+    activeEditorState = next;
+    postMessage({
+      type: "previewEditorState",
+      kind: activeEditorState.kind,
+      id: activeEditorState.id,
+      renderToken: activeEditorState.renderToken,
+      active: true,
+      dirty: activeEditorState.dirty,
+      composing: activeEditorState.composing,
+      canSave: activeEditorState.canSave,
+      pending: activeEditorState.pending
+    });
+  }
+
+  function setActiveEditorPending(pending) {
+    if (!activeEditorState) return;
+    setActiveEditorState(activeEditorState.kind, activeEditorState.id,
+      activeEditorState.dirty, activeEditorState.composing,
+      activeEditorState.canSave, pending);
+  }
+
+  function clearActiveEditorState() {
+    if (!activeEditorState) return;
+    postMessage({
+      type: "previewEditorState",
+      kind: activeEditorState.kind,
+      id: activeEditorState.id,
+      renderToken: currentRenderToken,
+      active: false,
+      dirty: false,
+      composing: false,
+      canSave: false,
+      pending: false
+    });
+    activeEditorState = null;
   }
 
   function clearOverlayScrollbarHideTimer() {
@@ -307,14 +383,18 @@
   if (!markdownAsset || typeof markdownAsset.createRenderer !== "function") {
     throw new Error("Preview Markdown asset is unavailable.");
   }
-  var markdownRenderer = markdownAsset.createRenderer({
-    security: security,
-    markdownIt: window.markdownit,
-    katex: window.katex,
-    mermaid: window.mermaid,
-    Chart: window.Chart,
-    isCurrentGeneration: function (generation) { return generation === renderGeneration; }
-  });
+  function createMarkdownRenderer() {
+    return markdownAsset.createRenderer({
+      security: security,
+      markdownIt: window.markdownit,
+      katex: window.katex,
+      mermaid: window.mermaid,
+      Chart: window.Chart,
+      isCurrentGeneration: function (generation) { return generation === renderGeneration; }
+    });
+  }
+
+  var markdownRenderer = createMarkdownRenderer();
   var blocksAsset = window.ZenCropPreviewBlocks;
   if (!blocksAsset || typeof blocksAsset.createBlockMapper !== "function") {
     throw new Error("Preview block mapping asset is unavailable.");
@@ -325,8 +405,39 @@
   });
   var editorMarkdown = window.ZenCropPreviewEditorMarkdown;
   if (!editorMarkdown || typeof editorMarkdown.serialize !== "function" ||
+      typeof editorMarkdown.canSerialize !== "function" ||
       typeof editorMarkdown.destination !== "function") {
     throw new Error("Preview editor Markdown asset is unavailable.");
+  }
+  var editorTable = window.ZenCropPreviewEditorTable;
+  if (!editorTable || typeof editorTable.insertRow !== "function" ||
+      typeof editorTable.deleteRow !== "function" ||
+      typeof editorTable.insertColumn !== "function" ||
+      typeof editorTable.deleteColumn !== "function" ||
+      typeof editorTable.rangeCells !== "function") {
+    throw new Error("Preview editor table asset is unavailable.");
+  }
+  var richEditorAsset = window.ZenCropPreviewRichEditor;
+  if (!richEditorAsset || typeof richEditorAsset.createEditor !== "function") {
+    throw new Error("Preview rich editor asset is unavailable.");
+  }
+
+  function createRichEditor(options) {
+    var editorRenderer = createMarkdownRenderer();
+    options.renderInto = function (body, markdown) {
+      editorRenderer.renderInto(body, markdown, renderGeneration);
+    };
+    options.serialize = editorMarkdown.serialize;
+    options.canSerialize = editorMarkdown.canSerialize;
+    options.sanitizeHtml = security.sanitizeHtml;
+    options.isSafeLinkHref = security.isSafeLinkHref;
+    var editor = richEditorAsset.createEditor(options);
+    var cleanup = editor.cleanup;
+    editor.cleanup = function () {
+      cleanup();
+      editorRenderer.destroy();
+    };
+    return editor;
   }
   var transactionAsset = window.ZenCropPreviewEditTransaction;
   if (!transactionAsset || typeof transactionAsset.createTransaction !== "function") {
@@ -342,7 +453,8 @@
         revisionSha256: currentRevisionSha256
       };
     },
-    onClosed: function () { applyBlockState(); }
+    onClosed: function () { applyBlockState(); },
+    onPendingChanged: setActiveEditorPending
   });
   var formulaAsset = window.ZenCropPreviewFormulaEditor;
   if (!formulaAsset || typeof formulaAsset.createFormulaEditor !== "function") {
@@ -374,7 +486,10 @@
     if (event.target && event.target.closest &&
         event.target.closest(".ocr-preview-linked-block")) return;
     event.preventDefault();
-    postMessage({ type: "previewDocumentEdit" });
+    postMessage({
+      type: "previewDocumentEdit",
+      sourceRequired: transientRenderActive || !editorMarkdown.canSerialize(preview)
+    });
   });
 
   function acceleratorVirtualKey(event) {
@@ -387,9 +502,19 @@
       case "f":
       case "F": return 0x46;
       case "0": return 0x30;
+      case "-":
+      case "_": return 0xBD;
+      case "=":
+      case "+": return 0xBB;
       default: return 0;
     }
   }
+
+  window.addEventListener("wheel", function (event) {
+    if (!event.ctrlKey || event.altKey || event.metaKey || !event.deltaY) return;
+    event.preventDefault();
+    postMessage({ type: "previewZoomStep", step: event.deltaY < 0 ? 1 : -1 });
+  }, { passive: false });
 
   window.addEventListener("keydown", function (event) {
     if (event.key === "Escape" && !editTransaction.activeId() && (selectedBlockId || hoveredBlockId)) {
@@ -628,15 +753,6 @@
     }, 90);
   }
 
-  function setEditorHeading(editorBody, level) {
-    editorBody.focus();
-    if (level > 0) {
-      document.execCommand("formatBlock", false, "H" + level);
-    } else {
-      document.execCommand("formatBlock", false, "P");
-    }
-  }
-
   function editorButton(text, title, onClick) {
     var button = document.createElement("button");
     button.type = "button";
@@ -652,6 +768,8 @@
 
   function finishInlineEditor(restoreOriginal) {
     editTransaction.close(restoreOriginal);
+    pendingDocumentSave = null;
+    clearActiveEditorState();
   }
 
   function editorStatus() {
@@ -727,106 +845,44 @@
         commitPreviewBlockSave(id, block, readContent());
       },
       refresh: refresh,
-      button: save
     };
     return control;
   }
 
-  function selectionInside(root) {
-    var selection = window.getSelection ? window.getSelection() : null;
-    if (!selection || !selection.rangeCount) return null;
-    var range = selection.getRangeAt(0);
-    var container = range.commonAncestorContainer;
-    if (container.nodeType === Node.TEXT_NODE) container = container.parentNode;
-    return container && root.contains(container) ? range.cloneRange() : null;
-  }
-
-  function restoreSelectionInside(root, range) {
-    if (!range || !window.getSelection) {
-      root.focus();
-      return;
-    }
-    var selection = window.getSelection();
-    selection.removeAllRanges();
-    selection.addRange(range);
-  }
-
-  function buildTextEditor(toolbar, bodyHost, block, element) {
+  function buildTextEditor(bodyHost, block, element) {
     var originalSource = block.visibleSourceContent || block.content || element.innerText || "";
-    var dirty = false;
-    var heading = document.createElement("select");
-    heading.className = "ocr-preview-editor-select";
-    heading.title = "Heading";
-    heading.setAttribute("aria-label", "Heading level");
-    [["0", "Tt"], ["1", "H1"], ["2", "H2"], ["3", "H3"], ["4", "H4"], ["5", "H5"], ["6", "H6"]].forEach(function (item) {
-      var option = document.createElement("option");
-      option.value = item[0];
-      option.textContent = item[1];
-      heading.appendChild(option);
-    });
-
-    var body = document.createElement("div");
-    body.className = "ocr-preview-rich-editor-body";
-    body.setAttribute("contenteditable", "true");
-    body.setAttribute("role", "textbox");
-    body.setAttribute("aria-multiline", "true");
-    markdownRenderer.renderInto(
-      body,
-      originalSource,
-      renderGeneration);
-    if (!body.innerHTML.trim()) body.innerHTML = "<p><br></p>";
-    var firstTag = body.firstElementChild
-      ? body.firstElementChild.nodeName.toLowerCase()
-      : "";
-    if (/^h[1-6]$/.test(firstTag)) heading.value = firstTag.slice(1);
-
-    var savedRange = null;
-    function rememberSelection() {
-      savedRange = selectionInside(body) || savedRange;
-    }
-    function applyCommand(command) {
-      restoreSelectionInside(body, savedRange);
-      document.execCommand(command, false, null);
-      dirty = true;
-      rememberSelection();
-    }
-
-    body.addEventListener("mouseup", rememberSelection);
-    body.addEventListener("keyup", rememberSelection);
-    body.addEventListener("input", function () {
-      dirty = true;
-      rememberSelection();
-    });
-    body.addEventListener("keydown", function (event) {
-      if (event.ctrlKey && event.shiftKey && event.key.toLowerCase() === "x") {
-        event.preventDefault();
-        applyCommand("strikeThrough");
+    var editor = createRichEditor({
+      bodyHost: bodyHost,
+      source: originalSource,
+      onStateChanged: function (state) {
+        setActiveEditorState("block", editTransaction.activeId(), state.dirty,
+          state.composing, state.canSave, editTransaction.hasPending());
       }
     });
-    heading.addEventListener("mousedown", rememberSelection);
-    heading.addEventListener("change", function () {
-      restoreSelectionInside(body, savedRange);
-      setEditorHeading(body, Number(heading.value || "0"));
-      dirty = true;
-      rememberSelection();
-    });
-
-    toolbar.appendChild(heading);
-    toolbar.appendChild(editorButton("B", "Bold (Ctrl+B)", function () { applyCommand("bold"); }));
-    toolbar.appendChild(editorButton("I", "Italic (Ctrl+I)", function () { applyCommand("italic"); }));
-    toolbar.appendChild(editorButton("S", "Strikethrough (Ctrl+Shift+X)", function () { applyCommand("strikeThrough"); }));
-    bodyHost.appendChild(body);
-
-    return {
-      focus: function () {
-        body.focus();
-        rememberSelection();
+    var id = editTransaction.activeId();
+    var saveControl = {
+      save: function () {
+        editor.refreshActions();
+        if (editTransaction.hasPending() || !editor.canSave()) return;
+        commitPreviewBlockSave(id, block, editor.readContent());
       },
-      readContent: function () {
-        return dirty ? editorMarkdown.serialize(body) : originalSource;
-      },
-      canSave: function () { return true; }
+      refresh: function () { editor.refreshActions(); }
     };
+    editor.setActions({
+      save: saveControl.save,
+      cancel: function () {
+        postMessage({ type: "previewBlockCancel", id: id, renderToken: currentRenderToken });
+        finishInlineEditor(true);
+      },
+      restore: function () {
+        if (!editTransaction.hasPending() && block.canRestoreOriginal) commitPreviewBlockRestore(id, block);
+      },
+      canRestore: !!(block.edited && block.canRestoreOriginal),
+      isPending: function () { return editTransaction.hasPending(); }
+    });
+    editor.saveControl = saveControl;
+    setActiveEditorState("block", editTransaction.activeId(), false, false, true, false);
+    return editor;
   }
 
   function splitMarkdownTableRow(line) {
@@ -1010,7 +1066,7 @@
       for (var column = 0; column < columns; column++) {
         var cell = row.cells[column];
         cells.push(cell
-          ? serializeChildrenMarkdown(cell).replace(/\s+$/g, "").replace(/\|/g, "\\|").replace(/\n+/g, "<br>").trim()
+          ? editorMarkdown.serialize(cell).replace(/\s+$/g, "").replace(/\|/g, "\\|").replace(/\n+/g, "<br>").trim()
           : "");
       }
       return "| " + cells.join(" | ") + " |";
@@ -1108,11 +1164,15 @@
       refreshCellState();
     }
 
-    function prepareGridTable(table) {
+    function prepareGridCells(table) {
       Array.prototype.slice.call(table.querySelectorAll("th,td")).forEach(function (cell) {
         cell.setAttribute("contenteditable", "true");
         cell.setAttribute("tabindex", "0");
       });
+    }
+
+    function prepareGridTable(table) {
+      prepareGridCells(table);
       gridScroll.innerHTML = "";
       gridScroll.appendChild(table);
       var first = table.querySelector("th,td");
@@ -1122,6 +1182,10 @@
 
     function selectRange(target) {
       var table = currentTable();
+      if (!tableHasSpans(table)) {
+        setSelection(editorTable.rangeCells(table, anchorCell, target), target);
+        return;
+      }
       var layout = tableMatrix(table);
       var from = layout.entries.filter(function (entry) { return entry.cell === anchorCell; })[0];
       var to = layout.entries.filter(function (entry) { return entry.cell === target; })[0];
@@ -1171,52 +1235,33 @@
     function addRow() {
       var table = currentTable();
       if (!table || !requireSimpleGrid()) return;
-      var columnCount = Math.max(1, table.rows[0] ? table.rows[0].cells.length : 1);
-      var rowIndex = activeCell && activeCell.parentElement ? activeCell.parentElement.rowIndex + 1 : table.rows.length;
-      var row = table.insertRow(Math.min(rowIndex, table.rows.length));
-      for (var i = 0; i < columnCount; i++) {
-        var cell = row.insertCell(-1);
-        cell.setAttribute("contenteditable", "true");
-        cell.setAttribute("tabindex", "0");
-        cell.innerHTML = "<br>";
-      }
-      anchorCell = row.cells[0];
+      var reference = activeCell || (table.rows.length
+        ? table.rows[table.rows.length - 1].cells[0] : null);
+      anchorCell = editorTable.insertRow(table, reference, true);
+      prepareGridCells(table);
       setSelection(anchorCell ? [anchorCell] : [], anchorCell);
       scheduleTablePreview();
     }
 
     function deleteRow() {
       var table = currentTable();
-      if (!table || table.rows.length <= 1 || !requireSimpleGrid()) return;
-      var rowIndex = activeCell && activeCell.parentElement ? activeCell.parentElement.rowIndex : table.rows.length - 1;
-      table.deleteRow(rowIndex);
-      var next = table.rows[Math.min(rowIndex, table.rows.length - 1)];
-      anchorCell = next && next.cells[0];
+      if (!table || !requireSimpleGrid()) return;
+      anchorCell = editorTable.deleteRow(table, activeCell);
+      if (!anchorCell) return;
       setSelection(anchorCell ? [anchorCell] : [], anchorCell);
       scheduleTablePreview();
-    }
-
-    function insertCellForRow(row, index) {
-      var tag = row.cells[0] && row.cells[0].nodeName.toLowerCase() === "th" ? "th" : "td";
-      var cell = document.createElement(tag);
-      cell.setAttribute("contenteditable", "true");
-      cell.setAttribute("tabindex", "0");
-      cell.innerHTML = "<br>";
-      row.insertBefore(cell, row.cells[index] || null);
-      return cell;
     }
 
     function addColumn() {
       var table = currentTable();
       if (!table || !requireSimpleGrid()) return;
-      var activeRowIndex = activeCell && activeCell.parentElement ? activeCell.parentElement.rowIndex : 0;
-      var index = activeCell ? activeCell.cellIndex + 1 : (table.rows[0] ? table.rows[0].cells.length : 0);
-      var selected = null;
-      Array.prototype.slice.call(table.rows).forEach(function (row, rowIndex) {
-        var cell = insertCellForRow(row, index);
-        if (rowIndex === activeRowIndex) selected = cell;
-      });
+      var reference = activeCell || table.querySelector("th,td");
+      if (!reference) return;
+      var index = reference.cellIndex + 1;
+      var selected = editorTable.insertColumn(table, reference, true);
+      if (!selected) return;
       if (state && state.alignments) state.alignments.splice(index, 0, "none");
+      prepareGridCells(table);
       anchorCell = selected;
       setSelection(selected ? [selected] : [], selected);
       scheduleTablePreview();
@@ -1224,14 +1269,14 @@
 
     function deleteColumn() {
       var table = currentTable();
-      if (!table || !table.rows.length || table.rows[0].cells.length <= 1 || !requireSimpleGrid()) return;
-      var index = activeCell ? activeCell.cellIndex : table.rows[0].cells.length - 1;
-      Array.prototype.slice.call(table.rows).forEach(function (row) {
-        if (row.cells[index]) row.deleteCell(index);
-      });
+      if (!table || !requireSimpleGrid()) return;
+      var reference = activeCell || table.querySelector("th,td");
+      if (!reference) return;
+      var index = reference.cellIndex;
+      var selected = editorTable.deleteColumn(table, reference);
+      if (!selected) return;
       if (state && state.alignments) state.alignments.splice(index, 1);
-      var firstRow = table.rows[0];
-      anchorCell = firstRow && firstRow.cells[Math.min(index, firstRow.cells.length - 1)];
+      anchorCell = selected;
       setSelection(anchorCell ? [anchorCell] : [], anchorCell);
       scheduleTablePreview();
     }
@@ -1445,7 +1490,6 @@
       function () { return valid; },
       validateCurrentTable);
     return {
-      actionsAdded: true,
       saveControl: saveControl,
       cleanup: function () { if (previewTimer) window.clearTimeout(previewTimer); },
       focus: function () {
@@ -1696,12 +1740,115 @@
     refreshPreview();
 
     return {
-      actionsAdded: true,
       saveControl: saveControl,
       focus: function () { altInput.focus(); altInput.select(); },
       readContent: formattedContent,
       canSave: function () { return valid; }
     };
+  }
+
+  function requestDocumentSave(editor, saveControl) {
+    if (!editor || pendingDocumentSave || !editor.isDirty() || editor.isComposing()) return false;
+    if (!editor.canSerialize()) {
+      editTransaction.setStatus(
+        "This edit contains Markdown that must be changed in Source mode.", true);
+      return false;
+    }
+    var content = editor.readContent();
+    pendingDocumentSave = {
+      token: currentRenderToken,
+      content: content
+    };
+    setActiveEditorPending(true);
+    if (saveControl && saveControl.refresh) saveControl.refresh();
+    postMessage({
+      type: "previewDocumentSave",
+      renderToken: currentRenderToken,
+      content: content,
+      revisionSha256: currentRevisionSha256
+    });
+    return true;
+  }
+
+  function startDocumentEditor() {
+    if (!previewShell || !currentRenderToken || transientRenderActive ||
+        !editorMarkdown.canSerialize(preview) || editTransaction.activeId() === "__document__") return;
+    finishInlineEditor(false);
+    hideFloatingToolbar();
+
+    var host = document.createElement("div");
+    host.className = "ocr-preview-inline-editor ocr-preview-document-editor";
+    host.setAttribute("data-editor-kind", "document");
+    var bodyHost = document.createElement("div");
+    bodyHost.className = "ocr-preview-editor";
+    host.appendChild(bodyHost);
+    previewShell.insertBefore(host, overlayScrollbar || null);
+
+    editTransaction.open({
+      id: "__document__",
+      block: null,
+      host: host,
+      originals: [preview],
+      originalDisplays: [preview.style.display || ""]
+    });
+
+    var saveControl = null;
+    var editor = createRichEditor({
+      bodyHost: bodyHost,
+      source: currentSourceMarkdown,
+      onStateChanged: function (state) {
+        setActiveEditorState("document", "", state.dirty, state.composing,
+          state.canSave, !!pendingDocumentSave);
+      }
+    });
+    var documentStatus = document.createElement("div");
+    documentStatus.className = "ocr-preview-editor-status ocr-preview-document-editor-status";
+    documentStatus.setAttribute("role", "status");
+    documentStatus.setAttribute("aria-live", "polite");
+    bodyHost.appendChild(documentStatus);
+
+    saveControl = {
+      refresh: function () {
+        editor.refreshActions();
+      },
+      save: function () {
+        saveControl.refresh();
+        requestDocumentSave(editor, saveControl);
+      }
+    };
+    editor.setActions({
+      save: saveControl.save,
+      cancel: function () {
+        postMessage({ type: "previewDocumentCancel", renderToken: currentRenderToken });
+        finishInlineEditor(true);
+      },
+      showCapsule: false,
+      canRestore: false,
+      isPending: function () { return !!pendingDocumentSave; }
+    });
+    saveControl.refresh();
+    editTransaction.setEditorHandle({
+      id: "__document__",
+      cleanup: editor.cleanup,
+      saveControl: saveControl,
+      saveHandler: saveControl.save
+    });
+    setActiveEditorState("document", "", false, false, true, false);
+
+    host.addEventListener("keydown", function (event) {
+      if (event.isComposing || editor.isComposing()) return;
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        if (pendingDocumentSave) return;
+        postMessage({ type: "previewDocumentCancel", renderToken: currentRenderToken });
+        finishInlineEditor(true);
+      } else if (event.ctrlKey && !event.shiftKey && event.key.toLowerCase() === "s") {
+        event.preventDefault();
+        saveControl.save();
+      }
+    });
+    window.setTimeout(function () { editor.focus(); }, 0);
   }
 
   function startInlineEditor(id) {
@@ -1723,12 +1870,8 @@
     host.className = "ocr-preview-inline-editor ocr-preview-linked-block is-editing";
     host.setAttribute("data-block-id", id);
 
-    var toolbar = document.createElement("div");
-    toolbar.className = "ocr-preview-inline-editor-toolbar";
     var bodyHost = document.createElement("div");
     bodyHost.className = "ocr-preview-editor";
-    host.appendChild(toolbar);
-    host.appendChild(bodyHost);
 
     var originalDisplays = elements.map(function (original) {
       return original.style.display || "";
@@ -1742,26 +1885,43 @@
     });
 
     var kind = blockMapper.kindOf(block);
+    var toolbar = null;
+    if (kind !== "text" && kind !== "heading") {
+      toolbar = document.createElement("div");
+      toolbar.className = "ocr-preview-inline-editor-toolbar";
+      host.appendChild(toolbar);
+    }
+    host.appendChild(bodyHost);
     var editor;
     if (kind === "formula") editor = buildFormulaEditor(toolbar, bodyHost, block, element);
     else if (kind === "table") editor = buildTableEditor(toolbar, bodyHost, block, element);
     else if (kind === "image") editor = buildImageEditor(toolbar, bodyHost, block, element);
-    else editor = buildTextEditor(toolbar, bodyHost, block, element);
+    else editor = buildTextEditor(bodyHost, block, element);
 
-    var actions = null;
-    if (!editor.actionsAdded) {
-      actions = appendEditorActions(toolbar, id, block, editor.readContent, editor.canSave);
+    if (kind !== "text" && kind !== "heading") {
+      var markSpecialEditorDirty = function () {
+        setActiveEditorState("block", id, true, false, true, editTransaction.hasPending());
+      };
+      host.addEventListener("input", markSpecialEditorDirty, true);
+      host.addEventListener("change", markSpecialEditorDirty, true);
+      setActiveEditorState("block", id, false, false, true, editTransaction.hasPending());
     }
-    var saveHandler = actions ? actions.save : function () {
+
+    var saveHandler = function () {
       if (editor.validateBeforeSave && !editor.validateBeforeSave()) return;
-      if (editor.canSave()) commitPreviewBlockSave(id, block, editor.readContent());
+      if (!editor.canSave()) {
+        editTransaction.setStatus(
+          "This edit contains Markdown that must be changed in Source mode.", true);
+        return;
+      }
+      commitPreviewBlockSave(id, block, editor.readContent());
     };
 
     element.parentNode.insertBefore(host, element);
     editTransaction.setEditorHandle({
       id: id,
       cleanup: editor.cleanup,
-      saveControl: actions || editor.saveControl,
+      saveControl: editor.saveControl,
       saveHandler: saveHandler
     });
 
@@ -1769,6 +1929,7 @@
       if (event.key === "Escape") {
         event.preventDefault();
         event.stopPropagation();
+        if (editTransaction.hasPending()) return;
         postMessage({ type: "previewBlockCancel", id: id, renderToken: currentRenderToken });
         finishInlineEditor(true);
       } else if (event.ctrlKey && !event.shiftKey && event.key.toLowerCase() === "s") {
@@ -1883,7 +2044,9 @@
 
   function render(payload) {
     if (!payload || payload.type !== "render") return;
+    transientRenderActive = false;
     var generation = ++renderGeneration;
+    reportPreviewSelectionState(true);
     // Set the token before validating the payload so every render failure can
     // be attributed to the render that produced it. The native host uses this
     // value to ignore stale errors from an older document.
@@ -1953,13 +2116,110 @@
     }
   }
 
+  function renderTransient(payload) {
+    if (!payload || payload.type !== "renderTransient" ||
+        String(payload.renderToken || "") !== currentRenderToken || activeEditorState) return;
+    if (typeof payload.markdown !== "string") return;
+    if (payload.markdown.length > 2 * 1024 * 1024) {
+      postMessage({ type: "renderError", recordId: currentRecordId,
+        renderToken: currentRenderToken,
+        message: "Markdown is too large to preview." });
+      return;
+    }
+
+    transientRenderActive = true;
+
+    var scrollTop = preview.scrollTop;
+    var generation = ++renderGeneration;
+    lastMetricsKey = "";
+    markdownRenderer.destroy();
+    clearToolbarHideTimer();
+    resetOverlayScrollbarForRender();
+    floatingToolbar = null;
+    toolbarBlockId = "";
+    toolbarHovering = false;
+
+    try {
+      if (!payload.markdown.trim()) {
+        setEmpty("This OCR record is empty.");
+      } else {
+        preview.className = "markdown-body" + (payload.compactLayout ? " compact-preview" : "");
+        markdownRenderer.renderInto(preview, payload.markdown, generation);
+        security.observeRenderedImages(
+          preview, generation, currentRecordId, currentRenderToken,
+          function (candidate) { return candidate === renderGeneration; },
+          postMessage);
+      }
+      preview.scrollTop = Math.min(scrollTop,
+        Math.max(0, preview.scrollHeight - preview.clientHeight));
+      scheduleContentMetrics();
+    } catch (error) {
+      var message = error && error.message ? error.message : String(error);
+      setError(message);
+      postMessage({ type: "renderError", recordId: currentRecordId,
+        renderToken: currentRenderToken, message: message });
+    }
+  }
+
   function handleHostMessage(data) {
     if (!data || typeof data.type !== "string") return;
+    if (data.type === "prepareStructuredSelection") {
+      var structured = window.ZenCropStructuredSelection;
+      try {
+        if (!structured || typeof structured.prepare !== "function") throw new Error("structured_selection_unavailable");
+        postMessage({
+          type: "structuredSelectionPrepared",
+          token: String(data.token || ""),
+          generation: Number(data.generation || 0),
+          success: true,
+          planJson: structured.prepare(data),
+          errorCode: ""
+        });
+      } catch (error) {
+        postMessage({
+          type: "structuredSelectionPrepared",
+          token: String(data.token || ""),
+          generation: Number(data.generation || 0),
+          success: false,
+          planJson: "",
+          errorCode: String(error && (error.code || error.message) || "conversion_failed")
+        });
+      }
+      return;
+    }
+    if (data.type === "preparePreviewSelection") {
+      var previewStructured = window.ZenCropStructuredSelection;
+      try {
+        if (!previewStructured || typeof previewStructured.preparePreviewSelection !== "function") {
+          throw new Error("structured_selection_unavailable");
+        }
+        data.currentSelectionGeneration = previewSelectionGeneration;
+        postMessage({
+          type: "structuredSelectionPrepared",
+          token: String(data.token || ""),
+          generation: Number(data.generation || 0),
+          success: true,
+          planJson: previewStructured.preparePreviewSelection(
+            data, preview, currentSourceMarkdown, !!activeEditorState),
+          errorCode: ""
+        });
+      } catch (error) {
+        postMessage({
+          type: "structuredSelectionPrepared",
+          token: String(data.token || ""),
+          generation: Number(data.generation || 0),
+          success: false,
+          planJson: "",
+          errorCode: String(error && (error.code || error.message) || "preview_selection_failed")
+        });
+      }
+      return;
+    }
     if (data.type === "setPreviewFontSize") {
       var fontSize = Number(data.fontSize);
       if (!isFinite(fontSize)) fontSize = 14;
       fontSize = Math.max(8, Math.min(32, fontSize));
-      preview.style.setProperty("--preview-font-size", fontSize + "px");
+      (previewShell || preview).style.setProperty("--preview-font-size", fontSize + "px");
       scheduleContentMetrics();
       return;
     }
@@ -1975,6 +2235,10 @@
       render(data);
       return;
     }
+    if (data.type === "renderTransient") {
+      renderTransient(data);
+      return;
+    }
     if (data.type === "setPreviewHover") {
       setPreviewHover(data.id || "");
       return;
@@ -1985,6 +2249,50 @@
     }
     if (data.type === "setPreviewEditing") {
       setPreviewEditing(data.id || "");
+      return;
+    }
+    if (data.type === "setPreviewDocumentEditing") {
+      if (data.editing) startDocumentEditor();
+      else if (activeEditorState && activeEditorState.kind === "document") finishInlineEditor(true);
+      return;
+    }
+    if (data.type === "requestPreviewEditorSave") {
+      editTransaction.triggerSave();
+      return;
+    }
+    if (data.type === "requestPreviewEditorCancel") {
+      if (!activeEditorState || activeEditorState.pending) return;
+      if (activeEditorState.kind === "document") {
+        postMessage({ type: "previewDocumentCancel", renderToken: currentRenderToken });
+      } else {
+        postMessage({
+          type: "previewBlockCancel",
+          id: activeEditorState.id,
+          renderToken: currentRenderToken
+        });
+      }
+      finishInlineEditor(true);
+      return;
+    }
+    if (data.type === "previewDocumentSaveResult") {
+      if (!pendingDocumentSave || String(data.renderToken || "") !== pendingDocumentSave.token) return;
+      var documentPending = pendingDocumentSave;
+      pendingDocumentSave = null;
+      setActiveEditorPending(false);
+      editTransaction.refreshControl();
+      if (data.success) {
+        currentSourceMarkdown = documentPending.content;
+        finishInlineEditor(true);
+      } else {
+        var documentMessages = {
+          stale_target: "The preview changed before this document could be saved.",
+          invalid_request: "The document no longer matches the rendered Markdown.",
+          busy: "Finish the current translation before saving this edit.",
+          persist_failed: "The document could not be saved. Your text is still available in the editor."
+        };
+        editTransaction.setStatus(
+          documentMessages[data.errorCode] || documentMessages.persist_failed, true);
+      }
       return;
     }
     if (data.type === "previewBlockSaveResult") {
@@ -2069,6 +2377,9 @@
     if (isOverlayScrollbarBoundaryHovered()) {
       scheduleOverlayScrollbarReveal();
     }
+  });
+  document.addEventListener("selectionchange", function () {
+    reportPreviewSelectionState(false);
   });
 
   if (window.chrome && window.chrome.webview) {

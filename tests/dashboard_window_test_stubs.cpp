@@ -171,6 +171,11 @@ struct OcrMarkdownPreviewHost::Impl {
     std::wstring hoveredBlockId;
     std::wstring selectedBlockId;
     std::wstring editingBlockId;
+    bool activeEditor = false;
+    bool dirtyEditor = false;
+    bool composingEditor = false;
+    bool canSaveEditor = false;
+    bool editorActionPending = false;
 };
 
 OcrMarkdownPreviewHost::OcrMarkdownPreviewHost()
@@ -194,10 +199,13 @@ void OcrMarkdownPreviewHost::Show(bool visible) {
     if (m_impl) m_impl->visible = visible;
 }
 void OcrMarkdownPreviewHost::SetLocalAssetRoot(const std::wstring&) {}
-void OcrMarkdownPreviewHost::RenderMarkdown(int, const std::wstring& markdown) {
+void OcrMarkdownPreviewHost::RenderMarkdown(int, const std::wstring& markdown, bool) {
     if (!m_impl) return;
     m_impl->markdown = markdown;
     m_impl->blocks.clear();
+}
+void OcrMarkdownPreviewHost::RenderTransientMarkdown(int, const std::wstring& markdown, bool) {
+    if (m_impl) m_impl->markdown = markdown;
 }
 void OcrMarkdownPreviewHost::RenderMarkdownBlocks(
     int,
@@ -218,6 +226,20 @@ void OcrMarkdownPreviewHost::SetSelectedBlock(const std::wstring& id, bool) {
 void OcrMarkdownPreviewHost::SetEditingBlock(const std::wstring& id) {
     if (m_impl) m_impl->editingBlockId = id;
 }
+void OcrMarkdownPreviewHost::StartDocumentEditing() {
+    if (!m_impl) return;
+    m_impl->activeEditor = true;
+    m_impl->canSaveEditor = true;
+}
+void OcrMarkdownPreviewHost::RequestActiveEditorSave() {}
+void OcrMarkdownPreviewHost::CancelActiveEditor() {
+    if (!m_impl) return;
+    m_impl->activeEditor = false;
+    m_impl->dirtyEditor = false;
+    m_impl->composingEditor = false;
+    m_impl->canSaveEditor = false;
+    m_impl->editorActionPending = false;
+}
 void OcrMarkdownPreviewHost::PostPreviewBlockSaveResult(
     const std::wstring&,
     const std::wstring&,
@@ -228,9 +250,20 @@ void OcrMarkdownPreviewHost::PostPreviewBlockRestoreResult(
     const std::wstring&,
     bool,
     const std::wstring&) {}
+void OcrMarkdownPreviewHost::PostPreviewDocumentSaveResult(
+    const std::wstring&,
+    bool,
+    const std::wstring&) {}
 bool OcrMarkdownPreviewHost::IsReady() const { return m_impl && m_impl->available; }
 bool OcrMarkdownPreviewHost::IsAvailable() const { return m_impl && m_impl->available; }
 bool OcrMarkdownPreviewHost::IsCreating() const { return false; }
+bool OcrMarkdownPreviewHost::HasActiveEditor() const { return m_impl && m_impl->activeEditor; }
+bool OcrMarkdownPreviewHost::HasDirtyEditor() const { return m_impl && m_impl->dirtyEditor; }
+bool OcrMarkdownPreviewHost::IsEditorComposing() const { return m_impl && m_impl->composingEditor; }
+bool OcrMarkdownPreviewHost::CanSaveActiveEditor() const { return m_impl && m_impl->canSaveEditor; }
+bool OcrMarkdownPreviewHost::IsEditorActionPending() const {
+    return m_impl && m_impl->editorActionPending;
+}
 
 AlwaysOnTopManager& AlwaysOnTopManager::Instance() {
     static AlwaysOnTopManager instance;

@@ -48,6 +48,7 @@ private:
     void ShowAcquisitionError(const SelectionAcquisitionResult& result);
     void ShowClipboardDispositionWarning(
         ClipboardDisposition disposition, POINT anchor);
+    void StartAcquiredSelection(SelectionAcquisitionResult result);
 };
 
 } // namespace selection

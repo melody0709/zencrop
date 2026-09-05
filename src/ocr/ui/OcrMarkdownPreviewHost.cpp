@@ -8,6 +8,7 @@
 #include "OcrUtils.h"
 #include "ocr/ui/dashboard/DashboardPreviewSecurity.h"
 #include "dashboard/DashboardFileTypes.h"
+#include "core/Base64.h"
 #include "core/WideStringUtils.h"
 #include "AppMessages.h"
 
@@ -48,6 +49,8 @@ constexpr size_t kMaxPreviewBlockContentChars = 256 * 1024;
 constexpr size_t kMaxPreviewBlocks = 1000;
 constexpr size_t kMaxPreviewBlocksPayloadChars = 2 * 1024 * 1024;
 constexpr size_t kMaxPreviewWebMessageChars = 2 * 1024 * 1024;
+constexpr size_t kMaxStructuredSelectionRequestChars = 1536 * 1024;
+constexpr size_t kMaxStructuredSelectionPlanChars = 1024 * 1024;
 constexpr double kPreviewZoomMin = 0.25;
 constexpr double kPreviewZoomMax = 5.0;
 constexpr int kPreviewFontSizeMin = 8;
@@ -475,6 +478,23 @@ bool IsCtrlDown() {
     return (GetKeyState(VK_CONTROL) & 0x8000) != 0;
 }
 
+bool WideToUtf8Local(const std::wstring& value, std::string& utf8) {
+    utf8.clear();
+    if (value.empty()) return true;
+    if (value.size() > static_cast<size_t>((std::numeric_limits<int>::max)())) {
+        return false;
+    }
+    const int required = WideCharToMultiByte(
+        CP_UTF8, WC_ERR_INVALID_CHARS, value.data(),
+        static_cast<int>(value.size()), nullptr, 0, nullptr, nullptr);
+    if (required <= 0) return false;
+    utf8.resize(static_cast<size_t>(required));
+    return WideCharToMultiByte(
+        CP_UTF8, WC_ERR_INVALID_CHARS, value.data(),
+        static_cast<int>(value.size()), utf8.data(), required,
+        nullptr, nullptr) == required;
+}
+
 } // namespace
 
 struct OcrMarkdownPreviewHost::Impl {
@@ -503,15 +523,26 @@ struct OcrMarkdownPreviewHost::Impl {
     std::wstring pendingSourceMarkdown;
     std::vector<OcrMarkdownPreviewHost::PreviewBlock> pendingBlocks;
     bool pendingCompactLayout = false;
+    std::wstring pendingTransientMarkdown;
+    int pendingTransientRecordId = -1;
+    bool pendingTransientCompactLayout = false;
+    bool hasPendingTransientRender = false;
     unsigned long long renderSequence = 0;
     std::wstring pendingRenderToken;
     std::wstring hoveredBlockId;
     std::wstring selectedBlockId;
     std::wstring editingBlockId;
+    bool activeEditor = false;
+    bool activeEditorDirty = false;
+    bool activeEditorComposing = false;
+    bool activeEditorCanSave = false;
+    bool activeEditorActionPending = false;
     std::wstring assetsDir;
     std::wstring localAssetRoot;
     bool localAssetMappingDirty = false;
     std::wstring localAssetMappingError;
+    OcrMarkdownPreviewHost::StructuredSelectionRequest pendingStructuredSelection;
+    bool hasPendingStructuredSelection = false;
 
     Impl() : state(std::make_shared<CallbackState>()) {
         state->owner = this;
@@ -519,6 +550,30 @@ struct OcrMarkdownPreviewHost::Impl {
 
     ~Impl() {
         Destroy();
+    }
+
+    void SetActiveEditorState(
+        bool active, bool dirty, bool composing, bool canSave, bool actionPending) {
+        if (!active) {
+            dirty = false;
+            composing = false;
+            canSave = false;
+            actionPending = false;
+        }
+        if (activeEditor == active && activeEditorDirty == dirty &&
+            activeEditorComposing == composing && activeEditorCanSave == canSave &&
+            activeEditorActionPending == actionPending) {
+            return;
+        }
+        activeEditor = active;
+        activeEditorDirty = dirty;
+        activeEditorComposing = composing;
+        activeEditorCanSave = canSave;
+        activeEditorActionPending = actionPending;
+        if (callbacks.onPreviewEditorState) {
+            callbacks.onPreviewEditorState(activeEditor, activeEditorDirty,
+                activeEditorComposing, activeEditorCanSave, activeEditorActionPending);
+        }
     }
 
     bool Create(HWND parentWindow, const RECT& initialBounds, Callbacks cb) {
@@ -585,11 +640,22 @@ struct OcrMarkdownPreviewHost::Impl {
         pendingSourceMarkdown.clear();
         pendingBlocks.clear();
         pendingCompactLayout = false;
+        pendingTransientMarkdown.clear();
+        pendingTransientRecordId = -1;
+        pendingTransientCompactLayout = false;
+        hasPendingTransientRender = false;
         pendingRenderToken.clear();
         hoveredBlockId.clear();
         selectedBlockId.clear();
         editingBlockId.clear();
+        activeEditor = false;
+        activeEditorDirty = false;
+        activeEditorComposing = false;
+        activeEditorCanSave = false;
+        activeEditorActionPending = false;
         verticalScrollbarBoundaryHovered = false;
+        pendingStructuredSelection = {};
+        hasPendingStructuredSelection = false;
         if (controller) {
             controller->Close();
         }
@@ -608,11 +674,35 @@ struct OcrMarkdownPreviewHost::Impl {
 
     void SetZoomFactor(double zoomFactor) {
         if (!std::isfinite(zoomFactor)) zoomFactor = 1.0;
-        pendingZoomFactor = (std::clamp)(zoomFactor,
-            kPreviewZoomMin, kPreviewZoomMax);
+        const double next = (std::clamp)(zoomFactor, kPreviewZoomMin, kPreviewZoomMax);
+        const bool changed = std::abs(next - pendingZoomFactor) >= 0.001;
+        pendingZoomFactor = next;
         if (controller) {
             controller->put_ZoomFactor(pendingZoomFactor);
         }
+        if (changed && callbacks.onZoomFactorChanged) {
+            callbacks.onZoomFactorChanged(pendingZoomFactor);
+        }
+    }
+
+    bool DispatchAccelerator(UINT virtualKey, bool ctrlDown) {
+        if (callbacks.onAcceleratorKey && callbacks.onAcceleratorKey(virtualKey, ctrlDown)) {
+            return true;
+        }
+        if (!ctrlDown) return false;
+        if (virtualKey == L'0') {
+            SetZoomFactor(1.0);
+            return true;
+        }
+        if (virtualKey == VK_OEM_PLUS || virtualKey == VK_ADD) {
+            SetZoomFactor(pendingZoomFactor + 0.1);
+            return true;
+        }
+        if (virtualKey == VK_OEM_MINUS || virtualKey == VK_SUBTRACT) {
+            SetZoomFactor(pendingZoomFactor - 0.1);
+            return true;
+        }
+        return false;
     }
 
     void PostTextFontSize() {
@@ -622,6 +712,97 @@ struct OcrMarkdownPreviewHost::Impl {
         webview->PostWebMessageAsJson(json.c_str());
     }
 
+    std::wstring BuildStructuredSelectionMessage() const {
+        const auto& request = pendingStructuredSelection;
+        std::wstring json = request.previewSelection
+            ? L"{\"type\":\"preparePreviewSelection\""
+            : L"{\"type\":\"prepareStructuredSelection\"";
+        OcrMarkdownPreviewProtocol::AppendJsonStringField(
+            json, L"token", request.token);
+        json += L",\"generation\":" + std::to_wstring(request.generation);
+        if (request.previewSelection) {
+            json += L",\"selectionGeneration\":" +
+                std::to_wstring(request.selectionGeneration);
+        } else {
+            std::string utf8;
+            if (!WideToUtf8Local(request.payload, utf8)) return {};
+            const std::string encoded = Base64Encode(
+                reinterpret_cast<const unsigned char*>(utf8.data()), utf8.size());
+            OcrMarkdownPreviewProtocol::AppendJsonStringField(
+                json, L"format", request.format);
+            OcrMarkdownPreviewProtocol::AppendJsonStringField(
+                json, L"payloadBase64",
+                std::wstring(encoded.begin(), encoded.end()));
+            OcrMarkdownPreviewProtocol::AppendJsonStringField(
+                json, L"sourceUrl", request.sourceUrl);
+        }
+        json += L"}";
+        return json.size() <= kMaxStructuredSelectionRequestChars
+            ? json : std::wstring();
+    }
+
+    void CompleteStructuredSelection(
+        const OcrMarkdownPreviewHost::StructuredSelectionRequest& request,
+        bool success,
+        const std::wstring& planJson,
+        const std::wstring& errorCode) {
+        if (callbacks.onStructuredSelectionPrepared) {
+            callbacks.onStructuredSelectionPrepared(
+                request.token, request.generation, success,
+                planJson, errorCode);
+        }
+    }
+
+    void FailPendingStructuredSelection(const std::wstring& errorCode) {
+        if (!hasPendingStructuredSelection) return;
+        const auto request = pendingStructuredSelection;
+        pendingStructuredSelection = {};
+        hasPendingStructuredSelection = false;
+        CompleteStructuredSelection(request, false, L"", errorCode);
+    }
+
+    void PostPendingStructuredSelection() {
+        if (!ready || !webview || !hasPendingStructuredSelection) return;
+        const std::wstring json = BuildStructuredSelectionMessage();
+        if (!json.empty() &&
+            SUCCEEDED(webview->PostWebMessageAsJson(json.c_str()))) {
+            return;
+        }
+        const auto request = pendingStructuredSelection;
+        pendingStructuredSelection = {};
+        hasPendingStructuredSelection = false;
+        CompleteStructuredSelection(request, false, L"",
+            L"request_too_large_or_post_failed");
+    }
+
+    bool PrepareStructuredSelection(
+        const OcrMarkdownPreviewHost::StructuredSelectionRequest& request) {
+        if (request.token.empty() || request.generation == 0 ||
+            (!request.previewSelection &&
+             (request.payload.empty() ||
+              (request.format != L"html" && request.format != L"markdown")))) {
+            return false;
+        }
+        pendingStructuredSelection = request;
+        hasPendingStructuredSelection = true;
+        PostPendingStructuredSelection();
+        return true;
+    }
+
+    void CancelStructuredSelection(
+        const std::wstring& token, uint64_t generation,
+        const std::wstring& errorCode) {
+        if (!hasPendingStructuredSelection ||
+            pendingStructuredSelection.token != token ||
+            pendingStructuredSelection.generation != generation) {
+            return;
+        }
+        const auto request = pendingStructuredSelection;
+        pendingStructuredSelection = {};
+        hasPendingStructuredSelection = false;
+        CompleteStructuredSelection(request, false, L"", errorCode);
+    }
+
     void SetTextFontSize(int fontSize) {
         pendingTextFontSize = (std::clamp)(fontSize,
             kPreviewFontSizeMin, kPreviewFontSizeMax);
@@ -629,7 +810,12 @@ struct OcrMarkdownPreviewHost::Impl {
     }
 
     void Show(bool show) {
-        if (!show) SetVerticalScrollbarBoundaryHover(false);
+        if (!show) {
+            SetVerticalScrollbarBoundaryHover(false);
+            if (callbacks.onPreviewSelectionState) {
+                callbacks.onPreviewSelectionState(false, 0);
+            }
+        }
         if (visible == show) return;
         visible = show;
         if (controller) {
@@ -704,6 +890,9 @@ struct OcrMarkdownPreviewHost::Impl {
         pendingMarkdown = markdown;
         pendingSourceMarkdown = sourceMarkdown.empty() ? markdown : sourceMarkdown;
         pendingBlocks = blocks;
+        pendingTransientMarkdown.clear();
+        hasPendingTransientRender = false;
+        SetActiveEditorState(false, false, false, false, false);
         PostPendingRender();
     }
 
@@ -711,6 +900,15 @@ struct OcrMarkdownPreviewHost::Impl {
         static const std::vector<OcrMarkdownPreviewHost::PreviewBlock> emptyBlocks;
         pendingCompactLayout = compactLayout;
         RenderMarkdownBlocks(recordId, markdown, emptyBlocks, markdown);
+    }
+
+    void RenderTransientMarkdown(int recordId, const std::wstring& markdown, bool compactLayout) {
+        if (pendingRenderToken.empty() || activeEditor) return;
+        pendingTransientRecordId = recordId;
+        pendingTransientMarkdown = markdown;
+        pendingTransientCompactLayout = compactLayout;
+        hasPendingTransientRender = true;
+        PostPendingTransientRender();
     }
 
     void PostBlockState(const wchar_t* type, const std::wstring& id, bool ensureVisible = false) {
@@ -737,6 +935,41 @@ struct OcrMarkdownPreviewHost::Impl {
         PostBlockState(L"setPreviewEditing", editingBlockId);
     }
 
+    void StartDocumentEditing() {
+        if (!ready || !webview) return;
+        webview->PostWebMessageAsJson(
+            L"{\"type\":\"setPreviewDocumentEditing\",\"editing\":true}");
+    }
+
+    void RequestActiveEditorSave() {
+        if (!ready || !webview || !activeEditor || activeEditorComposing ||
+            activeEditorActionPending) return;
+        webview->PostWebMessageAsJson(L"{\"type\":\"requestPreviewEditorSave\"}");
+    }
+
+    void CancelActiveEditor() {
+        if (!activeEditor || activeEditorActionPending) return;
+        if (ready && webview) {
+            webview->PostWebMessageAsJson(L"{\"type\":\"requestPreviewEditorCancel\"}");
+        }
+    }
+
+    void PostPendingTransientRender() {
+        if (!ready || !webview || !hasPendingTransientRender || pendingRenderToken.empty()) return;
+        std::wstring markdown = pendingTransientMarkdown.size() > kMaxPreviewMarkdownChars
+            ? pendingTransientMarkdown.substr(0, kMaxPreviewMarkdownChars)
+            : pendingTransientMarkdown;
+        markdown = RewriteMarkdownOcrImageUrls(markdown);
+        const std::wstring json = OcrMarkdownPreviewProtocol::BuildTransientRenderMessage(
+            pendingTransientRecordId, markdown, pendingRenderToken, pendingTransientCompactLayout);
+        const HRESULT hr = webview->PostWebMessageAsJson(json.c_str());
+        if (FAILED(hr) && callbacks.onRenderError) {
+            callbacks.onRenderError(
+                pendingTransientRecordId,
+                L"Failed to post transient Markdown to preview: " + FormatHResult(hr));
+        }
+    }
+
     void PostPreviewBlockSaveResult(
         const std::wstring& id,
         const std::wstring& renderToken,
@@ -761,6 +994,17 @@ struct OcrMarkdownPreviewHost::Impl {
         if (!ready || !webview) return;
         std::wstring json = OcrMarkdownPreviewProtocol::BuildBlockRestoreResult(
             id, renderToken, success, errorCode);
+        webview->PostWebMessageAsJson(json.c_str());
+    }
+
+    void PostPreviewDocumentSaveResult(
+        const std::wstring& renderToken,
+        bool success,
+        const std::wstring& errorCode)
+    {
+        if (!ready || !webview) return;
+        const std::wstring json = OcrMarkdownPreviewProtocol::BuildDocumentSaveResult(
+            renderToken, success, errorCode);
         webview->PostWebMessageAsJson(json.c_str());
     }
 
@@ -1017,13 +1261,16 @@ struct OcrMarkdownPreviewHost::Impl {
         token = {};
         webview->add_ProcessFailed(
             Callback<ICoreWebView2ProcessFailedEventHandler>(
-                [weakState](ICoreWebView2*, ICoreWebView2ProcessFailedEventArgs*) -> HRESULT {
-                    if (!weakState || !weakState->owner) return S_OK;
-                    weakState->owner->ready = false;
-                    weakState->owner->failed = true;
-                    if (weakState->owner->callbacks.onProcessFailed) {
-                        weakState->owner->callbacks.onProcessFailed();
-                    }
+                 [weakState](ICoreWebView2*, ICoreWebView2ProcessFailedEventArgs*) -> HRESULT {
+                     if (!weakState || !weakState->owner) return S_OK;
+                     weakState->owner->ready = false;
+                     weakState->owner->failed = true;
+                     weakState->owner->FailPendingStructuredSelection(
+                         L"webview_process_failed");
+                     if (!weakState->owner) return S_OK;
+                     if (weakState->owner->callbacks.onProcessFailed) {
+                         weakState->owner->callbacks.onProcessFailed();
+                     }
                     return S_OK;
                 }).Get(),
             &token);
@@ -1039,7 +1286,7 @@ struct OcrMarkdownPreviewHost::Impl {
             kind != COREWEBVIEW2_KEY_EVENT_KIND_SYSTEM_KEY_DOWN) {
             return;
         }
-        if (callbacks.onAcceleratorKey && callbacks.onAcceleratorKey(virtualKey, IsCtrlDown())) {
+        if (DispatchAccelerator(virtualKey, IsCtrlDown())) {
             args->put_Handled(TRUE);
         }
     }
@@ -1072,7 +1319,9 @@ struct OcrMarkdownPreviewHost::Impl {
             if (pendingRenderToken == renderTokenBeforeCallback &&
                 (!pendingMarkdown.empty() || pendingRecordId >= 0 || !pendingBlocks.empty())) {
                 PostPendingRender();
+                PostPendingTransientRender();
             }
+            PostPendingStructuredSelection();
         } else if (type == L"renderError") {
             std::wstring record = ExtractJsonField(json, L"recordId");
             std::wstring renderToken = UnescapeJsonString(ExtractJsonField(json, L"renderToken"));
@@ -1130,11 +1379,86 @@ struct OcrMarkdownPreviewHost::Impl {
             int virtualKey = WideParseJsonIntToken(ExtractJsonField(json, L"virtualKey"));
             // OWN-80: pure bool parse (WideStringUtils).
             bool ctrlDown = WideParseJsonBoolToken(ExtractJsonField(json, L"ctrlKey"));
-            if (virtualKey > 0 && callbacks.onAcceleratorKey) {
-                callbacks.onAcceleratorKey((UINT)virtualKey, ctrlDown);
+            if (virtualKey > 0) DispatchAccelerator((UINT)virtualKey, ctrlDown);
+        } else if (type == L"previewZoomStep") {
+            const int step = WideParseJsonIntToken(ExtractJsonField(json, L"step"));
+            if (step != 0) SetZoomFactor(pendingZoomFactor + (step > 0 ? 0.1 : -0.1));
+        } else if (type == L"previewSelectionState") {
+            const bool hasSelection = WideParseJsonBoolToken(
+                ExtractJsonField(json, L"hasSelection"));
+            unsigned long long selectionGeneration = 0;
+            if (ParseUnsignedDecimal(
+                    ExtractJsonField(json, L"selectionGeneration"),
+                    selectionGeneration) &&
+                callbacks.onPreviewSelectionState) {
+                callbacks.onPreviewSelectionState(
+                    hasSelection, static_cast<uint64_t>(selectionGeneration));
             }
+        } else if (type == L"structuredSelectionPrepared") {
+            const std::wstring token = UnescapeJsonString(
+                ExtractJsonField(json, L"token"));
+            unsigned long long parsedGeneration = 0;
+            if (!ParseUnsignedDecimal(
+                    ExtractJsonField(json, L"generation"),
+                    parsedGeneration) || !hasPendingStructuredSelection ||
+                token != pendingStructuredSelection.token ||
+                parsedGeneration != pendingStructuredSelection.generation) {
+                return;
+            }
+            const bool success = WideParseJsonBoolToken(
+                ExtractJsonField(json, L"success"));
+            std::wstring planJson = UnescapeJsonString(
+                ExtractJsonField(json, L"planJson"));
+            std::wstring errorCode = UnescapeJsonString(
+                ExtractJsonField(json, L"errorCode"));
+            if (planJson.size() > kMaxStructuredSelectionPlanChars) {
+                planJson.clear();
+                errorCode = L"plan_too_large";
+            }
+            const auto request = pendingStructuredSelection;
+            pendingStructuredSelection = {};
+            hasPendingStructuredSelection = false;
+            CompleteStructuredSelection(request,
+                success && !planJson.empty(), planJson,
+                success && planJson.empty() && errorCode.empty()
+                    ? L"empty_plan" : errorCode);
         } else if (type == L"previewDocumentEdit") {
-            if (callbacks.onPreviewDocumentEdit) callbacks.onPreviewDocumentEdit();
+            const bool sourceRequired = WideParseJsonBoolToken(
+                ExtractJsonField(json, L"sourceRequired"));
+            if (callbacks.onPreviewDocumentEdit) {
+                callbacks.onPreviewDocumentEdit(sourceRequired);
+            }
+        } else if (type == L"previewEditorState") {
+            const std::wstring renderToken = UnescapeJsonString(ExtractJsonField(json, L"renderToken"));
+            if (!DashboardPreviewRenderTokenMatches(pendingRenderToken, renderToken)) return;
+            const bool active = WideParseJsonBoolToken(ExtractJsonField(json, L"active"));
+            SetActiveEditorState(active,
+                WideParseJsonBoolToken(ExtractJsonField(json, L"dirty")),
+                WideParseJsonBoolToken(ExtractJsonField(json, L"composing")),
+                WideParseJsonBoolToken(ExtractJsonField(json, L"canSave")),
+                WideParseJsonBoolToken(ExtractJsonField(json, L"pending")));
+        } else if (type == L"previewDocumentSave") {
+            const std::wstring renderToken = UnescapeJsonString(ExtractJsonField(json, L"renderToken"));
+            const std::wstring content = UnescapeJsonString(ExtractJsonField(json, L"content"));
+            const std::wstring revision = UnescapeJsonString(ExtractJsonField(json, L"revisionSha256"));
+            const bool validToken = DashboardPreviewRenderTokenMatches(pendingRenderToken, renderToken);
+            const bool validRevision = !revision.empty() &&
+                revision == DashboardSourceMap::RevisionSha256(
+                    DashboardSourceMap::NormalizeLf(pendingSourceMarkdown));
+            if (!validToken) {
+                PostPreviewDocumentSaveResult(renderToken, false, L"stale_target");
+            } else if (!validRevision || content.size() > kMaxPreviewMarkdownChars) {
+                PostPreviewDocumentSaveResult(renderToken, false, L"invalid_request");
+            } else if (callbacks.onPreviewDocumentSave) {
+                callbacks.onPreviewDocumentSave(content, renderToken);
+            } else {
+                PostPreviewDocumentSaveResult(renderToken, false, L"persist_failed");
+            }
+        } else if (type == L"previewDocumentCancel") {
+            const std::wstring renderToken = UnescapeJsonString(ExtractJsonField(json, L"renderToken"));
+            if (!DashboardPreviewRenderTokenMatches(pendingRenderToken, renderToken)) return;
+            SetActiveEditorState(false, false, false, false, false);
+            if (callbacks.onPreviewDocumentCancel) callbacks.onPreviewDocumentCancel();
         } else if (type == L"previewBlockHover") {
             std::wstring id = UnescapeJsonString(ExtractJsonField(json, L"id"));
             hoveredBlockId = id;
@@ -1254,6 +1578,7 @@ struct OcrMarkdownPreviewHost::Impl {
         failed = true;
         ready = false;
         creating = false;
+        FailPendingStructuredSelection(L"preview_unavailable");
         if (callbacks.onUnavailable) callbacks.onUnavailable(message);
     }
 
@@ -1335,6 +1660,10 @@ void OcrMarkdownPreviewHost::RenderMarkdown(int recordId, const std::wstring& ma
     m_impl->RenderMarkdown(recordId, markdown, compactLayout);
 }
 
+void OcrMarkdownPreviewHost::RenderTransientMarkdown(int recordId, const std::wstring& markdown, bool compactLayout) {
+    m_impl->RenderTransientMarkdown(recordId, markdown, compactLayout);
+}
+
 void OcrMarkdownPreviewHost::RenderMarkdownBlocks(
     int recordId,
     const std::wstring& markdown,
@@ -1356,6 +1685,18 @@ void OcrMarkdownPreviewHost::SetEditingBlock(const std::wstring& id) {
     m_impl->SetEditingBlock(id);
 }
 
+void OcrMarkdownPreviewHost::StartDocumentEditing() {
+    m_impl->StartDocumentEditing();
+}
+
+void OcrMarkdownPreviewHost::RequestActiveEditorSave() {
+    m_impl->RequestActiveEditorSave();
+}
+
+void OcrMarkdownPreviewHost::CancelActiveEditor() {
+    m_impl->CancelActiveEditor();
+}
+
 void OcrMarkdownPreviewHost::PostPreviewBlockSaveResult(
     const std::wstring& id,
     const std::wstring& renderToken,
@@ -1374,6 +1715,25 @@ void OcrMarkdownPreviewHost::PostPreviewBlockRestoreResult(
     m_impl->PostPreviewBlockRestoreResult(id, renderToken, success, errorCode);
 }
 
+void OcrMarkdownPreviewHost::PostPreviewDocumentSaveResult(
+    const std::wstring& renderToken,
+    bool success,
+    const std::wstring& errorCode)
+{
+    m_impl->PostPreviewDocumentSaveResult(renderToken, success, errorCode);
+}
+
+bool OcrMarkdownPreviewHost::PrepareStructuredSelection(
+    const StructuredSelectionRequest& request) {
+    return m_impl->PrepareStructuredSelection(request);
+}
+
+void OcrMarkdownPreviewHost::CancelStructuredSelection(
+    const std::wstring& token, uint64_t generation,
+    const std::wstring& errorCode) {
+    m_impl->CancelStructuredSelection(token, generation, errorCode);
+}
+
 bool OcrMarkdownPreviewHost::IsReady() const {
     return m_impl->ready;
 }
@@ -1384,6 +1744,26 @@ bool OcrMarkdownPreviewHost::IsAvailable() const {
 
 bool OcrMarkdownPreviewHost::IsCreating() const {
     return m_impl->IsCreating();
+}
+
+bool OcrMarkdownPreviewHost::HasActiveEditor() const {
+    return m_impl->activeEditor;
+}
+
+bool OcrMarkdownPreviewHost::HasDirtyEditor() const {
+    return m_impl->activeEditor && m_impl->activeEditorDirty;
+}
+
+bool OcrMarkdownPreviewHost::IsEditorComposing() const {
+    return m_impl->activeEditor && m_impl->activeEditorComposing;
+}
+
+bool OcrMarkdownPreviewHost::CanSaveActiveEditor() const {
+    return m_impl->activeEditor && m_impl->activeEditorCanSave;
+}
+
+bool OcrMarkdownPreviewHost::IsEditorActionPending() const {
+    return m_impl->activeEditor && m_impl->activeEditorActionPending;
 }
 
 #ifdef ZENCROP_PREVIEW_HOST_TESTS
@@ -1405,13 +1785,20 @@ bool OcrMarkdownPreviewHost::RunStaticContractForTests(std::wstring& error) {
         L"ocr-preview\\preview.js",
         L"ocr-preview\\markdown.js",
         L"ocr-preview\\blocks.js",
+        L"ocr-preview\\editor-table.js",
         L"ocr-preview\\editor-markdown.js",
+        L"ocr-preview\\rich-editor-ui.js",
+        L"ocr-preview\\rich-editor.js",
         L"ocr-preview\\edit-transaction.js",
         L"ocr-preview\\formula-editor.js",
+        L"ocr-preview\\structured-selection.js",
         L"ocr-preview\\security.js",
         L"ocr-preview\\preview.css",
         L"vendor\\markdown-it.min.js",
-        L"vendor\\purify.min.js"
+        L"vendor\\purify.min.js",
+        L"vendor\\turndown\\turndown.js",
+        L"vendor\\turndown\\turndown-plugin-gfm.js",
+        L"vendor\\turndown\\LICENSE.txt"
     };
     for (const wchar_t* asset : requiredAssets) {
         if (!FileExists(CombinePath(assetsDir, asset))) {
@@ -1462,6 +1849,16 @@ bool OcrMarkdownPreviewHost::RunStaticContractForTests(std::wstring& error) {
         message.find(localUrl) == std::wstring::npos ||
         message.find(std::wstring(L"https://") + kImagesHost + L"/preview%20test.png") == std::wstring::npos) {
         error = L"local OCR image URL rewrite contract failed";
+        return false;
+    }
+    const std::wstring transientMessage =
+        OcrMarkdownPreviewProtocol::BuildTransientRenderMessage(
+            42, L"streamed\nmarkdown", L"stream-token", true);
+    if (transientMessage.find(L"\"type\":\"renderTransient\"") == std::wstring::npos ||
+        transientMessage.find(L"\"renderToken\":\"stream-token\"") == std::wstring::npos ||
+        transientMessage.find(L"streamed\\nmarkdown") == std::wstring::npos ||
+        transientMessage.find(L"\"compactLayout\":true") == std::wstring::npos) {
+        error = L"transient render message contract failed";
         return false;
     }
 
@@ -1549,6 +1946,16 @@ bool OcrMarkdownPreviewHost::RunStaticContractForTests(std::wstring& error) {
         error = L"stale Restore OCR result message contract failed";
         return false;
     }
+    const std::wstring documentSaveMessage =
+        OcrMarkdownPreviewProtocol::BuildDocumentSaveResult(
+            L"document-token", false, L"stale_target");
+    if (documentSaveMessage.find(L"\"type\":\"previewDocumentSaveResult\"") ==
+            std::wstring::npos ||
+        documentSaveMessage.find(L"\"renderToken\":\"document-token\"") ==
+            std::wstring::npos) {
+        error = L"preview document save result message contract failed";
+        return false;
+    }
 
     std::wstring previewJs;
     std::wstring previewJsPath = CombinePath(assetsDir, L"ocr-preview\\preview.js");
@@ -1559,7 +1966,9 @@ bool OcrMarkdownPreviewHost::RunStaticContractForTests(std::wstring& error) {
     const wchar_t* requiredPreviewTokens[] = {
         L"previewBlockHover", L"setPreviewSelection", L"decorateRenderedMarkdownWithBlocks",
         L"ocr-preview-linked-block", L"requestPreviewEdit", L"Restore OCR",
-        L"previewDocumentEdit",
+        L"previewDocumentEdit", L"previewEditorState", L"previewDocumentSave",
+        L"setPreviewDocumentEditing", L"requestPreviewEditorSave", L"requestPreviewEditorCancel",
+        L"previewZoomStep", L"renderTransient",
         L"stale_target: \"The preview changed before the restore completed",
         L"event.key === \"Escape\"", L"type: \"previewBlockSelect\", id: \"\"",
         L"revisionSha256", L"buildFormulaEditor", L"buildTableEditor",
@@ -1594,6 +2003,7 @@ bool OcrMarkdownPreviewHost::RunStaticContractForTests(std::wstring& error) {
     }
     std::wstring formulaEditorJs;
     std::wstring editorMarkdownJs;
+    std::wstring richEditorJs;
     std::wstring editTransactionJs;
     std::wstring securityJs;
     if (!ReadUtf8TextFileLocal(
@@ -1602,6 +2012,9 @@ bool OcrMarkdownPreviewHost::RunStaticContractForTests(std::wstring& error) {
         !ReadUtf8TextFileLocal(
             CombinePath(assetsDir, L"ocr-preview\\editor-markdown.js"), editorMarkdownJs) ||
         editorMarkdownJs.find(L"function list(") == std::wstring::npos ||
+        !ReadUtf8TextFileLocal(
+            CombinePath(assetsDir, L"ocr-preview\\rich-editor.js"), richEditorJs) ||
+        richEditorJs.find(L"ocr-preview-rich-editor-toolbar") != std::wstring::npos ||
         !ReadUtf8TextFileLocal(
             CombinePath(assetsDir, L"ocr-preview\\edit-transaction.js"), editTransactionJs) ||
         editTransactionJs.find(L"previewBlockSave") == std::wstring::npos ||

@@ -261,6 +261,8 @@
     function createMathNode(token) {
       var span = document.createElement("span");
       span.className = token.display ? "math-node math-display" : "math-node math-inline";
+      span.setAttribute("data-tex", token.source);
+      span.setAttribute("data-display", token.display ? "block" : "inline");
       if (katex && typeof katex.render === "function") {
         try {
           katex.render(token.source, span, mathOptions(token.display));

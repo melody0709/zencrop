@@ -1138,6 +1138,8 @@ bool OcrDashboardWindow::EnsurePreviewHost() {
         if (m_hwnd) SetTimer(m_hwnd, TIMER_STATUS_CLEAR, 3500, nullptr);
     };
     callbacks.onProcessFailed = [this]() {
+        UpdatePreviewSelectionState(
+            PreviewSelectionHost::Source, false, 0);
         DashboardStateSetPreviewAvailable(m_dashboardState, false);
         FallbackPreviewToSource(L"Markdown preview crashed; showing Source");
     };
@@ -1146,6 +1148,18 @@ bool OcrDashboardWindow::EnsurePreviewHost() {
     };
     callbacks.onAcceleratorKey = [this](UINT virtualKey, bool ctrlDown) {
         return HandlePreviewAccelerator(virtualKey, ctrlDown);
+    };
+    callbacks.onPreviewSelectionState = [this](
+        bool hasSelection, uint64_t generation) {
+        UpdatePreviewSelectionState(
+            PreviewSelectionHost::Source, hasSelection, generation);
+    };
+    callbacks.onStructuredSelectionPrepared = [this](
+        const std::wstring& token, uint64_t generation, bool success,
+        const std::wstring& planJson, const std::wstring& errorCode) {
+        HandlePreparedPreviewSelection(
+            PreviewSelectionHost::Source, token, generation,
+            success, planJson, errorCode);
     };
     callbacks.onPreviewBlockHover = [this](const std::wstring& id) {
         // D-H-1: pure protocol gate; Host applies hover.
@@ -1189,6 +1203,7 @@ bool OcrDashboardWindow::EnsurePreviewHost() {
             id,
             FindCurrentBlockById(id) != nullptr);
         if (!d.accepted) {
+            m_hasPendingTextModeAfterPreviewSave = false;
             if (m_previewHost) {
                 m_preview.lastRejectToken = DashboardPreviewRejectToken(d.reject);
                 m_previewHost->PostPreviewBlockSaveResult(
@@ -1199,14 +1214,19 @@ bool OcrDashboardWindow::EnsurePreviewHost() {
             return;
         }
         if (ApplyPreviewBlockEdit(id, content, sourceEdit)) {
+            const bool switchMode = m_hasPendingTextModeAfterPreviewSave;
+            const DashboardTextMode pendingMode = m_pendingTextModeAfterPreviewSave;
+            m_hasPendingTextModeAfterPreviewSave = false;
             if (m_previewHost) {
                 m_previewHost->PostPreviewBlockSaveResult(id, renderToken, true);
                 m_previewHost->SetEditingBlock(L"");
                 m_previewHost->SetSelectedBlock(id, false);
             }
-            RenderSelectedItemPreview();
+            if (switchMode) SetTextMode(pendingMode);
+            else RenderSelectedItemPreview();
         } else if (m_previewHost) {
             // Keep the editor open so the user can retry or copy their unsaved text.
+            m_hasPendingTextModeAfterPreviewSave = false;
             m_preview.lastRejectToken = DashboardPreviewPersistFailToken(m_dashboardState);
             m_previewHost->PostPreviewBlockSaveResult(
                 id, renderToken, false, m_preview.lastRejectToken);
@@ -1252,6 +1272,7 @@ bool OcrDashboardWindow::EnsurePreviewHost() {
         }
     };
     callbacks.onPreviewBlockCancel = [this](const std::wstring&) {
+        m_hasPendingTextModeAfterPreviewSave = false;
         if (m_previewHost) m_previewHost->SetEditingBlock(L"");
     };
 
@@ -1262,6 +1283,7 @@ bool OcrDashboardWindow::EnsurePreviewHost() {
     }
     return ok;
 }
+
 
 bool OcrDashboardWindow::EnsureTranslationPreviewHost() {
     if (m_translationPreviewHost &&
@@ -1294,6 +1316,12 @@ bool OcrDashboardWindow::EnsureTranslationPreviewHost() {
     callbacks.onImageLoadError = [this](int, const std::wstring& src) {
         OutputDebugStringW((L"[Translation Preview] Image failed to load: " + src + L"\n").c_str());
     };
+    callbacks.onProcessFailed = [this]() {
+        UpdatePreviewSelectionState(
+            PreviewSelectionHost::Translation, false, 0);
+        m_translationError = L"Translation preview crashed";
+        if (m_statusText) SetWindowTextW(m_statusText, m_translationError.c_str());
+    };
     callbacks.onPreviewBlockHover = [this](const std::wstring& id) { SetHoveredBlock(id); };
     callbacks.onPreviewBlockSelect = [this](const std::wstring& id) {
         if (id.empty() || FindCurrentBlockById(id) != nullptr) {
@@ -1301,6 +1329,18 @@ bool OcrDashboardWindow::EnsureTranslationPreviewHost() {
             SetSelectedBlock(id, true);
             if (!id.empty()) CenterSelectedBlockInImage(true);
         }
+    };
+    callbacks.onPreviewSelectionState = [this](
+        bool hasSelection, uint64_t generation) {
+        UpdatePreviewSelectionState(
+            PreviewSelectionHost::Translation, hasSelection, generation);
+    };
+    callbacks.onStructuredSelectionPrepared = [this](
+        const std::wstring& token, uint64_t generation, bool success,
+        const std::wstring& planJson, const std::wstring& errorCode) {
+        HandlePreparedPreviewSelection(
+            PreviewSelectionHost::Translation, token, generation,
+            success, planJson, errorCode);
     };
     // Translation Preview is intentionally read-only in the first embedded
     // release. Do not install edit/save/restore callbacks.
@@ -1431,6 +1471,7 @@ void OcrDashboardWindow::ApplyTranslationSegments(
 }
 
 void OcrDashboardWindow::FallbackPreviewToSource(const std::wstring& message) {
+    m_hasPendingTextModeAfterPreviewSave = false;
     if (m_previewHost) {
         m_previewHost->Show(false);
     }
@@ -1484,6 +1525,39 @@ void OcrDashboardWindow::SetTextMode(DashboardTextMode mode) {
     if (preferredChanged) {
         PersistResultTextMode();
     }
+}
+
+bool OcrDashboardWindow::ResolvePreviewEditorBeforeTextMode(DashboardTextMode mode) {
+    if (!m_previewHost || !m_previewHost->HasActiveEditor()) return true;
+    if (m_previewHost->IsEditorActionPending()) {
+        MessageBeep(MB_ICONWARNING);
+        return false;
+    }
+    if (m_previewHost->IsEditorComposing()) {
+        MessageBeep(MB_ICONWARNING);
+        return false;
+    }
+    if (!m_previewHost->HasDirtyEditor()) {
+        m_previewHost->CancelActiveEditor();
+        return true;
+    }
+
+    const int choice = MessageBoxW(
+        m_hwnd,
+        S::IsChinese()
+            ? L"Markdown 编辑尚未保存。\n\n是：保存并切换\n否：放弃修改并切换\n取消：继续编辑"
+            : L"The Markdown edit has not been saved.\n\nYes: save and switch\nNo: discard and switch\nCancel: keep editing",
+        L"ZenCrop",
+        MB_YESNOCANCEL | MB_ICONQUESTION);
+    if (choice == IDCANCEL) return false;
+    if (choice == IDNO) {
+        m_previewHost->CancelActiveEditor();
+        return true;
+    }
+    m_pendingTextModeAfterPreviewSave = mode;
+    m_hasPendingTextModeAfterPreviewSave = true;
+    m_previewHost->RequestActiveEditorSave();
+    return false;
 }
 
 void OcrDashboardWindow::RenderSelectedItemPreview() {
@@ -1590,10 +1664,7 @@ bool OcrDashboardWindow::HandlePreviewAccelerator(UINT virtualKey, bool ctrlDown
     }
 
     if (virtualKey == L'0') {
-        m_dashboardState.canvasView.viewMode = ImageViewMode::Fit;
-        AutoFitImage();
-        ShowZoomHud();
-        InvalidateRect(m_imageArea, nullptr, FALSE);
+        if (m_previewHost) m_previewHost->SetZoomFactor(1.0);
         return true;
     }
 

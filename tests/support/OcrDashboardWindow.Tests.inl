@@ -3326,9 +3326,11 @@ bool OcrDashboardWindow::RunWindowContractForTests(
     DashboardStateSyncTextMode(window->m_dashboardState, DashboardTextMode::Preview, DashboardStateTextModeEffective(window->m_dashboardState));
     DashboardStateSyncTextMode(window->m_dashboardState, DashboardStateTextModePreferred(window->m_dashboardState), DashboardTextMode::Preview);
     if (window->m_edit) SetWindowTextW(window->m_edit, L"stale preview text");
+    window->m_hasPendingTextModeAfterPreviewSave = true;
     window->FallbackPreviewToSource(L"Preview fallback contract");
     if (DashboardStateTextModeEffective(window->m_dashboardState) != DashboardTextMode::Source ||
-        DashboardStateTextModePreferred(window->m_dashboardState) != DashboardTextMode::Preview) {
+        DashboardStateTextModePreferred(window->m_dashboardState) != DashboardTextMode::Preview ||
+        window->m_hasPendingTextModeAfterPreviewSave) {
         return fail(L"Preview fallback must set effective Source while keeping preferred Preview.");
     }
     std::wstring fallbackEditText = GetWindowTextWide(window->m_edit);
@@ -3340,6 +3342,39 @@ bool OcrDashboardWindow::RunWindowContractForTests(
          DashboardWindowTestContains(fallbackEditText, L"stub"));
     if (!fallbackHasCurrentContent) {
         return fail(L"Preview fallback did not expose Source content in the edit control.");
+    }
+
+    const int sourceFontBaseline = window->m_resultTextFontSize;
+    const std::wstring sourceTextBeforeZoom = GetWindowTextWide(window->m_edit);
+    const auto sendSourceCtrlKey = [window](WPARAM key) {
+        BYTE keyboardState[256] = {};
+        GetKeyboardState(keyboardState);
+        const BYTE savedControl = keyboardState[VK_CONTROL];
+        keyboardState[VK_CONTROL] |= 0x80;
+        SetKeyboardState(keyboardState);
+        SendMessageW(window->m_edit, WM_KEYDOWN, key, 0);
+        keyboardState[VK_CONTROL] = savedControl;
+        SetKeyboardState(keyboardState);
+    };
+    sendSourceCtrlKey(VK_OEM_PLUS);
+    if (window->m_resultTextFontSize != sourceFontBaseline + 1 ||
+        GetWindowTextWide(window->m_edit) != sourceTextBeforeZoom) {
+        return fail(L"Dashboard Source Ctrl+= did not enlarge the font without changing Markdown.");
+    }
+    window->SetTextMode(DashboardTextMode::Text);
+    window->SetTextMode(DashboardTextMode::Source);
+    if (window->m_resultTextFontSize != sourceFontBaseline + 1) {
+        return fail(L"Dashboard Source font size was not retained across mode switches.");
+    }
+    sendSourceCtrlKey(VK_SUBTRACT);
+    if (window->m_resultTextFontSize != sourceFontBaseline) {
+        return fail(L"Dashboard Source Ctrl+- did not restore the prior font step.");
+    }
+    sendSourceCtrlKey(VK_ADD);
+    sendSourceCtrlKey(L'0');
+    if (window->m_resultTextFontSize != sourceFontBaseline ||
+        GetWindowTextWide(window->m_edit) != sourceTextBeforeZoom) {
+        return fail(L"Dashboard Source Ctrl+0 did not restore the configured font baseline.");
     }
 
     // Preferred mode is persisted independently of transient Preview fallback.

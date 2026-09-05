@@ -59,6 +59,9 @@ ZenCrop 的构建、架构、踩坑规则等开发文档已迁移至 `docs/01_ar
 ## 验证与文档
 
 - 按风险运行一次增量构建和直接相关的既有测试；只有跨域、高风险、release 验收或用户明确要求时才跑完整 hermetic/audit。
+- 禁止从普通 `pwsh` 会话直接调用 `cmake`、`ctest`、`ninja` 或 `cl`，也不得假设子进程中 `vcvars64.bat` 设置的环境会返回父进程。
+- 产品构建统一走 `cmd.exe /d /c build.bat`；测试统一走 `cmd.exe /d /c tests\build_and_run.bat <test_name>`，由现有脚本负责发现 VS/CMake、初始化编译环境和设置测试输出目录。
+- 只有调试构建系统本身时，才可在同一个 `cmd.exe` 进程中先调用 `vcvars64.bat`，再直接调用 VS 自带的 CMake。
 - 最终源码未再变化时不重复构建或测试；交付前运行 `git diff --check`。
 - 普通 feature/bug 不更新 AGENTS、EXECUTION、GOAL、ADR 或架构 KPI；只有稳定架构契约真的变化时才更新架构文档。
 
@@ -67,4 +70,6 @@ ZenCrop 的构建、架构、踩坑规则等开发文档已迁移至 `docs/01_ar
 - 默认不 stage、不 commit、不 amend、不 rebase、不 push、不 tag；完成修改后保留工作区差异并汇报。
 - 只有用户明确要求 Git 写操作时才执行，并且只纳入当前任务文件，不夹带已有修改。
 
-Build：`build.bat`（生成唯一可运行目录 `build/run/x64-release/`）
+Build：`cmd.exe /d /c build.bat`（生成唯一可运行目录 `build/run/x64-release/`）
+
+Test：`cmd.exe /d /c tests\build_and_run.bat <test_name>`
