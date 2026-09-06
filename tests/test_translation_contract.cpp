@@ -5460,12 +5460,12 @@ int TestSelectionPlatformContracts() {
     const RECT containing = selection::ChooseSelectionAnchor(
         rectangles, POINT{140, 110});
     if (containing.left != first.left || containing.top != first.top ||
-        containing.right != first.right || containing.bottom != first.bottom) {
+        containing.right != second.right || containing.bottom != second.bottom) {
         return 490;
     }
     const RECT nearest = selection::ChooseSelectionAnchor(
         rectangles, POINT{380, 312});
-    if (nearest.left != second.left || nearest.top != second.top ||
+    if (nearest.left != first.left || nearest.top != first.top ||
         nearest.right != second.right || nearest.bottom != second.bottom) {
         return 491;
     }

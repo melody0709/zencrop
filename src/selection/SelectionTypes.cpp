@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <cwctype>
-#include <limits>
 
 namespace selection {
 
@@ -64,32 +63,25 @@ bool IsSelectionResultSuccess(const SelectionAcquisitionResult& result) {
 
 RECT ChooseSelectionAnchor(
     const std::vector<RECT>& lineRectangles, POINT cursor) {
-    const RECT* nearest = nullptr;
-    unsigned long long nearestDistance =
-        (std::numeric_limits<unsigned long long>::max)();
+    RECT anchor = {};
+    bool hasAnchor = false;
     for (const RECT& rectangle : lineRectangles) {
         if (rectangle.right <= rectangle.left ||
             rectangle.bottom <= rectangle.top ||
             !MonitorFromRect(&rectangle, MONITOR_DEFAULTTONULL)) {
             continue;
         }
-        if (PtInRect(&rectangle, cursor)) return rectangle;
-        const long long dx = cursor.x < rectangle.left
-            ? static_cast<long long>(rectangle.left) - cursor.x
-            : (cursor.x >= rectangle.right
-                ? static_cast<long long>(cursor.x) - rectangle.right + 1 : 0);
-        const long long dy = cursor.y < rectangle.top
-            ? static_cast<long long>(rectangle.top) - cursor.y
-            : (cursor.y >= rectangle.bottom
-                ? static_cast<long long>(cursor.y) - rectangle.bottom + 1 : 0);
-        const unsigned long long distance =
-            static_cast<unsigned long long>(dx * dx + dy * dy);
-        if (!nearest || distance < nearestDistance) {
-            nearest = &rectangle;
-            nearestDistance = distance;
+        if (!hasAnchor) {
+            anchor = rectangle;
+            hasAnchor = true;
+        } else {
+            anchor.left = (std::min)(anchor.left, rectangle.left);
+            anchor.top = (std::min)(anchor.top, rectangle.top);
+            anchor.right = (std::max)(anchor.right, rectangle.right);
+            anchor.bottom = (std::max)(anchor.bottom, rectangle.bottom);
         }
     }
-    return nearest ? *nearest : CursorAnchorRect(cursor);
+    return hasAnchor ? anchor : CursorAnchorRect(cursor);
 }
 
 } // namespace selection
