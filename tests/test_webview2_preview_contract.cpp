@@ -1157,6 +1157,39 @@ int wmain() {
         return 1;
     }
 
+    host.RenderMarkdown(
+        3,
+        L"| Service Provider | Recommended Model | Features |\n"
+        L"| --- | --- | --- |\n"
+        L"| Ollama | llava, llava:7b, bakllava | Completely offline, privacy protection, free to use, supports custom address |",
+        true);
+    if (!WaitForScriptInt(
+            host,
+            LR"JS((function(){
+              var preview=document.querySelector("#preview");
+              var table=preview&&preview.querySelector("table");
+              var wrapper=table&&table.parentElement;
+              var shortCell=table&&table.rows[1].cells[0];
+              var longCell=table&&table.rows[1].cells[2];
+              function lineCount(cell){
+                var range=document.createRange();
+                range.selectNodeContents(cell);
+                return range.getClientRects().length;
+              }
+              return preview&&preview.classList.contains("compact-preview")&&
+                wrapper&&wrapper.classList.contains("table-scroll")&&
+                wrapper.scrollWidth<=wrapper.clientWidth+1&&
+                table.getBoundingClientRect().width<=wrapper.clientWidth+1&&
+                lineCount(shortCell)===1&&lineCount(longCell)>1?1:0;
+            })())JS",
+            1)) {
+        host.Destroy();
+        DestroyWindow(hwnd);
+        CoUninitialize();
+        std::wcerr << L"Compact Preview table did not fit and wrap natural-language cells\n";
+        return 1;
+    }
+
     // The default CTest contract is deterministic: compiled manifest guard,
     // trusted virtual origin, and real WebView2 rendering. The legacy full
     // WYSIWYG interaction matrix remains available for an explicitly opted-in

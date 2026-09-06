@@ -270,6 +270,11 @@ table {
   max-width: 100%;
 }
 
+.markdown-body.compact-preview table {
+  min-width: 0;
+  width: max-content;
+}
+
 caption {
   caption-side: bottom;
   padding: 6px 0;
