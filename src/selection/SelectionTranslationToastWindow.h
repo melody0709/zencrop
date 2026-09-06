@@ -23,7 +23,9 @@ public:
     SelectionTranslationToastWindow& operator=(const SelectionTranslationToastWindow&) = delete;
 
     void Show(std::wstring message, POINT anchor,
-              SelectionToastKind kind = SelectionToastKind::Warning);
+              SelectionToastKind kind = SelectionToastKind::Warning,
+              bool workAreaCorner = false,
+              UINT visibleMilliseconds = 0);
     void Hide();
 
 private:
@@ -34,6 +36,7 @@ private:
     std::wstring message_;
     POINT anchor_ = {};
     SelectionToastKind kind_ = SelectionToastKind::Warning;
+    bool workAreaCorner_ = false;
 
     static const wchar_t* ClassName();
     static void RegisterWindowClass();

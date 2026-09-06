@@ -80,15 +80,18 @@ bool SelectionTranslationToastWindow::EnsureWindow() {
 }
 
 void SelectionTranslationToastWindow::Show(
-    std::wstring message, POINT anchor, SelectionToastKind kind) {
+    std::wstring message, POINT anchor, SelectionToastKind kind,
+    bool workAreaCorner, UINT visibleMilliseconds) {
     if (message.empty()) return;
     message_ = std::move(message);
     anchor_ = anchor;
     kind_ = kind;
+    workAreaCorner_ = workAreaCorner;
     if (!EnsureWindow()) return;
     PositionAndShow();
     KillTimer(window_, kTimerId);
-    SetTimer(window_, kTimerId, kVisibleMilliseconds, nullptr);
+    SetTimer(window_, kTimerId, visibleMilliseconds
+        ? visibleMilliseconds : kVisibleMilliseconds, nullptr);
     InvalidateRect(window_, nullptr, FALSE);
 }
 
@@ -106,6 +109,10 @@ void SelectionTranslationToastWindow::PositionAndShow() {
     RECT work = {0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)};
     if (monitor && GetMonitorInfoW(monitor, &monitorInfo)) {
         work = monitorInfo.rcWork;
+    }
+    POINT anchor = anchor_;
+    if (workAreaCorner_) {
+        anchor = {work.right - 1, work.bottom - 1};
     }
 
     // The toast is initially created at a neutral position. Derive scale from
@@ -151,10 +158,10 @@ void SelectionTranslationToastWindow::PositionAndShow() {
     const int height = (std::min)(workHeight,
         (std::max)(ScaleForDpi(50, dpi),
             measuredHeight + paddingY * 2));
-    int x = anchor_.x + ScaleForDpi(14, dpi);
-    int y = anchor_.y + ScaleForDpi(20, dpi);
-    if (x + width > work.right) x = anchor_.x - width - ScaleForDpi(14, dpi);
-    if (y + height > work.bottom) y = anchor_.y - height - ScaleForDpi(14, dpi);
+    int x = anchor.x + ScaleForDpi(14, dpi);
+    int y = anchor.y + ScaleForDpi(20, dpi);
+    if (x + width > work.right) x = anchor.x - width - ScaleForDpi(14, dpi);
+    if (y + height > work.bottom) y = anchor.y - height - ScaleForDpi(14, dpi);
     const int maximumX = (std::max)(static_cast<int>(work.left),
         static_cast<int>(work.right) - width);
     const int maximumY = (std::max)(static_cast<int>(work.top),

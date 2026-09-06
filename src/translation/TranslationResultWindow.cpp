@@ -69,6 +69,7 @@ constexpr DWORD kDwmRoundCornerPreference = 2;
 constexpr UINT kTranslationChildKeyboardMessage = WM_APP + 74;
 constexpr UINT kTranslationChildZoomMessage = WM_APP + 75;
 constexpr WPARAM kTranslationChildKeyShift = static_cast<WPARAM>(1) << 16;
+constexpr WPARAM kTranslationChildKeyControl = static_cast<WPARAM>(1) << 17;
 constexpr UINT_PTR kTranslationChildKeyboardSubclass = 1;
 
 // Track visibility through the control's own WS_VISIBLE style, not
@@ -498,11 +499,14 @@ LRESULT CALLBACK TranslationChildKeyboardProc(HWND hwnd, UINT message,
         }
         return 0;
     }
-    if (message == WM_KEYDOWN && (wParam == VK_TAB || wParam == VK_ESCAPE)) {
+    if (message == WM_KEYDOWN &&
+        (wParam == VK_TAB || wParam == VK_ESCAPE ||
+         (wParam == L'W' && (GetKeyState(VK_CONTROL) & 0x8000) != 0))) {
         HWND parent = GetParent(hwnd);
         if (parent) {
             WPARAM key = wParam;
             if ((GetKeyState(VK_SHIFT) & 0x8000) != 0) key |= kTranslationChildKeyShift;
+            if ((GetKeyState(VK_CONTROL) & 0x8000) != 0) key |= kTranslationChildKeyControl;
             SendMessageW(parent, kTranslationChildKeyboardMessage, key,
                 reinterpret_cast<LPARAM>(hwnd));
         }
@@ -592,12 +596,20 @@ TranslationResultWindow::TranslationResultWindow(
             }
             SaveTranslationSettings(settings);
         };
+        const auto handlePreviewAccelerator = [this](UINT virtualKey, bool ctrlDown) {
+            if (!ctrlDown || virtualKey != L'W' || !window_ || !IsWindow(window_)) {
+                return false;
+            }
+            SendMessageW(window_, WM_CLOSE, 0, 0);
+            return true;
+        };
         // Both OCR and selected-text launches use the same source preview.
         // Selected text still keeps the editable Source mode so users can
         // correct the text before translating again.
         {
             sourcePreview_ = std::make_unique<OcrMarkdownPreviewHost>();
             OcrMarkdownPreviewHost::Callbacks sourcePreviewCallbacks;
+            sourcePreviewCallbacks.onAcceleratorKey = handlePreviewAccelerator;
             sourcePreviewCallbacks.onZoomFactorChanged =
                 [persistPreviewZoomFactor](double zoomFactor) {
                     persistPreviewZoomFactor(true, zoomFactor);
@@ -725,6 +737,7 @@ TranslationResultWindow::TranslationResultWindow(
         UpdateSourceModeButton();
         translationPreview_ = std::make_unique<OcrMarkdownPreviewHost>();
         OcrMarkdownPreviewHost::Callbacks previewCallbacks;
+        previewCallbacks.onAcceleratorKey = handlePreviewAccelerator;
         previewCallbacks.onZoomFactorChanged =
             [persistPreviewZoomFactor](double zoomFactor) {
                 persistPreviewZoomFactor(false, zoomFactor);
@@ -2039,7 +2052,9 @@ void TranslationResultWindow::HandleEscape() {
 
 void TranslationResultWindow::HandleChildKey(HWND child, WPARAM key) {
     const WPARAM virtualKey = LOWORD(key);
-    if (virtualKey == VK_ESCAPE) {
+    if (virtualKey == L'W' && (key & kTranslationChildKeyControl) != 0) {
+        SendMessageW(window_, WM_CLOSE, 0, 0);
+    } else if (virtualKey == VK_ESCAPE) {
         if (!busy_ && sourcePreview_ && sourcePreview_->HasActiveEditor()) {
             CancelSourceDocumentEditor();
         } else {
@@ -3194,6 +3209,10 @@ LRESULT TranslationResultWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wPara
         }
         break;
     case WM_KEYDOWN:
+        if (wParam == L'W' && (GetKeyState(VK_CONTROL) & 0x8000) != 0) {
+            SendMessageW(hwnd, WM_CLOSE, 0, 0);
+            return 0;
+        }
         if (wParam == VK_ESCAPE) {
             if (!busy_ && sourcePreview_ && sourcePreview_->HasActiveEditor()) {
                 CancelSourceDocumentEditor();

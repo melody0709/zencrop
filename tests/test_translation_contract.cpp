@@ -1758,6 +1758,16 @@ int TestResultWindowLayoutContract() {
     int alwaysOnTopCallbacks = 0;
     const translation::TranslationLaunchContext launchContext{
         translation::TranslationSourceMode::OcrImage, sourceRect};
+    const auto sendCtrlKey = [](HWND target, WPARAM key) {
+        BYTE keyboardState[256] = {};
+        if (!GetKeyboardState(keyboardState)) return false;
+        const BYTE savedControl = keyboardState[VK_CONTROL];
+        keyboardState[VK_CONTROL] |= 0x80;
+        if (!SetKeyboardState(keyboardState)) return false;
+        SendMessageW(target, WM_KEYDOWN, key, 0);
+        keyboardState[VK_CONTROL] = savedControl;
+        return SetKeyboardState(keyboardState) != FALSE;
+    };
     translation::TranslationResultWindow window(
         request, launchContext,
         [&closeCallbacks, &cancelCallbacks, &alwaysOnTopCallbacks](translation::TranslationResultWindow::Command command) {
@@ -2283,7 +2293,7 @@ int TestResultWindowLayoutContract() {
     PumpMessagesFor(20);
     if (ControlText(native, 3105) != L"current async error") return 123;
     SetFocus(translationControl);
-    SendMessageW(translationControl, WM_KEYDOWN, VK_ESCAPE, 0);
+    if (!sendCtrlKey(translationControl, L'W')) return 124;
     if (closeCallbacks != 1 || window.IsValid()) return 50;
 
     // Owner command failures must not escape the result-window message loop.
@@ -2301,18 +2311,26 @@ int TestResultWindowLayoutContract() {
 
     const translation::TranslationLaunchContext selectedLaunchContext{
         translation::TranslationSourceMode::SelectedText, sourceRect};
+    int selectedCloseCallbacks = 0;
     translation::TranslationResultWindow selectedWindow(
         request, selectedLaunchContext,
-        [](translation::TranslationResultWindow::Command) {});
+        [&selectedCloseCallbacks](translation::TranslationResultWindow::Command command) {
+            if (command == translation::TranslationResultWindow::Command::Close) {
+                ++selectedCloseCallbacks;
+            }
+        });
     if (!selectedWindow.IsValid()) return 575;
     const HWND selectedNative = selectedWindow.WindowHandle();
     selectedWindow.Show(nullptr);
     selectedWindow.SetShowWindowBorder(false);
     selectedWindow.SetStage(L"Ready");
     if (!VerifyCompactTitlebarHitTargets(selectedNative, false)) return 576;
-    SendMessageW(selectedNative, WM_CLOSE, 0, 0);
+    HWND selectedTranslationControl = GetDlgItem(selectedNative, 3102);
+    if (!selectedTranslationControl || !sendCtrlKey(selectedTranslationControl, L'W')) {
+        return 578;
+    }
     PumpMessagesFor(20);
-    if (selectedWindow.IsValid()) return 577;
+    if (selectedCloseCallbacks != 1 || selectedWindow.IsValid()) return 577;
     return 0;
 }
 

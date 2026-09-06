@@ -17,6 +17,7 @@ namespace {
 // UIA 询问与剪贴板复制事务共享的采集总预算。预览选择超时（2500ms）可能
 // 晚于该预算耗尽，回退采集前必须重新起算，否则回退天生带着过期 deadline。
 constexpr DWORD kSelectionAcquireDeadlineMs = 2200;
+constexpr UINT kCopyTimeoutToastMilliseconds = 1000;
 
 std::wstring StageText(const wchar_t* chinese, const wchar_t* english) {
     return S::IsChinese() ? chinese : english;
@@ -250,6 +251,8 @@ void SelectionTranslationController::ShowAcquisitionError(
     const SelectionAcquisitionResult& result) {
     std::wstring message;
     SelectionToastKind kind = SelectionToastKind::Warning;
+    bool workAreaCorner = false;
+    UINT visibleMilliseconds = 0;
     switch (result.error) {
     case SelectionAcquisitionError::SecureField:
         message = StageText(
@@ -296,6 +299,8 @@ void SelectionTranslationController::ShowAcquisitionError(
         message = StageText(
             L"等待目标应用复制选区超时，请重新选中后再试。",
             L"Timed out waiting for the app to copy the selection. Select it again.");
+        workAreaCorner = true;
+        visibleMilliseconds = kCopyTimeoutToastMilliseconds;
         break;
     case SelectionAcquisitionError::SyntheticCopySuppressed:
         message = StageText(
@@ -328,7 +333,8 @@ void SelectionTranslationController::ShowAcquisitionError(
             L"\n检测到其他程序更新剪贴板，ZenCrop 未覆盖该更新。",
             L"\nAnother app updated the clipboard, so ZenCrop left that update untouched.");
     }
-    toast_.Show(std::move(message), result.cursor, kind);
+    toast_.Show(std::move(message), result.cursor, kind, workAreaCorner,
+                visibleMilliseconds);
 }
 
 void SelectionTranslationController::ShowClipboardDispositionWarning(
