@@ -65,7 +65,9 @@ public:
     // A retained position keeps the top-left coordinate fixed while content-
     // driven automatic sizing continues normally.
     void Show(HWND owner, const POINT* retainedPosition = nullptr);
+    void Activate();
     void PrepareForReuse(const RECT& sourceRect);
+    void BeginTextEntry(ManualEntryReason reason);
     void SetStage(const std::wstring& stage);
     void SetOcrEngineLabel(const std::wstring& label);
     void SetSourceText(const std::wstring& text);
@@ -91,6 +93,7 @@ public:
     std::wstring SelectedProvider() const;
     bool IsAlwaysOnTop() const { return alwaysOnTop_; }
     bool IsShowingSourceText() const { return showSourceText_; }
+    bool IsBusy() const { return busy_; }
     void SetSourceLanguage(const std::wstring& value);
     void SetTargetLanguage(const std::wstring& value);
     bool PrepareStructuredSelection(
@@ -181,6 +184,17 @@ private:
     bool translationPreviewRenderReady_ = false;
     bool switchToSourceAfterDocumentSave_ = false;
     bool resolvingDocumentEditorSwitch_ = false;
+    bool manualEntryMode_ = false;
+    bool manualEntryPending_ = false;
+    bool manualEntrySelectAll_ = false;
+    bool manualEntryPreviousShowSource_ = true;
+    bool translateAfterEditorClose_ = false;
+    bool cancelManualEditorRequested_ = false;
+    uint64_t manualEntryGeneration_ = 0;
+    uint64_t translateEntryGeneration_ = 0;
+    bool sourcePreviewEditorActive_ = false;
+    size_t sourcePreviewEditorContentUnits_ = 0;
+    bool sourcePreviewEditorHasText_ = false;
     int sourcePreviewContentHeight_ = 0;
     int translationPreviewContentHeight_ = 0;
     bool sourceSplitterDragging_ = false;
@@ -299,6 +313,10 @@ private:
     void UpdateSourceModeButton();
     void UpdateSourceEditorFooterActions();
     void CancelSourceDocumentEditor();
+    void EndTextEntry();
+    void StartPendingTextEntry();
+    void CompleteTextEntryAfterEditorClose();
+    void UpdateManualEntryLabels();
     void UpdateSourcePreviewVisibility();
     void UpdateTranslationPreviewVisibility();
     bool IsPointInSourceSplitter(POINT point) const;

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.15)
-project(ZenCrop VERSION 2.9.23)
+project(ZenCrop VERSION 2.9.24)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -223,6 +223,7 @@ add_executable(ZenCrop WIN32
     src/translation/TranslationProviderSettingsPage.h src/translation/TranslationProviderSettingsPage.cpp
     src/translation/TranslationPromptSettingsPage.h src/translation/TranslationPromptSettingsPage.cpp
     src/translation/TranslationResultWindow.h src/translation/TranslationResultWindow.cpp
+    src/translation/TranslationResultWindow.ManualEntry.cpp
     src/translation/TranslationResultWindow.StructuredSelection.cpp
     src/translation/TranslationCoordinator.h src/translation/TranslationCoordinator.cpp
     src/translation/TranslationCoordinator.StructuredSelection.cpp

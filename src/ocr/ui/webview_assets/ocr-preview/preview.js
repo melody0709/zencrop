@@ -62,7 +62,8 @@
     });
   }
 
-  function setActiveEditorState(kind, id, dirty, composing, canSave, pending) {
+  function setActiveEditorState(kind, id, dirty, composing, canSave, pending,
+      contentUtf16Units, hasNonWhitespace) {
     var next = {
       kind: String(kind || ""),
       id: String(id || ""),
@@ -70,14 +71,18 @@
       dirty: !!dirty,
       composing: !!composing,
       canSave: canSave !== false,
-      pending: !!pending
+      pending: !!pending,
+      contentUtf16Units: Number(contentUtf16Units) || 0,
+      hasNonWhitespace: !!hasNonWhitespace
     };
     if (activeEditorState && activeEditorState.kind === next.kind &&
         activeEditorState.id === next.id && activeEditorState.renderToken === next.renderToken &&
         activeEditorState.dirty === next.dirty &&
         activeEditorState.composing === next.composing &&
         activeEditorState.canSave === next.canSave &&
-        activeEditorState.pending === next.pending) return;
+        activeEditorState.pending === next.pending &&
+        activeEditorState.contentUtf16Units === next.contentUtf16Units &&
+        activeEditorState.hasNonWhitespace === next.hasNonWhitespace) return;
     activeEditorState = next;
     postMessage({
       type: "previewEditorState",
@@ -88,7 +93,9 @@
       dirty: activeEditorState.dirty,
       composing: activeEditorState.composing,
       canSave: activeEditorState.canSave,
-      pending: activeEditorState.pending
+      pending: activeEditorState.pending,
+      contentUtf16Units: activeEditorState.contentUtf16Units,
+      hasNonWhitespace: activeEditorState.hasNonWhitespace
     });
   }
 
@@ -96,7 +103,9 @@
     if (!activeEditorState) return;
     setActiveEditorState(activeEditorState.kind, activeEditorState.id,
       activeEditorState.dirty, activeEditorState.composing,
-      activeEditorState.canSave, pending);
+      activeEditorState.canSave, pending,
+      activeEditorState.contentUtf16Units,
+      activeEditorState.hasNonWhitespace);
   }
 
   function clearActiveEditorState() {
@@ -110,7 +119,9 @@
       dirty: false,
       composing: false,
       canSave: false,
-      pending: false
+      pending: false,
+      contentUtf16Units: 0,
+      hasNonWhitespace: false
     });
     activeEditorState = null;
   }
@@ -1770,9 +1781,25 @@
     return true;
   }
 
-  function startDocumentEditor() {
+  function startDocumentEditor(selectAll) {
+    if (editTransaction.activeId() === "__document__") {
+      var activeBody = document.querySelector(
+        '.ocr-preview-document-editor .ocr-preview-rich-editor-body');
+      if (activeBody) {
+        activeBody.focus();
+        if (selectAll) {
+          var activeSelection = window.getSelection();
+          var activeRange = document.createRange();
+          activeRange.selectNodeContents(activeBody);
+          activeSelection.removeAllRanges();
+          activeSelection.addRange(activeRange);
+        }
+      }
+      return;
+    }
     if (!previewShell || !currentRenderToken || transientRenderActive ||
-        !editorMarkdown.canSerialize(preview) || editTransaction.activeId() === "__document__") return;
+        (!editorMarkdown.canSerialize(preview) &&
+         !(currentSourceMarkdown === "" && preview.classList.contains("empty")))) return;
     finishInlineEditor(false);
     hideFloatingToolbar();
 
@@ -1796,9 +1823,11 @@
     var editor = createRichEditor({
       bodyHost: bodyHost,
       source: currentSourceMarkdown,
+      includeContentInState: true,
       onStateChanged: function (state) {
+        var content = String(state.content || "");
         setActiveEditorState("document", "", state.dirty, state.composing,
-          state.canSave, !!pendingDocumentSave);
+          state.canSave, !!pendingDocumentSave, content.length, /\S/.test(content));
       }
     });
     var documentStatus = document.createElement("div");
@@ -1833,7 +1862,8 @@
       saveControl: saveControl,
       saveHandler: saveControl.save
     });
-    setActiveEditorState("document", "", false, false, true, false);
+    setActiveEditorState("document", "", false, false, true, false,
+      currentSourceMarkdown.length, /\S/.test(currentSourceMarkdown));
 
     host.addEventListener("keydown", function (event) {
       if (event.isComposing || editor.isComposing()) return;
@@ -1848,7 +1878,16 @@
         saveControl.save();
       }
     });
-    window.setTimeout(function () { editor.focus(); }, 0);
+    window.setTimeout(function () {
+      editor.focus();
+      if (selectAll) {
+        var selection = window.getSelection();
+        var range = document.createRange();
+        range.selectNodeContents(editor.body);
+        selection.removeAllRanges();
+        selection.addRange(range);
+      }
+    }, 0);
   }
 
   function startInlineEditor(id) {
@@ -2252,7 +2291,7 @@
       return;
     }
     if (data.type === "setPreviewDocumentEditing") {
-      if (data.editing) startDocumentEditor();
+      if (data.editing) startDocumentEditor(!!data.selectAll);
       else if (activeEditorState && activeEditorState.kind === "document") finishInlineEditor(true);
       return;
     }
@@ -2287,6 +2326,8 @@
         var documentMessages = {
           stale_target: "The preview changed before this document could be saved.",
           invalid_request: "The document no longer matches the rendered Markdown.",
+          empty_text: "Enter text to translate.",
+          too_large: "Text must not exceed 100,000 UTF-16 code units.",
           busy: "Finish the current translation before saving this edit.",
           persist_failed: "The document could not be saved. Your text is still available in the editor."
         };

@@ -614,9 +614,15 @@ TranslationResultWindow::TranslationResultWindow(
                 [persistPreviewZoomFactor](double zoomFactor) {
                     persistPreviewZoomFactor(true, zoomFactor);
                 };
-            sourcePreviewCallbacks.onPreviewEditorState = [this](bool, bool, bool, bool, bool) {
+            sourcePreviewCallbacks.onPreviewEditorState = [this](
+                const OcrMarkdownPreviewHost::PreviewEditorState& state) {
+                sourcePreviewEditorActive_ = state.active;
+                sourcePreviewEditorContentUnits_ = state.contentUtf16Units;
+                sourcePreviewEditorHasText_ = state.hasNonWhitespace;
                 UpdateSourceModeButton();
                 UpdateSourceEditorFooterActions();
+                UpdateActionAvailability();
+                if (!state.active) CompleteTextEntryAfterEditorClose();
             };
             sourcePreviewCallbacks.onReady = [this]() {
                 sourcePreviewFailed_ = false;
@@ -635,6 +641,7 @@ TranslationResultWindow::TranslationResultWindow(
                 if (!sourcePreviewRenderReady_) {
                     sourcePreviewRenderReady_ = true;
                     UpdateSourcePreviewVisibility();
+                    StartPendingTextEntry();
                     if (!sourceMarkdownText_.empty()) ResizeToAutomaticWindowSize();
                 }
             };
@@ -643,8 +650,10 @@ TranslationResultWindow::TranslationResultWindow(
                 sourcePreviewMetricsValid_ = false;
                 sourcePreviewRenderReady_ = false;
                 sourceDisplayMode_ = SourceDisplayMode::Source;
+                manualEntryPending_ = false;
                 UpdateSourceModeButton();
                 UpdateSourcePreviewVisibility();
+                if (manualEntryMode_ && sourceEdit_) SetFocus(sourceEdit_);
                 if (!sourceMarkdownText_.empty()) ResizeToAutomaticWindowSize();
             };
             sourcePreviewCallbacks.onRenderError = [this](int, const std::wstring&) {
@@ -652,6 +661,7 @@ TranslationResultWindow::TranslationResultWindow(
                 sourcePreviewMetricsValid_ = false;
                 sourcePreviewRenderReady_ = false;
                 sourceDisplayMode_ = SourceDisplayMode::Source;
+                manualEntryPending_ = false;
                 UpdateSourceModeButton();
                 UpdateSourcePreviewVisibility();
                 if (!sourceMarkdownText_.empty()) ResizeToAutomaticWindowSize();
@@ -661,13 +671,16 @@ TranslationResultWindow::TranslationResultWindow(
                 sourcePreviewMetricsValid_ = false;
                 sourcePreviewRenderReady_ = false;
                 sourceDisplayMode_ = SourceDisplayMode::Source;
+                manualEntryPending_ = false;
                 UpdateSourceModeButton();
                 UpdateSourcePreviewVisibility();
                 if (!sourceMarkdownText_.empty()) ResizeToAutomaticWindowSize();
             };
             sourcePreviewCallbacks.onPreviewDocumentEdit = [this](bool sourceRequired) {
                 if (busy_) return;
-                if (sourceRequired) {
+                if (manualEntryMode_ && SourceText().empty()) {
+                    sourcePreview_->StartDocumentEditing(false);
+                } else if (sourceRequired) {
                     SetSourceDisplayMode(SourceDisplayMode::Source, true);
                 } else if (sourcePreview_ && sourceDisplayMode_ == SourceDisplayMode::Preview) {
                     sourcePreview_->StartDocumentEditing();
@@ -683,6 +696,25 @@ TranslationResultWindow::TranslationResultWindow(
                     return;
                 }
                 const std::wstring normalized = NormalizeCardTextForWrap(content);
+                if (manualEntryMode_ &&
+                    !selection::HasNonWhitespace(normalized)) {
+                    sourcePreview_->PostPreviewDocumentSaveResult(
+                        renderToken, false, L"empty_text");
+                    return;
+                }
+                if (manualEntryMode_ &&
+                    (normalized.size() > selection::kMaxSelectionTextUnits ||
+                     !selection::IsValidSelectionUtf16(normalized))) {
+                    sourcePreview_->PostPreviewDocumentSaveResult(
+                        renderToken, false, L"too_large");
+                    return;
+                }
+                const bool translateAfterSave =
+                    manualEntryMode_ && !switchToSourceAfterDocumentSave_;
+                if (translateAfterSave) {
+                    translateAfterEditorClose_ = true;
+                    translateEntryGeneration_ = manualEntryGeneration_;
+                }
                 sourceMarkdownText_ = normalized;
                 suppressCommands_ = true;
                 SetControlText(sourceEdit_, normalized);
@@ -698,7 +730,7 @@ TranslationResultWindow::TranslationResultWindow(
                     resolvingDocumentEditorSwitch_ = true;
                     SetSourceDisplayMode(SourceDisplayMode::Source, true);
                     resolvingDocumentEditorSwitch_ = false;
-                } else {
+                } else if (!translateAfterSave) {
                     sourcePreviewMetricsValid_ = false;
                     sourcePreviewRenderReady_ = false;
                     sourcePreview_->RenderMarkdown(-1, sourceMarkdownText_, true);
@@ -707,6 +739,11 @@ TranslationResultWindow::TranslationResultWindow(
             };
             sourcePreviewCallbacks.onPreviewDocumentCancel = [this]() {
                 switchToSourceAfterDocumentSave_ = false;
+                if (cancelManualEditorRequested_) {
+                    cancelManualEditorRequested_ = false;
+                    translateAfterEditorClose_ = false;
+                    if (manualEntryMode_ && !SourceText().empty()) EndTextEntry();
+                }
                 UpdateSourceEditorFooterActions();
             };
             sourcePreviewCallbacks.onPreviewSelectionState =
@@ -1272,12 +1309,25 @@ void TranslationResultWindow::Show(
     SetForegroundWindow(window_);
 }
 
+void TranslationResultWindow::Activate() {
+    if (!window_ || !IsWindow(window_)) return;
+    if (IsIconic(window_)) ShowWindow(window_, SW_RESTORE);
+    else ShowWindow(window_, SW_SHOWNORMAL);
+    SetForegroundWindow(window_);
+    if (manualEntryMode_) {
+        if (sourcePreview_ && sourcePreview_->HasActiveEditor()) {
+            sourcePreview_->StartDocumentEditing(manualEntrySelectAll_);
+        } else if (sourceDisplayMode_ == SourceDisplayMode::Source && sourceEdit_) {
+            SetFocus(sourceEdit_);
+        }
+    }
+}
+
 void TranslationResultWindow::PrepareForReuse(const RECT& sourceRect) {
     StopAutomaticResizeAnimation(false);
     CancelPendingStructuredSelection(L"superseded");
     sourceRect_ = sourceRect;
 }
-
 
 void TranslationResultWindow::PositionNearSourceRect() {
     if (!window_ || sourceRect_.right <= sourceRect_.left ||
@@ -1598,6 +1648,7 @@ void TranslationResultWindow::SetOcrRouteSelection(const std::wstring& route) {
 }
 
 void TranslationResultWindow::SetSourceText(const std::wstring& text) {
+    EndTextEntry();
     const std::wstring displayText = NormalizeCardTextForWrap(text);
     if (displayText == sourceMarkdownText_ && !sourcePreviewFailed_) {
         ResizeToAutomaticWindowSize();
@@ -1692,6 +1743,7 @@ void TranslationResultWindow::SetBusy(bool busy) {
     EnableWindow(sourceCombo_, !busy);
     EnableWindow(targetCombo_, !busy);
     EnableWindow(sourceEdit_, !busy);
+    if (showSourceToggle_) EnableWindow(showSourceToggle_, !busy && !manualEntryMode_);
     UpdateSourcePreviewVisibility();
     UpdateTranslationPreviewVisibility();
     UpdateActionAvailability();
@@ -1777,7 +1829,7 @@ void TranslationResultWindow::UpdateSourcePreviewVisibility() {
         sourceDisplayMode_ == SourceDisplayMode::Preview &&
         sourcePreview_ && sourcePreview_->IsReady() &&
         sourcePreviewRenderReady_ && !sourcePreviewFailed_ &&
-        !sourceMarkdownText_.empty();
+        (!sourceMarkdownText_.empty() || manualEntryMode_);
     SetControlVisible(sourceEdit_, !previewReady && showSourceText_);
     if (sourcePreview_) {
         sourcePreview_->Show(previewReady);
@@ -1792,8 +1844,11 @@ void TranslationResultWindow::UpdateSourceEditorFooterActions() {
         sourceDisplayMode_ == SourceDisplayMode::Preview && sourcePreview_ &&
         sourcePreview_->IsReady() && sourcePreview_->HasActiveEditor();
     const bool pending = editing && sourcePreview_->IsEditorActionPending();
-    const bool canSave = editing && !pending && sourcePreview_->HasDirtyEditor() &&
-        !sourcePreview_->IsEditorComposing() && sourcePreview_->CanSaveActiveEditor();
+    const bool validManualText = sourcePreviewEditorHasText_ &&
+        sourcePreviewEditorContentUnits_ <= selection::kMaxSelectionTextUnits;
+    const bool canSave = editing && !pending &&
+        !sourcePreview_->IsEditorComposing() && sourcePreview_->CanSaveActiveEditor() &&
+        (manualEntryMode_ ? validManualText : sourcePreview_->HasDirtyEditor());
     SetControlVisible(sourceEditorCancelButton_, editing);
     SetControlVisible(sourceEditorSaveButton_, editing);
     if (sourceEditorCancelButton_) EnableWindow(sourceEditorCancelButton_, editing && !pending);
@@ -1804,6 +1859,7 @@ void TranslationResultWindow::UpdateSourceEditorFooterActions() {
 void TranslationResultWindow::CancelSourceDocumentEditor() {
     if (!sourcePreview_ || !sourcePreview_->HasActiveEditor() ||
         sourcePreview_->IsEditorActionPending()) return;
+    cancelManualEditorRequested_ = manualEntryMode_;
     sourcePreview_->CancelActiveEditor();
     UpdateSourceEditorFooterActions();
 }
@@ -1967,7 +2023,11 @@ void TranslationResultWindow::MarkDirty() {
 }
 
 void TranslationResultWindow::UpdateActionAvailability() {
-    const bool hasSource = !SourceText().empty();
+    const std::wstring source = SourceText();
+    const bool withinLimit = sourceMode_ != TranslationSourceMode::SelectedText ||
+        source.size() <= selection::kMaxSelectionTextUnits;
+    const bool hasSource = selection::HasNonWhitespace(source) && withinLimit &&
+        selection::IsValidSelectionUtf16(source) && !sourcePreviewEditorActive_;
     if (retranslateButton_) {
         EnableWindow(retranslateButton_, !busy_ && !retryOcrMode_ && hasSource);
     }
@@ -2276,7 +2336,9 @@ void TranslationResultWindow::LayoutControls(bool redraw) {
     const int arrowWidth = ScaleForDpi(16, dpi);
     const int actionWidth = (std::min)(retranslateWidth,
         (std::max)(ScaleForDpi(128, dpi), contentWidth / 5));
-    const int sourceEditorActionWidth = ScaleForDpi(64, dpi);
+    // "Translate" is longer than the existing "Save" label. Keep both
+    // source-editor actions readable at the default window size and DPI.
+    const int sourceEditorActionWidth = ScaleForDpi(96, dpi);
     const int showSourceToComboGap = ScaleForDpi(24, dpi);
     const int minimumComboWidth = ScaleForDpi(68, dpi);
     const int minimumTargetComboWidth = compactHeader
@@ -3127,6 +3189,7 @@ LRESULT TranslationResultWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wPara
     case WM_COMMAND:
         if (suppressCommands_) return 0;
         if (LOWORD(wParam) == kShowSource && HIWORD(wParam) == BN_CLICKED) {
+            if (manualEntryMode_) return 0;
             SetShowSourceText(!showSourceText_);
             InvokeCommandSafely(Command::ToggleShowSource);
             return 0;
@@ -3165,7 +3228,18 @@ LRESULT TranslationResultWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wPara
             return 0;
         }
         if (LOWORD(wParam) == kSourceEditorSave && HIWORD(wParam) == BN_CLICKED) {
-            if (sourcePreview_) sourcePreview_->RequestActiveEditorSave();
+            if (sourcePreview_) {
+                if (manualEntryMode_) {
+                    translateAfterEditorClose_ = true;
+                    translateEntryGeneration_ = manualEntryGeneration_;
+                }
+                if (manualEntryMode_ && !sourcePreview_->HasDirtyEditor()) {
+                    cancelManualEditorRequested_ = false;
+                    sourcePreview_->CancelActiveEditor();
+                } else {
+                    sourcePreview_->RequestActiveEditorSave();
+                }
+            }
             return 0;
         }
         if (LOWORD(wParam) == kCopyTranslation && HIWORD(wParam) == BN_CLICKED) {
@@ -3205,6 +3279,7 @@ LRESULT TranslationResultWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wPara
             }
             ResizeToAutomaticWindowSize();
             MarkDirty();
+            UpdateActionAvailability();
             return 0;
         }
         break;

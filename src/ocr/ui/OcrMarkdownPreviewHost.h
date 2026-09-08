@@ -40,6 +40,16 @@ public:
         std::wstring renderToken;
     };
 
+    struct PreviewEditorState {
+        bool active = false;
+        bool dirty = false;
+        bool composing = false;
+        bool canSave = false;
+        bool pending = false;
+        size_t contentUtf16Units = 0;
+        bool hasNonWhitespace = false;
+    };
+
     struct Callbacks {
         std::function<void()> onReady;
         std::function<void(const PreviewContentMetrics&)> onContentMetrics;
@@ -50,7 +60,7 @@ public:
         std::function<void()> onProcessFailed;
         std::function<void(const std::wstring&)> onOpenExternal;
         std::function<bool(UINT, bool)> onAcceleratorKey;
-        std::function<void(bool, bool, bool, bool, bool)> onPreviewEditorState;
+        std::function<void(const PreviewEditorState&)> onPreviewEditorState;
         std::function<void(bool)> onPreviewDocumentEdit;
         std::function<void(const std::wstring&, const std::wstring&)> onPreviewDocumentSave;
         std::function<void()> onPreviewDocumentCancel;
@@ -87,7 +97,7 @@ public:
     void SetHoveredBlock(const std::wstring& id);
     void SetSelectedBlock(const std::wstring& id, bool ensureVisible);
     void SetEditingBlock(const std::wstring& id);
-    void StartDocumentEditing();
+    void StartDocumentEditing(bool selectAll = false);
     void RequestActiveEditorSave();
     void CancelActiveEditor();
     void PostPreviewBlockSaveResult(

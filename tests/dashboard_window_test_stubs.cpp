@@ -226,7 +226,7 @@ void OcrMarkdownPreviewHost::SetSelectedBlock(const std::wstring& id, bool) {
 void OcrMarkdownPreviewHost::SetEditingBlock(const std::wstring& id) {
     if (m_impl) m_impl->editingBlockId = id;
 }
-void OcrMarkdownPreviewHost::StartDocumentEditing() {
+void OcrMarkdownPreviewHost::StartDocumentEditing(bool) {
     if (!m_impl) return;
     m_impl->activeEditor = true;
     m_impl->canSaveEditor = true;

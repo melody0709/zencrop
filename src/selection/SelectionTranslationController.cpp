@@ -158,12 +158,19 @@ void SelectionTranslationController::HandleAcquisitionResult(
         OutputDebugStringW((L"[SelectionTranslation] " +
             owned->diagnosticCode + L"\n").c_str());
     }
-    if (!IsSelectionResultSuccess(*owned)) {
+    switch (ClassifySelectionAcquisition(*owned)) {
+    case SelectionAcquisitionDisposition::SelectedText:
+        StartAcquiredSelection(std::move(*owned));
+        return;
+    case SelectionAcquisitionDisposition::ManualEntry:
+        OpenManualEntry(*owned);
+        return;
+    case SelectionAcquisitionDisposition::Cancelled:
+        return;
+    case SelectionAcquisitionDisposition::Error:
         ShowAcquisitionError(*owned);
         return;
     }
-
-    StartAcquiredSelection(std::move(*owned));
 }
 
 void SelectionTranslationController::HandleTranslationResult(
@@ -190,6 +197,35 @@ void SelectionTranslationController::StartAcquiredSelection(
         return;
     }
     ShowClipboardDispositionWarning(disposition, cursor);
+}
+
+void SelectionTranslationController::OpenManualEntry(
+    const SelectionAcquisitionResult& result) {
+    translation::TranslationLaunchContext context;
+    context.mode = translation::TranslationSourceMode::SelectedText;
+    context.anchorRect = result.anchorRect;
+    translation::ManualEntryReason reason =
+        translation::ManualEntryReason::NoReadableSelection;
+    switch (result.error) {
+    case SelectionAcquisitionError::CopyTimedOut:
+    case SelectionAcquisitionError::CopyNotPermittedOrUnsupported:
+    case SelectionAcquisitionError::UiaSelectionUnavailable:
+        reason = translation::ManualEntryReason::CopyUnavailable;
+        break;
+    case SelectionAcquisitionError::SyntheticCopySuppressed:
+        reason = translation::ManualEntryReason::SyntheticCopySuppressed;
+        break;
+    default:
+        break;
+    }
+    const auto start = translation_.OpenTextEntry(
+        deliveryWindow_, context, reason);
+    if (!start.started) {
+        ShowPreflightError(start.error, result.cursor);
+        return;
+    }
+    ShowClipboardDispositionWarning(
+        result.clipboardDisposition, result.cursor);
 }
 
 void SelectionTranslationController::NotifyHotkeyRegistrationFailed(

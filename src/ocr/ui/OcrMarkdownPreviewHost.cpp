@@ -537,6 +537,8 @@ struct OcrMarkdownPreviewHost::Impl {
     bool activeEditorComposing = false;
     bool activeEditorCanSave = false;
     bool activeEditorActionPending = false;
+    size_t activeEditorContentUtf16Units = 0;
+    bool activeEditorHasNonWhitespace = false;
     std::wstring assetsDir;
     std::wstring localAssetRoot;
     bool localAssetMappingDirty = false;
@@ -553,16 +555,21 @@ struct OcrMarkdownPreviewHost::Impl {
     }
 
     void SetActiveEditorState(
-        bool active, bool dirty, bool composing, bool canSave, bool actionPending) {
+        bool active, bool dirty, bool composing, bool canSave, bool actionPending,
+        size_t contentUtf16Units = 0, bool hasNonWhitespace = false) {
         if (!active) {
             dirty = false;
             composing = false;
             canSave = false;
             actionPending = false;
+            contentUtf16Units = 0;
+            hasNonWhitespace = false;
         }
         if (activeEditor == active && activeEditorDirty == dirty &&
             activeEditorComposing == composing && activeEditorCanSave == canSave &&
-            activeEditorActionPending == actionPending) {
+            activeEditorActionPending == actionPending &&
+            activeEditorContentUtf16Units == contentUtf16Units &&
+            activeEditorHasNonWhitespace == hasNonWhitespace) {
             return;
         }
         activeEditor = active;
@@ -570,9 +577,14 @@ struct OcrMarkdownPreviewHost::Impl {
         activeEditorComposing = composing;
         activeEditorCanSave = canSave;
         activeEditorActionPending = actionPending;
+        activeEditorContentUtf16Units = contentUtf16Units;
+        activeEditorHasNonWhitespace = hasNonWhitespace;
         if (callbacks.onPreviewEditorState) {
-            callbacks.onPreviewEditorState(activeEditor, activeEditorDirty,
-                activeEditorComposing, activeEditorCanSave, activeEditorActionPending);
+            callbacks.onPreviewEditorState({
+                activeEditor, activeEditorDirty, activeEditorComposing,
+                activeEditorCanSave, activeEditorActionPending,
+                activeEditorContentUtf16Units,
+                activeEditorHasNonWhitespace});
         }
     }
 
@@ -935,10 +947,12 @@ struct OcrMarkdownPreviewHost::Impl {
         PostBlockState(L"setPreviewEditing", editingBlockId);
     }
 
-    void StartDocumentEditing() {
+    void StartDocumentEditing(bool selectAll) {
         if (!ready || !webview) return;
         webview->PostWebMessageAsJson(
-            L"{\"type\":\"setPreviewDocumentEditing\",\"editing\":true}");
+            selectAll
+                ? L"{\"type\":\"setPreviewDocumentEditing\",\"editing\":true,\"selectAll\":true}"
+                : L"{\"type\":\"setPreviewDocumentEditing\",\"editing\":true}");
     }
 
     void RequestActiveEditorSave() {
@@ -1436,7 +1450,11 @@ struct OcrMarkdownPreviewHost::Impl {
                 WideParseJsonBoolToken(ExtractJsonField(json, L"dirty")),
                 WideParseJsonBoolToken(ExtractJsonField(json, L"composing")),
                 WideParseJsonBoolToken(ExtractJsonField(json, L"canSave")),
-                WideParseJsonBoolToken(ExtractJsonField(json, L"pending")));
+                WideParseJsonBoolToken(ExtractJsonField(json, L"pending")),
+                static_cast<size_t>((std::max)(0, WideParseJsonIntToken(
+                    ExtractJsonField(json, L"contentUtf16Units"), 0))),
+                WideParseJsonBoolToken(
+                    ExtractJsonField(json, L"hasNonWhitespace")));
         } else if (type == L"previewDocumentSave") {
             const std::wstring renderToken = UnescapeJsonString(ExtractJsonField(json, L"renderToken"));
             const std::wstring content = UnescapeJsonString(ExtractJsonField(json, L"content"));
@@ -1685,8 +1703,8 @@ void OcrMarkdownPreviewHost::SetEditingBlock(const std::wstring& id) {
     m_impl->SetEditingBlock(id);
 }
 
-void OcrMarkdownPreviewHost::StartDocumentEditing() {
-    m_impl->StartDocumentEditing();
+void OcrMarkdownPreviewHost::StartDocumentEditing(bool selectAll) {
+    m_impl->StartDocumentEditing(selectAll);
 }
 
 void OcrMarkdownPreviewHost::RequestActiveEditorSave() {

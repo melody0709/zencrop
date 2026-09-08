@@ -73,6 +73,10 @@ public:
         HWND owner,
         const TranslationLaunchContext& context,
         selection::SelectionContent content);
+    TranslationStartResult OpenTextEntry(
+        HWND owner,
+        const TranslationLaunchContext& context,
+        ManualEntryReason reason);
     bool RequestPreviewSelection(
         HWND topLevelWindow,
         uint64_t requestGeneration,
@@ -170,6 +174,7 @@ private:
     void StartTranslationForSource(const std::wstring& source,
                                    const std::wstring& sourceLanguage,
                                    const std::wstring& targetLanguage);
+    bool StartWindowTextTranslation();
     void HandlePreparedStructuredSelection(
         uint64_t workflowGeneration,
         selection::SelectionContent content,

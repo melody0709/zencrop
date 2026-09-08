@@ -12,6 +12,7 @@
 #include "ocr/OcrUtils.h"
 #include "screenshot/ScreenshotUtils.h"
 #include "core/WideStringUtils.h"
+#include "selection/SelectionTypes.h"
 
 #include <algorithm>
 #include <atomic>
@@ -411,6 +412,77 @@ TranslationStartResult TranslationCoordinator::StartText(
     selection::SelectionContent content;
     content.plainText = std::move(sourceText);
     return StartSelection(owner, context, std::move(content));
+}
+
+TranslationStartResult TranslationCoordinator::OpenTextEntry(
+    HWND owner,
+    const TranslationLaunchContext& context,
+    ManualEntryReason reason) {
+    if (shuttingDown_) {
+        return {false, TranslationStartError::ShuttingDown};
+    }
+    TranslationSettings latest = LoadTranslationSettings();
+    const TranslationStartError preflight = ValidateTranslationPreflight(
+        latest, dependencies_.translationEngine != nullptr, false);
+    if (preflight != TranslationStartError::None) {
+        return {false, preflight};
+    }
+
+    CleanupInvalid();
+    const bool reuseWindow = sourceMode_ == TranslationSourceMode::SelectedText &&
+        resultWindow_ && resultWindow_->IsValid();
+    TranslationLaunchContext selectedContext = context;
+    selectedContext.mode = TranslationSourceMode::SelectedText;
+    if (reuseWindow && resultWindow_->IsBusy()) {
+        resultWindow_->Activate();
+        return {true, TranslationStartError::None};
+    }
+
+    TranslationRequest windowRequest;
+    windowRequest.sourceLanguage = NormalizeLanguageCode(latest.sourceLanguage, true);
+    windowRequest.targetLanguage = NormalizeLanguageCode(latest.targetLanguage, false);
+    windowRequest.preserveParagraphs = latest.preserveParagraphs;
+    if (!reuseWindow) {
+        try {
+            resultWindow_ = std::make_unique<TranslationResultWindow>(
+                windowRequest, selectedContext,
+                [this](TranslationResultWindow::Command command) {
+                    OnWindowCommand(command);
+                });
+        } catch (...) {
+            resultWindow_.reset();
+            return {false, TranslationStartError::WindowCreationFailed};
+        }
+        if (!resultWindow_ || !resultWindow_->IsValid()) {
+            resultWindow_.reset();
+            return {false, TranslationStartError::WindowCreationFailed};
+        }
+        sourceMode_ = TranslationSourceMode::SelectedText;
+        owner_ = owner;
+        sourceRect_ = selectedContext.anchorRect;
+        completionOcrMessage_ = 0;
+        completionTranslationMessage_ = WM_APP_SELECTION_TRANSLATION_DONE;
+        settings_ = latest;
+        selectedSourceLanguage_ = windowRequest.sourceLanguage;
+        selectedTargetLanguage_ = windowRequest.targetLanguage;
+        resultWindow_->SetSourceLanguage(windowRequest.sourceLanguage);
+        resultWindow_->SetTargetLanguage(windowRequest.targetLanguage);
+        resultWindow_->SetProviderSelection(settings_.activeProviderId);
+        resultWindow_->SetAlwaysOnTop(settings_.resultOnTop);
+        resultWindow_->SetShowWindowBorder(settings_.showWindowBorder);
+        resultWindow_->SetShowSourceText(settings_.showSourceText);
+        resultWindow_->SetRetryOcrMode(false);
+        resultWindow_->SetBusy(false);
+        resultWindow_->BeginTextEntry(reason);
+        resultWindow_->Show(GetAppMainHwnd());
+    } else {
+        settings_ = latest;
+        resultWindow_->BeginTextEntry(reason);
+        resultWindow_->Activate();
+    }
+    active_ = false;
+    ocrInFlight_ = false;
+    return {true, TranslationStartError::None};
 }
 
 TranslationStartResult TranslationCoordinator::StartSelection(
@@ -1326,6 +1398,53 @@ void TranslationCoordinator::StartTranslationForSource(
     BeginTranslation(generation_);
 }
 
+bool TranslationCoordinator::StartWindowTextTranslation() {
+    if (!resultWindow_ || !resultWindow_->IsValid()) return false;
+    TranslationSettings latest = LoadTranslationSettings();
+    latest.sourceLanguage = resultWindow_->SourceLanguage();
+    latest.targetLanguage = resultWindow_->TargetLanguage();
+    const TranslationStartError preflight = ValidateTranslationPreflight(
+        latest, dependencies_.translationEngine != nullptr, false);
+    if (preflight != TranslationStartError::None) {
+        switch (preflight) {
+        case TranslationStartError::ProviderUnavailable:
+            ShowError(StageText(L"请先配置可用的翻译 Provider。",
+                                L"Configure an enabled translation provider."));
+            break;
+        case TranslationStartError::CredentialMissing:
+            ShowError(StageText(L"当前翻译 Provider 缺少 API Key。",
+                                L"The active translation provider is missing its API key."));
+            break;
+        case TranslationStartError::InvalidLanguages:
+            ShowError(StageText(L"源语言和目标语言不能相同。",
+                                L"Source and target languages must be different."));
+            break;
+        default:
+            ShowError(StageText(L"当前翻译设置不可用。",
+                                L"The current translation settings are unavailable."));
+            break;
+        }
+        return false;
+    }
+    const std::wstring source = resultWindow_->SourceText();
+    if (!selection::HasNonWhitespace(source) ||
+        (sourceMode_ == TranslationSourceMode::SelectedText &&
+         source.size() > selection::kMaxSelectionTextUnits) ||
+        !selection::IsValidSelectionUtf16(source)) {
+        ShowError(sourceMode_ == TranslationSourceMode::SelectedText &&
+                  source.size() > selection::kMaxSelectionTextUnits
+            ? StageText(L"文字不能超过 100,000 个 UTF-16 单元。",
+                        L"Text must not exceed 100,000 UTF-16 code units.")
+            : StageText(L"请输入要翻译的文字。", L"Enter text to translate."));
+        return false;
+    }
+    settings_ = std::move(latest);
+    if (!dependencies_.translationEngine) translationEngine_.reset();
+    StartTranslationForSource(source,
+        resultWindow_->SourceLanguage(), resultWindow_->TargetLanguage());
+    return true;
+}
+
 void TranslationCoordinator::OnWindowCommand(TranslationResultWindow::Command command) {
     if (command == TranslationResultWindow::Command::Cancel) {
         const bool retryOcr = ocrInFlight_;
@@ -1507,9 +1626,7 @@ void TranslationCoordinator::OnWindowCommand(TranslationResultWindow::Command co
                 resultWindow_->TargetLanguage());
             return;
         }
-        StartTranslationForSource(resultWindow_->SourceText(),
-                                  resultWindow_->SourceLanguage(),
-                                  resultWindow_->TargetLanguage());
+        StartWindowTextTranslation();
     }
 }
 

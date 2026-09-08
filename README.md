@@ -1,11 +1,14 @@
-# ZenCrop v2.9.19
+# ZenCrop v2.9.24
 
 [中文文档](doc/README_zh.md)
 
 An independent, **enhanced** reimplementation of [PowerToys Crop And Lock](https://github.com/microsoft/PowerToys/tree/main/src/modules/CropAndLock/), with rich screenshot annotation, long screenshot, multi-engine OCR, and OCR Dashboard.
 
-## What's new in v2.9.19
+## What's new in v2.9.24
 
+- **Manual Selection Translation Input**: Press `Shift+A` without a readable selection to open the existing non-modal result window and type or paste text in its WYSIWYG Preview editor.
+- **Structured Selection Translation**: When the clipboard-copy fallback reads rich text (HTML), code blocks, tables, and lists keep their structure through translation, with WYSIWYG editing (including tables) in the result window.
+- **Compact Result Window**: Borderless translation windows place the language selectors, source/preview toggle, and a recognize-again button in a compact titlebar; press `Ctrl+W` to close the window.
 - **Smoother Translation Windows**: OCR and selection translation resize in place with a short ease-out animation instead of repeatedly rebuilding and repainting the full window.
 - **Reusable Results**: Repeating the same translation mode reuses its existing window and WebViews while preserving the user-selected position, manual size, splitter ratio, and always-on-top state.
 - **Reliable Preview Switching**: Hidden WebView2 previews continue reporting content metrics, preventing Preview from remaining stuck on the editable Source fallback and reducing white flashes during content replacement.
@@ -60,7 +63,7 @@ ZenCrop is rebuilt from scratch, runs completely standalone without PowerToys, a
 - **Long Screenshot**: Auto-scroll scrolling capture for web pages, documents, and chat history. Supports vertical and horizontal stitching, manual scroll mode, real-time cumulative preview, and export/copy.
 - **OCR & Document Parsing**: Four OCR engines — Windows OCR (built-in WinRT), **PP-OCRv6 Local** (ONNX Runtime CPU, small/medium models), **PaddleOCR-VL 1.6 Local** (llama.cpp VLM for complex layouts, formulas, tables, charts), and PaddleOCR Cloud (official API). Dual OCR hotkeys let you assign two engines to separate shortcuts. Includes PP-DocLayout layout detection, table/formula/chart/seal recognition, header/footer/footnote control, built-in model download manager (HuggingFace/ModelScope, resume, SHA-256 verification), idle auto-exit for local VLM, optional Recursive XY-Cut physical sorting for multi-column documents, and result-on-top floating window.
 - **OCR Dashboard**: Full-featured OCR workbench opened from the tray menu — persistent history with search/filter, image preview with zoom/pan and block highlighting, drag-and-drop image/folder import, PDF batch OCR with page range selection, batch queue monitoring with retry/recovery, Markdown/TXT/JSON output artifacts, WebView2 Markdown preview with KaTeX math, Mermaid diagrams, Chart.js, and HTML tables, Source/Preview toggle, and detected text/layout block overlay on source images.
-- **Selection Translation**: Translate text selected in other applications with the customizable `Shift+A` hotkey. Accessible-text acquisition is preferred; an optional simulated-copy fallback restores the previous clipboard contents. Results support direct machine-translation services and LLM providers.
+- **Selection Translation**: Translate text selected in other applications with the customizable `Shift+A` hotkey. When no readable selection is found, the same non-modal result window opens a WYSIWYG input editor for typing or pasting text; move it aside and keep using `Shift+A` for later selections. Accessible-text acquisition is preferred; an optional simulated-copy fallback restores the previous clipboard contents. Results support direct machine-translation services and LLM providers.
 - **Click to Accept**: Single-click accepts the smart suggestion; drag to manually draw a rectangle
 - **Crop Area Adjustment**: After drawing the crop rectangle, you can resize it by dragging edges/corners, move it by dragging inside, and double-click to confirm — no more accidental crops
   - **Arrow Key Control**: Fine-tune the crop box with keyboard in adjust mode — Arrow keys move 1px, Ctrl+Arrow expands, Shift+Arrow shrinks, Enter confirms
@@ -81,7 +84,7 @@ ZenCrop is rebuilt from scratch, runs completely standalone without PowerToys, a
 | `Alt+Shift+S` | Start screenshot |
 | `Shift+X` | OCR with primary engine (Enter confirms → result window / history) |
 | `Alt+Shift+X` | OCR with alternate engine (configurable) |
-| `Shift+A` | Translate text selected in the foreground application (configurable) |
+| `Shift+A` | Translate selected text, or open the result window for manual WYSIWYG input when no readable selection is found (configurable) |
 | `Shift+C` | In screenshot or OCR adjust mode: OCR selection and copy text only (toast, no result window / history). Same engine route as the session (`Shift+X` → primary, `Alt+Shift+X` → alternate). |
 | `ESC` | Cancel current crop rectangle / cancel entire crop mode / close focused Thumbnail window |
 | Right-click tray icon | Open menu (toggle titlebar / OCR Dashboard / settings / exit) |

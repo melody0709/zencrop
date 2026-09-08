@@ -9,6 +9,12 @@ enum class TranslationSourceMode {
     SelectedText,
 };
 
+enum class ManualEntryReason {
+    NoReadableSelection,
+    CopyUnavailable,
+    SyntheticCopySuppressed,
+};
+
 struct TranslationLaunchContext {
     TranslationSourceMode mode = TranslationSourceMode::OcrImage;
     RECT anchorRect = {};

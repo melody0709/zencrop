@@ -394,6 +394,8 @@ int wmain() {
     bool observedEditorActionPending = false;
     bool observedDirtyEditorState = false;
     bool observedPendingEditorState = false;
+    size_t observedEditorContentUnits = 0;
+    bool observedEditorHasText = false;
     bool deferNextDocumentSaveResult = false;
     std::wstring deferredDocumentSaveToken;
     int zoomFactorChangeCount = 0;
@@ -440,15 +442,19 @@ int wmain() {
         documentSourceRequired = sourceRequired;
     };
     callbacks.onPreviewEditorState = [&](
-        bool active, bool dirty, bool composing, bool canSave, bool actionPending) {
+        const OcrMarkdownPreviewHost::PreviewEditorState& state) {
         editorStateChangeCount++;
-        observedEditorActive = active;
-        observedEditorDirty = dirty;
-        observedEditorComposing = composing;
-        observedEditorCanSave = canSave;
-        observedEditorActionPending = actionPending;
-        observedDirtyEditorState = observedDirtyEditorState || (active && dirty);
-        observedPendingEditorState = observedPendingEditorState || (active && actionPending);
+        observedEditorActive = state.active;
+        observedEditorDirty = state.dirty;
+        observedEditorComposing = state.composing;
+        observedEditorCanSave = state.canSave;
+        observedEditorActionPending = state.pending;
+        observedEditorContentUnits = state.contentUtf16Units;
+        observedEditorHasText = state.hasNonWhitespace;
+        observedDirtyEditorState = observedDirtyEditorState ||
+            (state.active && state.dirty);
+        observedPendingEditorState = observedPendingEditorState ||
+            (state.active && state.pending);
     };
     callbacks.onPreviewDocumentSave = [
         &host, &documentSaveCount, &savedDocumentContent,
@@ -2708,13 +2714,40 @@ $$ Ny=1 $$)MD";
                     getSelection().addRange(range);
                     return p;
                   }
-                  function typeMarker(text,offset,data){
+                  function typeMarker(text,offset,data,inputType){
                     var p=paragraph(text,offset);
                     p.dispatchEvent(new InputEvent('input',{
-                      bubbles:true,inputType:'insertText',data:data
+                      bubbles:true,inputType:inputType||'insertText',data:data
                     }));
                     return p;
                   }
+                  body.textContent='# ';
+                  var clearedRange=document.createRange();
+                  clearedRange.setStart(body.firstChild,2);
+                  clearedRange.collapse(true);
+                  getSelection().removeAllRanges();
+                  getSelection().addRange(clearedRange);
+                  body.dispatchEvent(new InputEvent('input',{
+                    bubbles:true,inputType:'insertText',data:' '
+                  }));
+                  if(!body.querySelector('h1'))return 8;
+                  document.execCommand('insertText',false,'again');
+                  while(body.querySelector('h1')&&body.querySelector('h1').textContent){
+                    document.execCommand('delete',false,null);
+                  }
+                  var leaveHeading=new KeyboardEvent('keydown',{
+                    key:'Backspace',bubbles:true,cancelable:true
+                  });
+                  body.dispatchEvent(leaveHeading);
+                  var preserveParagraph=new KeyboardEvent('keydown',{
+                    key:'Backspace',bubbles:true,cancelable:true
+                  });
+                  body.dispatchEvent(preserveParagraph);
+                  if(!preserveParagraph.defaultPrevented||
+                    !body.querySelector('p'))return 9;
+                  document.execCommand('insertText',false,'#');
+                  document.execCommand('insertText',false,' ');
+                  if(!body.querySelector('h1'))return 10;
                   body.innerHTML='<p><br></p>';
                   var initial=body.firstElementChild;
                   var initialRange=document.createRange();
@@ -2736,6 +2769,7 @@ $$ Ny=1 $$)MD";
                   if(!undo.defaultPrevented||!redo.defaultPrevented)return 3;
                   document.execCommand('insertText',false,'Heading');
                   if(!body.querySelector('h1')||body.querySelector('h1').textContent!=='Heading')return 4;
+                  typeMarker('## ',3,' ','insertReplacementText');
                   typeMarker('### Third',4,' ');
                   typeMarker('> Quote',2,' ');
                   typeMarker('- Bullet',2,' ');
@@ -2755,10 +2789,21 @@ $$ Ny=1 $$)MD";
                   }));
                   var imeStayedPlain=ime.parentNode===body&&ime.nodeName==='P';
                   ime.remove();
+                  var imeHeading=paragraph('#### ',5);
+                  body.dispatchEvent(new CompositionEvent('compositionstart',{
+                    bubbles:true,data:''
+                  }));
+                  imeHeading.dispatchEvent(new InputEvent('input',{
+                    bubbles:true,inputType:'insertCompositionText',data:' ',isComposing:true
+                  }));
+                  body.dispatchEvent(new CompositionEvent('compositionend',{
+                    bubbles:true,data:' '
+                  }));
                   var ordered=body.querySelector('ol');
                   var code=body.querySelector('pre code');
                   var link=body.querySelector('a[href="https://example.com"]');
-                  var structureOk=enter.defaultPrevented&&imeStayedPlain&&body.querySelector('h3')&&
+                  var structureOk=enter.defaultPrevented&&imeStayedPlain&&body.querySelector('h2')&&
+                    body.querySelector('h3')&&
                     body.querySelector('blockquote')&&body.querySelector('ul')&&ordered&&
                     ordered.getAttribute('start')==='7'&&code&&code.textContent==='int x;'&&
                     body.querySelector('hr')&&body.querySelector('strong')&&body.querySelector('em')&&
@@ -2792,7 +2837,11 @@ $$ Ny=1 $$)MD";
                   terminal.remove();
                   return !arrowExited?6:(!clickExited?7:1);
                 })())JS",
-                result) || _wtoi(result.c_str()) != 1) {
+                result) || _wtoi(result.c_str()) != 1 ||
+            !WaitForScriptInt(
+                host,
+                LR"JS((function(){return document.querySelector('.ocr-preview-document-editor .ocr-preview-rich-editor-body h4')?1:0;})())JS",
+                1)) {
             runtimeError = L"Markdown typing rules did not produce the expected rich blocks; result=" + result;
         } else {
             ExecuteScriptSync(
@@ -3193,6 +3242,55 @@ $$ Ny=1 $$)MD";
                     1) ||
                 host.HasActiveEditor() || documentSaveCount != saveCount)) {
                 runtimeError = L"A newer render did not invalidate the obsolete document draft.";
+            }
+        }
+    }
+
+    if (runtimeError.empty()) {
+        const int saveCount = documentSaveCount;
+        host.RenderMarkdown(15, L"", true);
+        host.StartDocumentEditing();
+        if (!WaitForScriptInt(
+                host,
+                LR"JS((function(){return document.querySelector('.ocr-preview-document-editor .ocr-preview-rich-editor-body')?1:0;})())JS",
+                1) ||
+            !PumpUntil([&]() { return host.HasActiveEditor(); }, 3000) ||
+            !WaitForScriptInt(
+                host,
+                LR"JS((function(){
+                  var body=document.querySelector('.ocr-preview-document-editor .ocr-preview-rich-editor-body');
+                  var anchor=getSelection().anchorNode;
+                  return body&&anchor&&anchor!==body&&body.firstElementChild&&
+                    body.firstElementChild.contains(anchor)?1:0;
+                })())JS",
+                1)) {
+            runtimeError = L"Empty Markdown did not open the document editor.";
+        } else {
+            std::wstring result;
+            ExecuteScriptSync(
+                host,
+                LR"JS((function(){
+                  var body=document.querySelector('.ocr-preview-document-editor .ocr-preview-rich-editor-body');
+                  if(!body)return 0;
+                  body.innerHTML='<p>manual text</p>';
+                  body.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:'manual text'}));
+                  return 1;
+                })())JS",
+                result);
+            if (_wtoi(result.c_str()) != 1 ||
+                !PumpUntil([&]() {
+                    return observedEditorDirty && observedEditorHasText &&
+                        observedEditorContentUnits == 11;
+                }, 3000)) {
+                runtimeError = L"Empty document editor did not report manual text state.";
+            } else {
+                host.RequestActiveEditorSave();
+                if (!PumpUntil([&]() {
+                        return documentSaveCount == saveCount + 1 &&
+                            !host.HasActiveEditor();
+                    }, 3000) || savedDocumentContent != L"manual text") {
+                    runtimeError = L"Empty document editor did not save manual text.";
+                }
             }
         }
     }

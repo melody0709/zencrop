@@ -1373,6 +1373,47 @@ int TestCoordinatorMessageChain() {
         return 482;
     }
 
+    translator->ResetRequestHistory();
+    const auto manualEntryStart = coordinator.OpenTextEntry(
+        nullptr, selectedTextContext,
+        translation::ManualEntryReason::NoReadableSelection);
+    PumpTranslationMessages(500);
+    HWND manualEntryWindow = FindWindowW(
+        L"ZenCrop.TranslationResultWindow", nullptr);
+    HWND manualTranslateButton = manualEntryWindow
+        ? GetDlgItem(manualEntryWindow, 3124) : nullptr;
+    RECT manualTranslateRect = {};
+    SIZE manualTranslateText = {};
+    if (manualTranslateButton) {
+        GetClientRect(manualTranslateButton, &manualTranslateRect);
+        HDC buttonDc = GetDC(manualTranslateButton);
+        HFONT buttonFont = reinterpret_cast<HFONT>(
+            SendMessageW(manualTranslateButton, WM_GETFONT, 0, 0));
+        HGDIOBJ previousFont = buttonDc && buttonFont
+            ? SelectObject(buttonDc, buttonFont) : nullptr;
+        const std::wstring buttonText = ControlText(manualEntryWindow, 3124);
+        if (buttonDc) {
+            GetTextExtentPoint32W(buttonDc, buttonText.c_str(),
+                static_cast<int>(buttonText.size()), &manualTranslateText);
+            if (previousFont) SelectObject(buttonDc, previousFont);
+            ReleaseDC(manualTranslateButton, buttonDc);
+        }
+    }
+    if (!manualEntryStart.started || manualEntryWindow != selectedTextWindow ||
+        ControlText(selectedTextWindow, 3105).find(L"No selection") ==
+            std::wstring::npos ||
+        !manualTranslateButton ||
+        manualTranslateRect.right - manualTranslateRect.left <
+            manualTranslateText.cx + 12 ||
+        !translator->RequestHistory().empty() ||
+        ocr->recognizeCount.load(std::memory_order_relaxed) !=
+            ocrCountBeforeSelection) {
+        coordinator.Shutdown();
+        DestroyWindow(messageWindow);
+        cleanup();
+        return 707;
+    }
+
     RECT retainedSelectedRect = {};
     GetWindowRect(selectedTextWindow, &retainedSelectedRect);
     const auto repeatedSelectedTextStart = coordinator.StartText(
@@ -5498,6 +5539,24 @@ int TestSelectionPlatformContracts() {
     if (!selection::IsSelectionResultSuccess(result)) return 494;
     result.source = selection::SelectionAcquisitionSource::None;
     if (selection::IsSelectionResultSuccess(result)) return 495;
+    if (selection::ClassifySelectionAcquisition(result) !=
+        selection::SelectionAcquisitionDisposition::ManualEntry) return 701;
+    result.error = selection::SelectionAcquisitionError::CopyTimedOut;
+    if (selection::ClassifySelectionAcquisition(result) !=
+        selection::SelectionAcquisitionDisposition::ManualEntry) return 702;
+    result.error = selection::SelectionAcquisitionError::SyntheticCopySuppressed;
+    if (selection::ClassifySelectionAcquisition(result) !=
+        selection::SelectionAcquisitionDisposition::ManualEntry) return 703;
+    result.error = selection::SelectionAcquisitionError::SecureField;
+    if (selection::ClassifySelectionAcquisition(result) !=
+        selection::SelectionAcquisitionDisposition::Error) return 704;
+    result.error = selection::SelectionAcquisitionError::Cancelled;
+    if (selection::ClassifySelectionAcquisition(result) !=
+        selection::SelectionAcquisitionDisposition::Cancelled) return 705;
+    result.error = selection::SelectionAcquisitionError::None;
+    result.content.plainText = invalidHigh;
+    if (selection::ClassifySelectionAcquisition(result) !=
+        selection::SelectionAcquisitionDisposition::Error) return 706;
     return 0;
 }
 

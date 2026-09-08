@@ -266,6 +266,7 @@ zencrop_add_simple_hermetic(test_translation_contract
         ${CMAKE_SOURCE_DIR}/src/translation/TranslationProviderSettingsPage.cpp
         ${CMAKE_SOURCE_DIR}/src/translation/TranslationPromptSettingsPage.cpp
         ${CMAKE_SOURCE_DIR}/src/translation/TranslationResultWindow.cpp
+        ${CMAKE_SOURCE_DIR}/src/translation/TranslationResultWindow.ManualEntry.cpp
         ${CMAKE_SOURCE_DIR}/src/translation/TranslationResultWindow.StructuredSelection.cpp
         ${CMAKE_SOURCE_DIR}/src/translation/TranslationCoordinator.cpp
         ${CMAKE_SOURCE_DIR}/src/translation/TranslationCoordinator.StructuredSelection.cpp

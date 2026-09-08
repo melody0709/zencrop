@@ -61,6 +61,44 @@ bool IsSelectionResultSuccess(const SelectionAcquisitionResult& result) {
           IsValidSelectionUtf16(result.content.structuredPlanJson)));
 }
 
+SelectionAcquisitionDisposition ClassifySelectionAcquisition(
+    const SelectionAcquisitionResult& result) {
+    if (IsSelectionResultSuccess(result)) {
+        return SelectionAcquisitionDisposition::SelectedText;
+    }
+    switch (result.error) {
+    case SelectionAcquisitionError::Cancelled:
+        return SelectionAcquisitionDisposition::Cancelled;
+    case SelectionAcquisitionError::NoSelection:
+    case SelectionAcquisitionError::UiaSelectionUnavailable:
+    case SelectionAcquisitionError::CopyTimedOut:
+    case SelectionAcquisitionError::CopyNotPermittedOrUnsupported:
+    case SelectionAcquisitionError::SyntheticCopySuppressed:
+        return SelectionAcquisitionDisposition::ManualEntry;
+    case SelectionAcquisitionError::None:
+        if ((!result.content.plainText.empty() &&
+             !IsValidSelectionUtf16(result.content.plainText)) ||
+            (!result.content.markdown.empty() &&
+             !IsValidSelectionUtf16(result.content.markdown)) ||
+            (!result.content.html.empty() &&
+             !IsValidSelectionUtf16(result.content.html)) ||
+            (!result.content.structuredPlanJson.empty() &&
+             !IsValidSelectionUtf16(result.content.structuredPlanJson))) {
+            return SelectionAcquisitionDisposition::Error;
+        }
+        return SelectionAcquisitionDisposition::ManualEntry;
+    case SelectionAcquisitionError::SecureField:
+    case SelectionAcquisitionError::TextTooLong:
+    case SelectionAcquisitionError::TargetChanged:
+    case SelectionAcquisitionError::TriggerKeysHeld:
+    case SelectionAcquisitionError::CopyShortcutConflict:
+    case SelectionAcquisitionError::ClipboardBusy:
+    case SelectionAcquisitionError::PlatformError:
+        return SelectionAcquisitionDisposition::Error;
+    }
+    return SelectionAcquisitionDisposition::Error;
+}
+
 RECT ChooseSelectionAnchor(
     const std::vector<RECT>& lineRectangles, POINT cursor) {
     RECT anchor = {};

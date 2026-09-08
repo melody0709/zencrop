@@ -36,6 +36,13 @@ enum class SelectionAcquisitionSource {
     ClipboardCopy,
 };
 
+enum class SelectionAcquisitionDisposition {
+    SelectedText,
+    ManualEntry,
+    Error,
+    Cancelled,
+};
+
 enum class SelectionContentKind {
     Plain,
     Markdown,
@@ -102,6 +109,8 @@ bool HasNonWhitespace(const std::wstring& text);
 bool IsValidSelectionUtf16(const std::wstring& text);
 bool IsNativePasswordEdit(HWND window);
 bool IsSelectionResultSuccess(const SelectionAcquisitionResult& result);
+SelectionAcquisitionDisposition ClassifySelectionAcquisition(
+    const SelectionAcquisitionResult& result);
 RECT ChooseSelectionAnchor(
     const std::vector<RECT>& lineRectangles, POINT cursor);
 

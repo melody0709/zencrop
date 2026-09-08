@@ -167,11 +167,13 @@
     function notifyState() {
       var canSave = canSerialize();
       if (typeof options.onStateChanged === "function") {
-        options.onStateChanged({
+        var state = {
           dirty: dirty,
           composing: composing,
           canSave: canSave
-        });
+        };
+        if (options.includeContentInState) state.content = currentMarkdown();
+        options.onStateChanged(state);
       }
       refreshActions(canSave);
     }
@@ -399,13 +401,38 @@
       return true;
     }
 
-    function tryBlockInputRule(event) {
-      if (!event || event.inputType !== "insertText") return false;
+    function tryRootBlockInputRule(range) {
+      if (!range || range.startContainer.nodeType !== Node.TEXT_NODE ||
+          range.startContainer.parentNode !== body) return false;
+      for (var child = body.firstChild; child; child = child.nextSibling) {
+        if (child.nodeType !== Node.TEXT_NODE &&
+            !(child.nodeType === Node.ELEMENT_NODE && child.nodeName === "BR")) return false;
+      }
+      var rule = blockRuleForText(textBeforeCaret(body, range), false);
+      if (!rule) return false;
+      recordSnapshot();
+      var paragraph = document.createElement("p");
+      while (body.firstChild) paragraph.appendChild(body.firstChild);
+      body.appendChild(paragraph);
+      deleteToCaret(paragraph, range);
+      if (!replaceBlock(paragraph, rule)) return false;
+      markChanged(true);
+      return true;
+    }
+
+    function tryCurrentBlockInputRule() {
       var range = activeCollapsedRange();
       var block = topLevelTextBlock(range);
-      if (!block || closestElement(range.startContainer, "pre,code,a,table")) return false;
+      if (!block) return tryRootBlockInputRule(range);
+      if (closestElement(range.startContainer, "pre,code,a,table")) return false;
       var rule = blockRuleForText(textBeforeCaret(block, range), false);
       return rule ? applyBlockInputRule(block, range, rule) : false;
+    }
+
+    function tryBlockInputRule(event) {
+      if (!event || ["insertText", "insertReplacementText", "insertCompositionText",
+          "insertFromComposition"].indexOf(event.inputType) === -1) return false;
+      return tryCurrentBlockInputRule();
     }
 
     function replaceInlineMarker(node, start, end, element) {
@@ -631,6 +658,14 @@
           container.parentNode.replaceChild(plain, container);
           placeCaret(plain, false);
           markChanged(true);
+          return true;
+        }
+        var emptyPlain = topLevelTextBlock(range);
+        if (emptyPlain && body.children.length === 1 && isEmptyElement(emptyPlain) &&
+            caretAtEdge(emptyPlain, range, false)) {
+          event.preventDefault();
+          ensureEditable(emptyPlain);
+          placeCaret(emptyPlain, false);
           return true;
         }
       }
@@ -1068,8 +1103,14 @@
       composing = false;
       setDirty(true);
       savedBookmark = captureBookmark() || savedBookmark;
-      recordSnapshot();
-      updateContextUi();
+      // WebView2/IME may commit Markdown markers as composition text instead
+      // of insertText. Wait until the committed DOM/caret is stable, then run
+      // the same block rule used by direct keyboard input.
+      window.setTimeout(function () {
+        if (destroyed || composing) return;
+        if (!tryCurrentBlockInputRule()) recordSnapshot();
+        updateContextUi();
+      }, 0);
     });
     listen(body, "keydown", function (event) {
       if (event.isComposing || composing) return;
@@ -1133,6 +1174,13 @@
       focus: function () {
         body.focus();
         if (!restoreBookmark(savedBookmark)) {
+          var onlyBlock = body.children.length === 1 ? body.firstElementChild : null;
+          if (onlyBlock && /^(p|div)$/i.test(onlyBlock.nodeName || "") &&
+              isEmptyElement(onlyBlock)) {
+            placeCaret(onlyBlock, false);
+            rememberSelection();
+            return;
+          }
           var range = document.createRange();
           range.selectNodeContents(body);
           range.collapse(false);
