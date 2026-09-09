@@ -56,6 +56,7 @@ bool OverlayWindow::IsEditingScreenshotText() const {
 }
 
 void OverlayWindow::CommitScreenshotTextEdit(bool removeEmpty) {
+    ImmAssociateContextEx(m_window, nullptr, 0);
     if (!IsEditingScreenshotText()) {
     // S-E-52: clear text-edit by id sole (empty id).
     ScreenshotEditorSyncTextEditingById(m_editorState, -1, L"");
@@ -1086,6 +1087,7 @@ ScreenshotEditorSetAnnotationOriginalTextFontSize(m_editorState, TextAnnotationF
         m_editorState, hitAnnotation, hitId);
     ScreenshotEditorSyncTextEditCaret(m_editorState, ScreenshotTextCaretIndexFromPoint(ann, pt), -1);
     ScreenshotEditorSyncPendingTextAnnotationCreateId(m_editorState, L"");
+            ImmAssociateContextEx(hwnd, nullptr, IACE_DEFAULT);
             SetForegroundWindow(hwnd);
             SetFocus(hwnd);
             SetCapture(hwnd);
@@ -1199,6 +1201,7 @@ ScreenshotEditorSetAnnotationOriginalTextFontSize(m_editorState, ann.type == Scr
             ScreenshotAnnotationDocumentCaptureBeforeSnapshot(
                 m_annotationDocument, textAnn, textIdx),
             &textAnn);
+        ImmAssociateContextEx(hwnd, nullptr, IACE_DEFAULT);
         SetForegroundWindow(hwnd);
         SetFocus(hwnd);
         SetCapture(hwnd);

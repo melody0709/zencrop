@@ -381,6 +381,7 @@ OverlayWindow::~OverlayWindow() {
 
 void OverlayWindow::Show() {
     if (m_window) {
+        ImmAssociateContextEx(m_window, nullptr, 0);
         ShowWindow(m_window, SW_SHOW);
         SetForegroundWindow(m_window);
         SetFocus(m_window);
