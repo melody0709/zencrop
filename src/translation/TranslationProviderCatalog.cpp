@@ -632,6 +632,7 @@ ProviderCapabilities GetCapabilities(
         custom.allowsCustomBaseUrl = true;
         custom.allowsCustomModel = true;
         custom.supportsTemperature = policy.allowsTemperature;
+        custom.defaultTemperature = policy.defaultTemperature;
         custom.requiresApiKey = false;
         custom.outputMode = policy.outputMode;
         custom.instructionChannel = policy.instructionChannel;
@@ -650,6 +651,7 @@ ProviderCapabilities GetCapabilities(
     capabilities.defaultReasoning = policy.defaultReasoning;
     capabilities.reasoningWireFormat = policy.reasoningWireFormat;
     capabilities.supportsTemperature = policy.allowsTemperature;
+    capabilities.defaultTemperature = policy.defaultTemperature;
     capabilities.outputMode = policy.outputMode;
     capabilities.instructionChannel = policy.instructionChannel;
     capabilities.tokenLimitKind = policy.tokenLimitKind;

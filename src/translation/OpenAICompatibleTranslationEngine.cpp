@@ -1,5 +1,6 @@
 #include "OpenAICompatibleTranslationEngine.h"
 
+#include "TranslationBudget.h"
 #include "TranslationPromptComposer.h"
 #include "TranslationProviderCatalog.h"
 
@@ -19,8 +20,16 @@ namespace {
 
 using json = nlohmann::json;
 
-constexpr int kTimeoutMs = 15000;
-constexpr int kDeadlineMs = 60000;
+// Connect-side timeout. Deliberately separate from the receive timeout: DNS
+// resolution and TCP connect should keep failing fast even when the response
+// generation budget is minutes long. The receive timeout comes from
+// ResolveTranslationBudget() so a non-streaming generation is not capped at
+// this value (see TranslationBudget.h).
+constexpr int kConnectTimeoutMs = 15000;
+// Extra slack for the transport's deadline watchdog. It only exists to close a
+// stuck handle slightly after the receive timeout fired, so the user sees the
+// timeout message rather than the watchdog's.
+constexpr int kWatchdogSlackMs = 5000;
 constexpr size_t kMaxInputChars = 12000;
 constexpr size_t kMaxResponseBytes = 2097152;
 constexpr int kMaxOutputTokens = 16384;
@@ -85,12 +94,75 @@ TranslationResult Error(
 
 ErrorCode ErrorCodeForTransportFailure(const std::wstring& message) {
     if (message == L"Request cancelled.") return ErrorCode::Cancelled;
+    // WinHTTP reports its own timeout as ERROR_WINHTTP_TIMEOUT (12002). The
+    // message text contains none of the substrings below, so without this
+    // check a receive timeout was classified as a generic Network failure and
+    // the "request timed out, retrying" copy disagreed with the error code.
+    if (message.find(L"(12002)") != std::wstring::npos) return ErrorCode::Timeout;
     if (message.find(L"deadline") != std::wstring::npos ||
         message.find(L"timed out") != std::wstring::npos ||
         message.find(L"timeout") != std::wstring::npos) {
         return ErrorCode::Timeout;
     }
     return ErrorCode::Network;
+}
+
+// F3 (2026-09-15): the id-contract failures below used to carry no locatable
+// information. The failure could not be reproduced in 48 live requests, so a
+// message without "what we expected vs what we got" leaves nothing to
+// diagnose. The canonical sentence is kept as the prefix so existing habits
+// (human reading, log grepping) keep working; the diff is appended.
+std::wstring SegmentIdDiffHint(
+    const TranslationRequest& request,
+    const std::unordered_map<std::wstring, std::wstring>& byId) {
+    constexpr size_t kMaxIdsPerList = 4;
+    std::wstring missing;
+    size_t missingCount = 0;
+    for (const auto& segment : request.segments) {
+        if (byId.find(segment.id) == byId.end()) {
+            ++missingCount;
+            if (missingCount <= kMaxIdsPerList) {
+                if (!missing.empty()) missing += L",";
+                missing += segment.id;
+            }
+        }
+    }
+    std::wstring unexpected;
+    size_t unexpectedCount = 0;
+    for (const auto& entry : byId) {
+        const bool expected = std::any_of(
+            request.segments.begin(), request.segments.end(),
+            [&entry](const TranslationSegment& segment) {
+                return segment.id == entry.first;
+            });
+        if (!expected) {
+            ++unexpectedCount;
+            if (unexpectedCount <= kMaxIdsPerList) {
+                if (!unexpected.empty()) unexpected += L",";
+                unexpected += entry.first;
+            }
+        }
+    }
+    std::wstring hint = L"Expected " +
+        std::to_wstring(request.segments.size()) + L", received " +
+        std::to_wstring(byId.size()) + L", missing " +
+        std::to_wstring(missingCount) + L" [";
+    hint += missing.empty() ? L"-" : missing;
+    if (missingCount > kMaxIdsPerList) hint += L",...";
+    hint += L"], unexpected " + std::to_wstring(unexpectedCount) + L" [";
+    hint += unexpected.empty() ? L"-" : unexpected;
+    if (unexpectedCount > kMaxIdsPerList) hint += L",...";
+    hint += L"]";
+    return hint;
+}
+
+// Appends the provider's troubleshooting id when the response carries one.
+// Without it a user report says only "the request failed"; with it the
+// provider can look the request up.
+std::wstring WithTraceId(
+    const std::wstring& message, const HttpResponse& response) {
+    if (response.traceId.empty()) return message;
+    return message + L" (trace " + response.traceId + L")";
 }
 
 bool IsJsonContentType(const std::wstring& contentType) {
@@ -243,8 +315,21 @@ void ApplyReasoningPolicy(
         }
         break;
     case ReasoningWireFormat::SiliconFlowThinking:
+        // SiliconFlow's parameter table documents top-level enable_thinking
+        // (bool) and reasoning_effort ("high" | "max"). Both tiers were measured
+        // equivalent to the previous DeepSeek-style mapping (2026-09-15):
+        // Off -> reasoning_tokens 0/0, High -> 506/830 with reasoning actually
+        // enabled. Do not express High via thinking_budget: 4096 measured only
+        // 27/18 reasoning tokens, contradicting its documented meaning.
         if (profile.reasoningMode == TranslationReasoningMode::Off) {
             body["enable_thinking"] = false;
+        } else if (effort) {
+            body["enable_thinking"] = true;
+            // reasoning_effort accepts only "high" or "max". The current policy
+            // exposes just Off/High for these models, so only "high" is sent;
+            // any future policy that exposes more tiers must map the additional
+            // values here first.
+            body["reasoning_effort"] = effort;
         }
         break;
     case ReasoningWireFormat::DeepSeekThinking:
@@ -365,6 +450,19 @@ json BuildRequestBody(
             body["messages"] = json::array({
                 {{"role", "user"}, {"content", WideToUtf8(userPayload)}},
             });
+        } else if (capabilities.outputMode == LlmOutputMode::NativeJsonSchema) {
+            // chat-completions had no schema path at all, so the provider was
+            // asked to produce JSON with nothing but prompt wording behind the
+            // id contract. strict + the id enum is what makes the provider
+            // enforce it at decode time.
+            body["response_format"] = {
+                {"type", "json_schema"},
+                {"json_schema", {
+                    {"name", "zencrop_translation"},
+                    {"strict", true},
+                    {"schema", TranslationResponseSchema(request)},
+                }},
+            };
         } else if (capabilities.outputMode == LlmOutputMode::JsonObject) {
             body["response_format"] = {{"type", "json_object"}};
         }
@@ -373,14 +471,19 @@ json BuildRequestBody(
     const bool reasoningActive = profile.reasoningMode !=
         TranslationReasoningMode::ProviderDefault &&
         profile.reasoningMode != TranslationReasoningMode::Off;
-    if (profile.temperature.has_value() && capabilities.supportsTemperature &&
+    // The profile wins; otherwise the model policy can supply a measured default
+    // (a low sampler temperature keeps the model from dropping the tail of the
+    // translations array). Reasoning modes stay without a temperature, as before.
+    const std::optional<double> temperature = profile.temperature.has_value()
+        ? profile.temperature : capabilities.defaultTemperature;
+    if (temperature.has_value() && capabilities.supportsTemperature &&
         !reasoningActive) {
         if (profile.adapterKind == TranslationAdapterKind::GeminiGenerateContent) {
-            body["generationConfig"]["temperature"] = profile.temperature.value();
+            body["generationConfig"]["temperature"] = temperature.value();
         } else if (profile.adapterKind == TranslationAdapterKind::OllamaChat) {
-            body["options"]["temperature"] = profile.temperature.value();
+            body["options"]["temperature"] = temperature.value();
         } else {
-            body["temperature"] = profile.temperature.value();
+            body["temperature"] = temperature.value();
         }
     }
     ApplyReasoningPolicy(profile, capabilities, body);
@@ -393,9 +496,16 @@ TranslationResult ParseResponse(
     TranslationAdapterKind adapterKind,
     LlmOutputMode outputMode,
     const HttpResponse& response) {
+    // Every failure that reaches the caller carries the provider trace id when
+    // one was returned, so the user report includes an id the provider can
+    // look up (D). Kept local to the parser so only consumed responses gain it.
+    const auto fail = [&request, &response](
+        ErrorCode code, const std::wstring& message) {
+        return Error(code, WithTraceId(message, response), request.requestId);
+    };
     if (!response.error.empty()) {
-        return Error(ErrorCodeForTransportFailure(response.error),
-            response.error, request.requestId);
+        return fail(ErrorCodeForTransportFailure(response.error),
+            response.error);
     }
     if (response.statusCode < 200 || response.statusCode >= 300) {
         const ErrorCode code = response.statusCode == 401
@@ -404,18 +514,18 @@ TranslationResult ParseResponse(
                 (response.statusCode == 408 || response.statusCode == 504
                     ? ErrorCode::Timeout
                     : (response.statusCode >= 500 ? ErrorCode::Server : ErrorCode::InvalidRequest)));
-        return Error(code, L"Translation provider request failed (" +
-            std::to_wstring(response.statusCode) + L").", request.requestId);
+        return fail(code, L"Translation provider request failed (" +
+            std::to_wstring(response.statusCode) + L").");
     }
     if (!IsJsonContentType(response.contentType)) {
-        return Error(ErrorCode::SchemaMismatch,
-            L"Translation provider response is not JSON.", request.requestId);
+        return fail(ErrorCode::SchemaMismatch,
+            L"Translation provider response is not JSON.");
     }
     try {
         const json outer = json::parse(response.body);
         if (!outer.is_object()) {
-            return Error(ErrorCode::SchemaMismatch,
-                L"Translation provider response schema is invalid.", request.requestId);
+            return fail(ErrorCode::SchemaMismatch,
+                L"Translation provider response schema is invalid.");
         }
         std::string content;
         std::wstring responseModel;
@@ -427,15 +537,15 @@ TranslationResult ParseResponse(
                         outer["incomplete_details"].is_object()
                     ? outer["incomplete_details"].value("reason", std::string{})
                     : std::string{};
-                return Error(reason == "max_output_tokens"
+                return fail(reason == "max_output_tokens"
                         ? ErrorCode::OutputTruncated
                         : ErrorCode::IncompleteCompletion,
-                    L"Translation provider response is incomplete.", request.requestId);
+                    L"Translation provider response is incomplete.");
             }
             if (status != "completed" || !outer.contains("output") ||
                 !outer["output"].is_array()) {
-                return Error(ErrorCode::SchemaMismatch,
-                    L"Responses API output is missing or incomplete.", request.requestId);
+                return fail(ErrorCode::SchemaMismatch,
+                    L"Responses API output is missing or incomplete.");
             }
             size_t textItems = 0;
             for (const auto& item : outer["output"]) {
@@ -446,8 +556,8 @@ TranslationResult ParseResponse(
                 for (const auto& part : item["content"]) {
                     if (!part.is_object()) continue;
                     if (part.value("type", std::string{}) == "refusal") {
-                        return Error(ErrorCode::IncompleteCompletion,
-                            L"Translation provider refused the request.", request.requestId);
+                        return fail(ErrorCode::IncompleteCompletion,
+                            L"Translation provider refused the request.");
                     }
                     if (part.value("type", std::string{}) == "output_text" &&
                         part.contains("text") && part["text"].is_string()) {
@@ -457,31 +567,29 @@ TranslationResult ParseResponse(
                 }
             }
             if (textItems != 1) {
-                return Error(ErrorCode::SchemaMismatch,
-                    L"Responses API must contain exactly one output_text item.",
-                    request.requestId);
+                return fail(ErrorCode::SchemaMismatch,
+                    L"Responses API must contain exactly one output_text item.");
             }
             responseModel = outer.contains("model") && outer["model"].is_string()
                 ? Utf8ToWide(outer["model"].get<std::string>()) : L"";
         } else if (adapterKind == TranslationAdapterKind::GeminiGenerateContent) {
             if (!outer.contains("candidates") || !outer["candidates"].is_array() ||
                 outer["candidates"].size() != 1) {
-                return Error(ErrorCode::SchemaMismatch,
-                    L"Gemini response must contain exactly one candidate.",
-                    request.requestId);
+                return fail(ErrorCode::SchemaMismatch,
+                    L"Gemini response must contain exactly one candidate.");
             }
             const auto& candidate = outer["candidates"][0];
             const std::string finish = candidate.value("finishReason", std::string{});
             if (finish == "MAX_TOKENS") {
-                return Error(ErrorCode::OutputTruncated,
-                    L"Gemini output was truncated.", request.requestId);
+                return fail(ErrorCode::OutputTruncated,
+                    L"Gemini output was truncated.");
             }
             if (finish != "STOP" || !candidate.contains("content") ||
                 !candidate["content"].is_object() ||
                 !candidate["content"].contains("parts") ||
                 !candidate["content"]["parts"].is_array()) {
-                return Error(ErrorCode::IncompleteCompletion,
-                    L"Gemini completion is incomplete.", request.requestId);
+                return fail(ErrorCode::IncompleteCompletion,
+                    L"Gemini completion is incomplete.");
             }
             for (const auto& part : candidate["content"]["parts"]) {
                 if (part.is_object() && !part.value("thought", false) &&
@@ -497,13 +605,13 @@ TranslationResult ParseResponse(
                 !outer["message"].is_object() ||
                 !outer["message"].contains("content") ||
                 !outer["message"]["content"].is_string()) {
-                return Error(ErrorCode::IncompleteCompletion,
-                    L"Ollama completion is incomplete.", request.requestId);
+                return fail(ErrorCode::IncompleteCompletion,
+                    L"Ollama completion is incomplete.");
             }
             const std::string reason = outer.value("done_reason", std::string{});
             if (reason == "length") {
-                return Error(ErrorCode::OutputTruncated,
-                    L"Ollama output was truncated.", request.requestId);
+                return fail(ErrorCode::OutputTruncated,
+                    L"Ollama output was truncated.");
             }
             content = outer["message"]["content"].get<std::string>();
             responseModel = outer.contains("model") && outer["model"].is_string()
@@ -511,46 +619,44 @@ TranslationResult ParseResponse(
         } else {
             if (!outer.contains("choices") || !outer["choices"].is_array() ||
                 outer["choices"].size() != 1) {
-                return Error(ErrorCode::SchemaMismatch,
-                    L"Translation provider response must contain exactly one choice.",
-                    request.requestId);
+                return fail(ErrorCode::SchemaMismatch,
+                    L"Translation provider response must contain exactly one choice.");
             }
             const auto& choice = outer["choices"][0];
             if (!choice.is_object() || !choice.contains("message") ||
                 !choice["message"].is_object() ||
                 !choice.contains("finish_reason") ||
                 !choice["finish_reason"].is_string()) {
-                return Error(ErrorCode::SchemaMismatch,
-                    L"Translation provider message schema is invalid.", request.requestId);
+                return fail(ErrorCode::SchemaMismatch,
+                    L"Translation provider message schema is invalid.");
             }
             const std::string finish = choice["finish_reason"].get<std::string>();
             if (finish == "length") {
-                return Error(ErrorCode::OutputTruncated,
-                    L"Translation provider output was truncated.", request.requestId);
+                return fail(ErrorCode::OutputTruncated,
+                    L"Translation provider output was truncated.");
             }
             if (finish != "stop") {
-                return Error(ErrorCode::IncompleteCompletion,
-                    L"Translation provider completion is incomplete.", request.requestId);
+                return fail(ErrorCode::IncompleteCompletion,
+                    L"Translation provider completion is incomplete.");
             }
             const auto& message = choice["message"];
             if (!message.contains("content") || !message["content"].is_string()) {
-                return Error(ErrorCode::SchemaMismatch,
-                    L"Translation provider content schema is invalid.", request.requestId);
+                return fail(ErrorCode::SchemaMismatch,
+                    L"Translation provider content schema is invalid.");
             }
             content = message["content"].get<std::string>();
             responseModel = outer.contains("model") && outer["model"].is_string()
                 ? Utf8ToWide(outer["model"].get<std::string>()) : L"";
         }
         if (content.empty()) {
-            return Error(ErrorCode::EmptyContent,
-                L"Translation provider returned empty content.", request.requestId);
+            return fail(ErrorCode::EmptyContent,
+                L"Translation provider returned empty content.");
         }
         json payload;
         if (outputMode == LlmOutputMode::PlainTextSingle) {
             if (request.segments.size() != 1) {
-                return Error(ErrorCode::ContentContract,
-                    L"Plain-text translation requires exactly one segment.",
-                    request.requestId);
+                return fail(ErrorCode::ContentContract,
+                    L"Plain-text translation requires exactly one segment.");
             }
             payload = {
                 {"targetLanguage", WideToUtf8(request.targetLanguage)},
@@ -568,29 +674,27 @@ TranslationResult ParseResponse(
         if (!payload.is_object() || !payload.contains("targetLanguage") ||
             !payload["targetLanguage"].is_string() ||
             !translationArrayKey) {
-            return Error(ErrorCode::SchemaMismatch,
-                L"Translation response JSON is missing targetLanguage or translations[].",
-                request.requestId);
+            return fail(ErrorCode::SchemaMismatch,
+                L"Translation response JSON is missing targetLanguage or translations[].");
         }
         if (Utf8ToWide(payload["targetLanguage"].get<std::string>()) !=
             request.targetLanguage) {
-            return Error(ErrorCode::ContentContract,
-                L"Translation target language does not match the request.",
-                request.requestId);
+            return fail(ErrorCode::ContentContract,
+                L"Translation target language does not match the request.");
         }
         std::unordered_map<std::wstring, std::wstring> byId;
         for (const auto& item : payload[translationArrayKey]) {
             if (!item.is_object() || !item.contains("id") ||
                 !item["id"].is_string() || !item.contains("text") ||
                 !item["text"].is_string()) {
-                return Error(ErrorCode::SchemaMismatch,
-                    L"Translation segment schema is invalid.", request.requestId);
+                return fail(ErrorCode::SchemaMismatch,
+                    L"Translation segment schema is invalid.");
             }
             const std::wstring id = Utf8ToWide(item["id"].get<std::string>());
             if (id.empty() || !byId.emplace(
                     id, Utf8ToWide(item["text"].get<std::string>())).second) {
-                return Error(ErrorCode::ContentContract,
-                    L"Translation segment ids are invalid.", request.requestId);
+                return fail(ErrorCode::ContentContract,
+                    L"Translation segment ids are invalid.");
             }
         }
         TranslationResult result;
@@ -604,27 +708,36 @@ TranslationResult ParseResponse(
             : L"und";
         for (const auto& source : request.segments) {
             const auto found = byId.find(source.id);
-            if (found == byId.end() || (!source.text.empty() && found->second.empty())) {
-                return Error(ErrorCode::ContentContract,
-                    L"Translation segment count or ids do not match OCR input.",
-                    request.requestId);
+            // Two distinct failures used to share one branch and one message.
+            // Splitting them keeps the id diff meaningful: with an empty
+            // translation the id sets match exactly, so a diff would have read
+            // "missing [], unexpected []" while still claiming a mismatch.
+            if (found == byId.end()) {
+                return fail(ErrorCode::ContentContract,
+                    L"Translation segment count or ids do not match OCR input. " +
+                        SegmentIdDiffHint(request, byId));
+            }
+            if (!source.text.empty() && found->second.empty()) {
+                return fail(ErrorCode::ContentContract,
+                    L"Segment '" + source.id +
+                        L"' returned empty translation text.");
             }
             result.translations.push_back({source.id, found->second});
             result.inputCharacters += source.text.size();
             result.outputCharacters += found->second.size();
         }
         if (byId.size() != request.segments.size()) {
-            return Error(ErrorCode::ContentContract,
-                L"Translation response contains unexpected segment ids.",
-                request.requestId);
+            return fail(ErrorCode::ContentContract,
+                L"Translation response contains unexpected segment ids. " +
+                    SegmentIdDiffHint(request, byId));
         }
         return result;
     } catch (const json::type_error&) {
-        return Error(ErrorCode::SchemaMismatch,
-            L"Translation provider response schema is invalid.", request.requestId);
+        return fail(ErrorCode::SchemaMismatch,
+            L"Translation provider response schema is invalid.");
     } catch (const json::exception&) {
-        return Error(ErrorCode::InvalidJson,
-            L"Translation provider returned invalid JSON.", request.requestId);
+        return fail(ErrorCode::InvalidJson,
+            L"Translation provider returned invalid JSON.");
     }
 }
 
@@ -648,6 +761,14 @@ std::wstring OpenAICompatibleTranslationEngine::Name() const {
 std::shared_ptr<AsyncHttpRequest> OpenAICompatibleTranslationEngine::Translate(
     const TranslationRequest& request,
     Callback callback) {
+    return IssueTranslate(request, std::move(callback), nullptr);
+}
+
+std::shared_ptr<AsyncHttpRequest>
+OpenAICompatibleTranslationEngine::IssueTranslate(
+    const TranslationRequest& request,
+    Callback callback,
+    const TranslationBudget* budgetOverride) {
     const auto* profile = FindActiveTranslationProvider(settings_);
     if (!profile) {
         InvokeTranslationCallbackSafely(callback, Error(
@@ -725,6 +846,13 @@ std::shared_ptr<AsyncHttpRequest> OpenAICompatibleTranslationEngine::Translate(
         L"Content-Type: application/json",
         L"Accept: application/json",
     };
+    // D: the caller-supplied X-Trace-Id is deliberately NOT sent. Measured
+    // 2026-09-15 against the live API: SiliconFlow echoes that header back in
+    // x-siliconcloud-trace-id, which is also the header carrying its own
+    // troubleshooting id -- sending ours replaced the provider id with a local
+    // batch id the provider cannot look up. Without the header the response
+    // carries the provider id ("ti_..."), and the local batch id is recorded in
+    // the translation diagnostics log instead.
     if (profile->authMode == TranslationAuthMode::BearerApiKey) {
         headers.insert(headers.begin(), L"Authorization: Bearer " + key);
     } else if (profile->authMode == TranslationAuthMode::ApiKey) {
@@ -741,9 +869,17 @@ std::shared_ptr<AsyncHttpRequest> OpenAICompatibleTranslationEngine::Translate(
         return {};
     }
     std::string body = requestBody.dump();
+    // Timeout budget. TestConnection passes the light probe budget explicitly;
+    // a real translation derives it from the active profile so the reasoning
+    // tier controls the receive timeout.
+    const TranslationBudget budget = budgetOverride
+        ? *budgetOverride : ResolveTranslationBudget(*profile);
     HttpRequestOptions options;
-    options.timeoutMs = kTimeoutMs;
-    options.deadlineMs = kDeadlineMs;
+    options.timeoutMs = kConnectTimeoutMs;
+    // Must be assigned explicitly: AsyncHttpTransport falls back to timeoutMs
+    // when this is 0, which would silently restore the 15 s generation cap.
+    options.receiveTimeoutMs = budget.attemptTimeoutMs;
+    options.deadlineMs = budget.attemptTimeoutMs + kWatchdogSlackMs;
     options.maxResponseBytes = kMaxResponseBytes;
     options.allowRedirects = false;
     const TranslationAdapterKind adapterKind = profile->adapterKind;
@@ -773,7 +909,10 @@ OpenAICompatibleTranslationEngine::TestConnection(
     request.sourceLanguage = L"en";
     request.targetLanguage = L"zh-Hans";
     request.segments.push_back({L"test", L"Hello"});
-    return Translate(request, std::move(callback));
+    // Diagnostics, not translation: a probe must not inherit a minutes-long
+    // generation budget from the reasoning tier.
+    return IssueTranslate(
+        request, std::move(callback), &kConnectionProbeBudget);
 }
 
 } // namespace translation

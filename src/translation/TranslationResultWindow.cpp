@@ -1592,6 +1592,9 @@ void TranslationResultWindow::StopAutomaticResizeAnimation(bool finish) {
 
 void TranslationResultWindow::SetStage(const std::wstring& stage) {
     if (!stageLabel_) return;
+    // Remember the pure stage text: the translation elapsed timer derives its
+    // rolling label from this so seconds never accumulate on themselves.
+    lastStageText_ = stage;
     SetWindowTextW(stageLabel_, stage.c_str());
     const bool showStage = !IsIdleStageText(stage);
     SetControlVisible(stageLabel_, showStage);
@@ -1623,10 +1626,47 @@ void TranslationResultWindow::EndOcrElapsed() {
 void TranslationResultWindow::UpdateOcrElapsedStage() {
     if (!showOcrElapsed_ || !stageLabel_) return;
     const double elapsed = static_cast<double>(GetTickCount64() - ocrStartedTick_) / 1000.0;
-    const std::wstring suffix = WideFormatSeconds1(elapsed);
-    const std::wstring stage = (S::IsChinese()
-        ? L"\u6b63\u5728\u8bc6\u522b\u6587\u5b57\u2026" : L"Recognizing text... ") + suffix + L"s";
-    SetWindowTextW(stageLabel_, stage.c_str());
+    // WideFormatSeconds1 already carries the "s" unit, so appending another one
+    // rendered "3.2ss". The spacing also matches the translation-phase label.
+    const std::wstring prefix = S::IsChinese()
+        ? L"\u6b63\u5728\u8bc6\u522b\u6587\u5b57\u2026" : L"Recognizing text...";
+    SetWindowTextW(stageLabel_,
+        (prefix + L" " + WideFormatSeconds1(elapsed)).c_str());
+}
+
+void TranslationResultWindow::BeginTranslationElapsed() {
+    if (!window_ || !IsWindow(window_)) return;
+    translationElapsedRunning_ = true;
+    translationElapsedTick_ = GetTickCount64();
+    SetTimer(window_, kTranslationElapsedTimer, 250, nullptr);
+    UpdateTranslationElapsedStage();
+}
+
+void TranslationResultWindow::EndTranslationElapsed() {
+    // Idempotent: every finish path may call this, and KillTimer is harmless
+    // when no timer is pending.
+    translationElapsedRunning_ = false;
+    translationElapsedTick_ = 0;
+    if (window_ && IsWindow(window_)) {
+        KillTimer(window_, kTranslationElapsedTimer);
+    }
+}
+
+void TranslationResultWindow::UpdateTranslationElapsedStage() {
+    if (!translationElapsedRunning_ || !stageLabel_) return;
+    // Never decorate a terminal stage. KillTimer does not remove WM_TIMER
+    // messages that are already posted, so a tick can still be dispatched after
+    // the counter was stopped and would otherwise turn "Ready" into
+    // "Ready 0.3s".
+    if (IsIdleStageText(lastStageText_)) return;
+    // Appends the running seconds to the current stage text, so a retry can
+    // change the wording ("请求超时，正在重试…") while the counter keeps
+    // counting up instead of restarting. WideFormatSeconds1 already carries the
+    // "s" unit.
+    const double elapsed =
+        static_cast<double>(GetTickCount64() - translationElapsedTick_) / 1000.0;
+    SetWindowTextW(stageLabel_,
+        (lastStageText_ + L" " + WideFormatSeconds1(elapsed)).c_str());
 }
 
 void TranslationResultWindow::SetOcrEngineLabel(const std::wstring& label) {
@@ -1726,10 +1766,18 @@ void TranslationResultWindow::ClearTranslationElapsed() {
 }
 
 void TranslationResultWindow::SetBusy(bool busy) {
+    if (!busy) {
+        // Stop both counters before the state-equality early return. A busy flag
+        // that is already clear must not leave a timer running: it would keep
+        // repainting the stage label of an already-finished workflow. The
+        // translation counter also has to stop before any terminal stage is
+        // shown, so "Ready"/error text is never overwritten by a later tick.
+        EndOcrElapsed();
+        EndTranslationElapsed();
+    }
     if (busy_ == busy) return;
     busy_ = busy;
     if (!busy) {
-        EndOcrElapsed();
         if (translationPreview_ && translationPreview_->IsReady() &&
             !translationPreviewFailed_ && !translationMarkdownText_.empty()) {
             translationPreviewMetricsValid_ = false;
@@ -3155,6 +3203,10 @@ LRESULT TranslationResultWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wPara
         }
         if (wParam == kOcrElapsedTimer) {
             UpdateOcrElapsedStage();
+            return 0;
+        }
+        if (wParam == kTranslationElapsedTimer) {
+            UpdateTranslationElapsedStage();
             return 0;
         }
         if (wParam == kStructuredSelectionTimer) {

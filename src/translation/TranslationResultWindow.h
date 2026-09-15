@@ -76,6 +76,11 @@ public:
     void ClearTranslationElapsed();
     void BeginOcrElapsed();
     void EndOcrElapsed();
+    // Translation-phase elapsed feedback. The running seconds are appended to
+    // the stage label (the OCR pattern) because SetStage() hides the dedicated
+    // elapsed label whenever a stage is visible, so the two cannot coexist.
+    void BeginTranslationElapsed();
+    void EndTranslationElapsed();
     void SetBusy(bool busy);
     void SetAlwaysOnTop(bool alwaysOnTop);
     void SetShowWindowBorder(bool show);
@@ -170,6 +175,15 @@ private:
     bool showTranslationElapsed_ = false;
     bool showOcrElapsed_ = false;
     ULONGLONG ocrStartedTick_ = 0;
+    // Whether the translation-phase counter is running, and its start tick.
+    // The tick is set once per translation (BeginTranslation) and deliberately
+    // NOT restarted by a retry, so the user sees how long the task has waited
+    // rather than a counter that jumps back to zero.
+    bool translationElapsedRunning_ = false;
+    ULONGLONG translationElapsedTick_ = 0;
+    // Stage text without the appended seconds. The timer derives from this so
+    // repeated updates cannot accumulate "12.3s 13.1s".
+    std::wstring lastStageText_;
     bool busy_ = false;
     bool alwaysOnTop_ = false;
     bool showWindowBorder_ = false;
@@ -261,6 +275,9 @@ private:
     static constexpr UINT_PTR kOcrElapsedTimer = 1;
     static constexpr UINT_PTR kResizeAnimationTimer = 2;
     static constexpr UINT_PTR kStructuredSelectionTimer = 3;
+    // 4: 1-3 are taken by the timers above; a duplicate id would compete for
+    // the same WM_TIMER dispatch.
+    static constexpr UINT_PTR kTranslationElapsedTimer = 4;
     static constexpr UINT kAsyncErrorMessage = WM_APP + 0x2A;
 
     static const wchar_t* ClassName();
@@ -308,6 +325,7 @@ private:
     void FocusRelative(HWND current, bool previous);
     void HandleEscape();
     void UpdateOcrElapsedStage();
+    void UpdateTranslationElapsedStage();
     void SetSourceDisplayMode(SourceDisplayMode mode, bool focusEdit = false);
     bool ResolveDocumentEditorBeforeSourceMode();
     void UpdateSourceModeButton();

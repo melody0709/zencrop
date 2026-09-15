@@ -163,19 +163,50 @@ LlmModelPolicy ResolveLlmModelPolicy(
             policy.outputMode = LlmOutputMode::PlainTextSingle;
             policy.instructionChannel = InstructionChannel::UserOnly;
             policy.maxSegmentsPerRequest = 1;
-        } else {
+        } else if (model == L"Qwen/Qwen3.5-9B") {
+            // json_object only: this model's json_schema support has not been
+            // measured, so it must not be dragged into the strict path.
             policy.outputMode = LlmOutputMode::JsonObject;
-            if (model == L"Qwen/Qwen3.5-9B") {
-                policy.reasoningWireFormat = ReasoningWireFormat::SiliconFlowThinking;
-            } else if (model == L"deepseek-ai/DeepSeek-V4-Flash") {
-                policy.reasoningModes = {
-                    TranslationReasoningMode::Off,
-                    TranslationReasoningMode::High,
-                };
-                policy.reasoningWireFormat = ReasoningWireFormat::DeepSeekThinking;
-            }
+            policy.reasoningWireFormat = ReasoningWireFormat::SiliconFlowThinking;
+        } else if (model == L"deepseek-ai/DeepSeek-V4-Flash") {
+            // The chat-completions branch never sent a response schema, so the
+            // id contract rested entirely on prompt wording: the provider only
+            // guaranteed "valid JSON", not the key set, array length, or id
+            // values. The existing schema already carries an id enum and exact
+            // min/maxItems; enabling it here is what removes that whole failure
+            // class. Measured 2026-09-15 (48+ live requests plus adversarial
+            // probes): this model accepts strict json_schema and the provider
+            // enforces both the array length and the id enum at decode time.
+            // Guaranteed: length, id membership, shape. NOT guaranteed: each id
+            // exactly once, or non-empty text -- the parser must keep checking
+            // those, and that is what the content retry is for.
+            policy.outputMode = LlmOutputMode::NativeJsonSchema;
+            policy.reasoningModes = {
+                TranslationReasoningMode::Off,
+                TranslationReasoningMode::High,
+            };
+            // Measured 2026-09-15 against the live API with this app's exact
+            // request shape: leaving the sampler at the provider default made the
+            // model answer with an empty "text" for the tail of the translations
+            // array in 6 of 34 runs (failing segments were always the last ones),
+            // while temperature=0.2 produced none in 32 runs. A low value is also
+            // what a faithful translation wants, and the user can still override
+            // it per profile in Settings.
+            policy.allowsTemperature = true;
+            policy.defaultTemperature = 0.2;
+            // SiliconFlow documents top-level enable_thinking/reasoning_effort.
+            // The nested thinking object used here until 2026-09-15 is the
+            // DeepSeek API dialect: it happens to work through the provider's
+            // compatibility layer (measured: Off -> 0/0 reasoning tokens) but is
+            // absent from the parameter table, so it could silently stop working.
+            policy.reasoningWireFormat = ReasoningWireFormat::SiliconFlowThinking;
+        } else {
+            // Any other model on this preset keeps the older JSON mode.
+            policy.outputMode = LlmOutputMode::JsonObject;
         }
-        policy.revision = 3;
+        // Bumped because the capability combination materially changed again
+        // (temperature default/support for one model).
+        policy.revision = 5;
         return policy;
     }
 

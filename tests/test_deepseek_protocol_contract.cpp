@@ -351,10 +351,18 @@ int TestRequestShapeAndSuccess() {
     if (!result.success || result.translations.size() != 1 ||
         result.translations[0].text != L"你好") return 1;
     if (transport->records.size() != 1 || !transport->records[0].post) return 2;
+    // Connect-side timeout stays short so DNS/connect failures keep failing
+    // fast, while the receive timeout carries the resolved translation budget
+    // (Off tier: 60 s) and the transport watchdog is only allowed 5 s of slack
+    // beyond it. The two must be different values, otherwise a long generation
+    // would silently be capped by the connect timeout again.
+    const HttpRequestOptions& options = transport->records[0].options;
+    if (options.timeoutMs != 15000 ||
+        options.receiveTimeoutMs != 60000 ||
+        options.deadlineMs != 65000 ||
+        options.receiveTimeoutMs == options.timeoutMs) return 3;
     if (transport->records[0].url != L"https://api.deepseek.com/chat/completions" ||
         transport->records[0].options.allowRedirects ||
-        transport->records[0].options.deadlineMs <= 0 ||
-        transport->records[0].options.deadlineMs > 60000 ||
         transport->records[0].options.maxResponseBytes != 2097152) return 3;
     bool bearer = false;
     for (const auto& header : transport->records[0].headers) {
@@ -372,9 +380,13 @@ int TestRequestShapeAndSuccess() {
     return 0;
 }
 
-int TestEmptyContentRetry() {
+// The engine is no longer a retry owner: the coordinator retries content-class
+// failures exactly once (see the automatic retry contract in the translation
+// suite). The engine must therefore surface EmptyContent after exactly one
+// request, even though a second response is queued and would have been consumed
+// by the internal retry that used to live here.
+int TestEmptyContentIsNotRetriedByEngine() {
     auto transport = std::make_shared<FakeTransport>();
-    transport->postDelayMs = 25;
     HttpResponse empty = TranslationResponse();
     json outer = json::parse(empty.body);
     outer["choices"][0]["message"]["content"] = "";
@@ -384,10 +396,8 @@ int TestEmptyContentRetry() {
     DeepSeekTranslationEngine engine(
         TestSettings(), transport, std::make_shared<FakeCredentialProvider>());
     const auto result = RunTranslate(engine, TestRequest());
-    if (!result.success || transport->records.size() != 2) return 1;
-    if (transport->records[1].options.deadlineMs <= 0 ||
-        transport->records[1].options.deadlineMs >=
-            transport->records[0].options.deadlineMs) return 2;
+    if (result.success || result.code != ErrorCode::EmptyContent) return 1;
+    if (transport->records.size() != 1) return 2;
     return 0;
 }
 
@@ -399,23 +409,6 @@ int TestLegitimateUnchangedContent() {
     const auto result = RunTranslate(engine, TestRequest());
     return result.success && result.translations.size() == 1 &&
         result.translations[0].text == L"Hello" ? 0 : 1;
-}
-
-int TestEmptyContentFailsAfterOneRetry() {
-    auto transport = std::make_shared<FakeTransport>();
-    for (int i = 0; i < 2; ++i) {
-        HttpResponse empty = TranslationResponse();
-        json outer = json::parse(empty.body);
-        outer["choices"][0]["message"]["content"] = "";
-        empty.body = outer.dump();
-        transport->postResponses.push_back(std::move(empty));
-    }
-    DeepSeekTranslationEngine engine(
-        TestSettings(), transport, std::make_shared<FakeCredentialProvider>());
-    const auto result = RunTranslate(engine, TestRequest());
-    if (result.success || result.code != ErrorCode::EmptyContent ||
-        transport->records.size() != 2) return 1;
-    return 0;
 }
 
 int TestStrictSchema() {
@@ -605,8 +598,12 @@ int TestConnectionUsesSmallProbe() {
     operation->Join();
     if (!result.success || transport->records.size() != 2) return 3;
     const auto& probe = transport->records[1];
-    if (probe.options.deadlineMs <= 0 ||
-        probe.options.deadlineMs > transport->records[0].options.deadlineMs) return 5;
+    // The probe is a diagnostics action, not a translation: it keeps its own
+    // light budget (15 s receive / 20 s total) and must never inherit the
+    // translation budget of the active reasoning tier (60 s / 120 s receive).
+    if (transport->records[0].options.deadlineMs != 20000 ||
+        probe.options.deadlineMs != 20000 ||
+        probe.options.receiveTimeoutMs != 15000) return 5;
     const json body = json::parse(probe.body);
     if (body.value("max_tokens", 0) != 64) return 4;
     return 0;
@@ -942,8 +939,14 @@ int TestWinHttpCompletionRaces() {
     return 0;
 }
 
-int TestCancelDuringEmptyContentFollowUp() {
-    struct FollowUpTransport final : IAsyncHttpTransport {
+// TestConnection is the remaining consumer of the engine's follow-up chain: a
+// GET /models whose callback issues a probe translation and binds it to the GET
+// operation. Cancelling the returned (root) operation must stop the in-flight
+// probe as well. The engine's own content retry used to exercise that chain
+// through an empty-content follow-up; this keeps the cancel coverage on the
+// chain that still exists.
+int TestCancelDuringConnectionProbeFollowUp() {
+    struct ProbeFollowUpTransport final : IAsyncHttpTransport {
         std::atomic<int> postCount{0};
         std::mutex mutex;
         std::condition_variable condition;
@@ -951,25 +954,21 @@ int TestCancelDuringEmptyContentFollowUp() {
         std::shared_ptr<AsyncHttpRequest> StartGet(
             const std::wstring&, const std::vector<std::wstring>&,
             const HttpRequestOptions&, AsyncHttpRequest::Callback callback) override {
+            HttpResponse models;
+            models.statusCode = 200;
+            models.contentType = L"application/json";
+            models.body = R"({"data":[{"id":"deepseek-v4-flash"}]})";
             return AsyncHttpRequest::StartTask(
-                [](const std::atomic<bool>&) { return HttpResponse{}; }, std::move(callback));
+                [models = std::move(models)](const std::atomic<bool>&) mutable {
+                    return std::move(models);
+                }, std::move(callback));
         }
 
         std::shared_ptr<AsyncHttpRequest> StartPost(
             const std::wstring&, const std::string&, const std::vector<std::wstring>&,
             const HttpRequestOptions&, AsyncHttpRequest::Callback callback) override {
-            const int index = postCount.fetch_add(1);
+            postCount.fetch_add(1);
             condition.notify_all();
-            if (index == 0) {
-                HttpResponse empty = TranslationResponse();
-                json outer = json::parse(empty.body);
-                outer["choices"][0]["message"]["content"] = "";
-                empty.body = outer.dump();
-                return AsyncHttpRequest::StartTask(
-                    [empty = std::move(empty)](const std::atomic<bool>&) mutable {
-                        return std::move(empty);
-                    }, std::move(callback));
-            }
             return AsyncHttpRequest::StartTask(
                 [](const std::atomic<bool>& cancelled) {
                     while (!cancelled.load()) {
@@ -980,14 +979,14 @@ int TestCancelDuringEmptyContentFollowUp() {
         }
     };
 
-    auto transport = std::make_shared<FollowUpTransport>();
+    auto transport = std::make_shared<ProbeFollowUpTransport>();
     DeepSeekTranslationEngine engine(
         TestSettings(), transport, std::make_shared<FakeCredentialProvider>());
     std::mutex mutex;
     std::condition_variable condition;
     int callbacks = 0;
     TranslationResult result;
-    auto operation = engine.Translate(TestRequest(), [&](TranslationResult value) {
+    auto operation = engine.TestConnection([&](TranslationResult value) {
         {
             std::lock_guard<std::mutex> lock(mutex);
             ++callbacks;
@@ -999,7 +998,7 @@ int TestCancelDuringEmptyContentFollowUp() {
     {
         std::unique_lock<std::mutex> lock(transport->mutex);
         if (!transport->condition.wait_for(lock, std::chrono::seconds(2), [&] {
-                return transport->postCount.load() >= 2;
+                return transport->postCount.load() >= 1;
             })) {
             operation->Cancel();
             operation->Join();
@@ -1075,9 +1074,8 @@ int main() {
     };
     const TestCase tests[] = {
         {"request shape and success", TestRequestShapeAndSuccess},
-        {"empty content retry", TestEmptyContentRetry},
+        {"empty content is not retried by engine", TestEmptyContentIsNotRetriedByEngine},
         {"legitimate unchanged content", TestLegitimateUnchangedContent},
-        {"empty content retry limit", TestEmptyContentFailsAfterOneRetry},
         {"strict schema", TestStrictSchema},
         {"segment order", TestSegmentOrderContract},
         {"detected language normalization", TestDetectedLanguageNormalization},
@@ -1094,7 +1092,7 @@ int main() {
         {"WinHTTP body limit and disconnect", TestWinHttpBodyLimitAndDisconnect},
         {"WinHTTP cancel and shutdown", TestWinHttpCancelAndShutdown},
         {"WinHTTP completion races", TestWinHttpCompletionRaces},
-        {"cancel during empty-content follow-up", TestCancelDuringEmptyContentFollowUp},
+        {"cancel during connection probe follow-up", TestCancelDuringConnectionProbeFollowUp},
         {"Windows credential store", TestRealWindowsCredentialStore},
     };
     for (const auto& test : tests) {

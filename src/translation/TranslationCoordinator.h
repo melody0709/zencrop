@@ -144,6 +144,45 @@ private:
     std::unordered_set<std::wstring> completedBatchRequestIds_;
     size_t nextSegmentIndex_ = 0;
     ULONGLONG translationStartedTick_ = 0;
+    // ---- Untranslatable segments (kept verbatim, never sent) ----
+    // One flag per request_.segments entry: 1 when the whole segment is a URL,
+    // a path, a hash and so on, i.e. content with nothing to translate. Such
+    // segments stay inside the batch range but are excluded from the request,
+    // because asking a model for them only invites an empty "text" (a contract
+    // failure) or a wasted retry. Filled by the plain-text entry points only;
+    // the structured selection paths reset it so their marker protocol and leaf
+    // accounting stay untouched.
+    std::vector<char> untranslatableSegments_;
+    // ---- Bounded automatic retry (B1) ----
+    // The coordinator is the single retry owner. Retries are issued from the UI
+    // thread inside HandleTranslationDone's failure branch: translationOperation_
+    // is only ever written there, and the engine callback runs on a worker
+    // thread, so re-issuing from the callback would be a data race.
+    struct IssuedBatch {
+        // Copy of the batch exactly as it was sent. Retrying reuses this object
+        // instead of re-slicing, so requestId/segments can never diverge from
+        // the original request even if batching logic changes later.
+        TranslationRequest request;
+        uint64_t generation = 0;
+        // Global segment range this batch covers: [beginIndex, endIndex). The
+        // range also spans untranslatable segments, which is why the assembly
+        // cannot be derived from the number of returned translations alone.
+        size_t beginIndex = 0;
+        size_t endIndex = 0;
+    };
+    IssuedBatch lastIssuedBatch_;
+    // Attempt counters are per batch: transport-class and content-class retries
+    // have independent quotas so a content failure cannot consume the transport
+    // allowance (and vice versa). Reset in BeginTranslation and after every
+    // accepted batch.
+    int translationAttempt_ = 0;
+    int translationContentAttempt_ = 0;
+    // Start of the current batch's total budget. Paired with
+    // ResolveTranslationBudget()'s requestDeadlineMs through
+    // RemainingTranslationBudgetMs(). The budget is per batch by design.
+    ULONGLONG translationBudgetStartTick_ = 0;
+    // Number of batches issued for this translation (retries not included).
+    size_t translationBatchCount_ = 0;
     enum class StructuredTranslationMode {
         None,
         LlmBlocks,
@@ -170,6 +209,33 @@ private:
     void ShowError(const std::wstring& message);
     void BeginTranslation(uint64_t generation);
     void BeginNextTranslationBatch(uint64_t generation);
+    // Classifies the current request_.segments. Called by the plain-text entry
+    // points after segmentation; the structured paths clear the flags instead.
+    void RefreshUntranslatableSegments();
+    bool IsUntranslatableIndex(size_t index) const;
+    // Appends the source text (and its preserved breaks) of the untranslatable
+    // segments inside [begin, end) to translatedBuffer_, and records them in
+    // completedTranslations_ so id-count contracts of downstream consumers stay
+    // satisfied.
+    void AppendUntranslatableRange(size_t begin, size_t end);
+    // Shared terminal path for a fully assembled plain translation.
+    void FinalizePlainTranslation(uint64_t generation);
+    // Appends one diagnostics line, but only when this translation needed a
+    // retry or failed: a clean translation has nothing to diagnose.
+    void RecordTranslationDiagnostic(const wchar_t* outcome, bool failed,
+                                     ErrorCode code, const std::wstring& error,
+                                     const std::wstring& batchId);
+    // Sends one already-sliced batch. Deliberately does NOT touch the stage
+    // label: the caller owns the wording, otherwise a retry's "request timed
+    // out, retrying..." would be overwritten by "translating..." within the same
+    // UI-thread turn and never become visible.
+    void IssueTranslationBatch(TranslationRequest batch);
+    // Remaining duration of the current batch's total budget, or 0 when none.
+    long long RemainingTranslationBudgetMs() const;
+    // Decides and issues a bounded retry for a failed batch. Returns true when
+    // a retry was started (the caller must then stop processing the failure).
+    bool TryRetryFailedTranslation(
+        const TranslationResult& result, uint64_t generation);
     void OnWindowCommand(TranslationResultWindow::Command command);
     void StartTranslationForSource(const std::wstring& source,
                                    const std::wstring& sourceLanguage,

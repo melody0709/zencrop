@@ -2,6 +2,7 @@
 
 #include "TranslationEngine.h"
 #include "AsyncHttpTransport.h"
+#include "TranslationBudget.h"
 #include "TranslationCredentialStore.h"
 
 #include "core/Settings.h"
@@ -36,7 +37,8 @@ private:
         Callback callback,
         int attempt,
         int maxTokens,
-        const std::shared_ptr<RetryState>& retryState);
+        const std::shared_ptr<RetryState>& retryState,
+        const TranslationBudget& budget);
     static void BindRetryOperation(
         const std::shared_ptr<RetryState>& retryState,
         const std::shared_ptr<AsyncHttpRequest>& operation,

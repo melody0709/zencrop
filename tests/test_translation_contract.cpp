@@ -13,6 +13,7 @@
 #include "translation/TranslationEngineFactory.h"
 #include "translation/DeepSeekTranslationEngine.h"
 #include "translation/OpenAICompatibleTranslationEngine.h"
+#include "translation/TranslationUntranslatable.h"
 #include "translation/MachineTranslationEngine.h"
 #include "ocr/ui/dashboard/DashboardTranslationCache.h"
 #include "core/TranslationSettingsCodec.h"
@@ -510,6 +511,21 @@ public:
     std::atomic<bool> duplicateNextSuccess{false};
     std::atomic<bool> synchronousNext{false};
     std::atomic<bool> corruptStructuredMarkersNext{false};
+    // Failure scripting. failNext keeps its historical meaning (one failure,
+    // code from failCode) so the existing terminal-failure scenarios stay
+    // readable; failCount injects N consecutive failures of failCode; and
+    // SetFailureSequence scripts the outcome of each call in order, with
+    // ErrorCode::None meaning "this call succeeds". The sequence takes
+    // precedence over failCount/failNext.
+    std::atomic<translation::ErrorCode> failCode{
+        translation::ErrorCode::Network};
+    std::atomic<int> failCount{0};
+
+    void SetFailureSequence(std::vector<translation::ErrorCode> sequence) {
+        std::lock_guard<std::mutex> lock(requestMutex_);
+        failureSequence_ = std::move(sequence);
+        nextFailure_ = 0;
+    }
 
     std::wstring LastTargetLanguage() const {
         std::lock_guard<std::mutex> lock(requestMutex_);
@@ -533,6 +549,23 @@ public:
 
     void SucceedSynchronouslyNext() {
         synchronousNext.store(true);
+    }
+
+    // Intermediate-state hooks for the retry contract. HoldNextSuccessfulAttempt
+    // delays the next injected failure by failureDelayMs (so the waiting-time
+    // counter has visibly advanced before the retry starts) and then keeps the
+    // attempt that follows parked until ReleaseHeldAttempt() is called. That is
+    // what lets a test sample the stage label while a retry is in flight.
+    void HoldNextSuccessfulAttempt(int failureDelayMs) {
+        std::lock_guard<std::mutex> lock(requestMutex_);
+        failureDelayMs_ = failureDelayMs;
+        holdNextSuccess_ = true;
+    }
+
+    void ReleaseHeldAttempt() {
+        std::lock_guard<std::mutex> lock(requestMutex_);
+        holdNextSuccess_ = false;
+        holdCondition_.notify_all();
     }
 
     std::vector<translation::TranslationSegment> LastRequestSegments() const {
@@ -560,9 +593,24 @@ public:
                     detectedLanguageSequence_[nextDetectedLanguage_++];
             }
         }
-        result.success = !failNext.exchange(false);
+        translation::ErrorCode injectedFailure = translation::ErrorCode::None;
+        {
+            std::lock_guard<std::mutex> lock(requestMutex_);
+            if (nextFailure_ < failureSequence_.size()) {
+                injectedFailure = failureSequence_[nextFailure_++];
+            }
+        }
+        if (injectedFailure == translation::ErrorCode::None) {
+            if (failCount.load(std::memory_order_relaxed) > 0 &&
+                failCount.fetch_sub(1, std::memory_order_relaxed) > 0) {
+                injectedFailure = failCode.load(std::memory_order_relaxed);
+            } else if (failNext.exchange(false)) {
+                injectedFailure = failCode.load(std::memory_order_relaxed);
+            }
+        }
+        result.success = injectedFailure == translation::ErrorCode::None;
         if (!result.success) {
-            result.code = translation::ErrorCode::Network;
+            result.code = injectedFailure;
             result.error = L"fake translation failure";
         }
         result.requestId = request.requestId;
@@ -581,10 +629,36 @@ public:
             return {};
         }
         const int waitMs = delayMs.load();
+        // Intermediate-state hooks are consumed only on the asynchronous path:
+        // the synchronous path delivers from the caller's thread and must never
+        // park it.
+        int failureDelayMs = 0;
+        bool hold = false;
+        {
+            std::lock_guard<std::mutex> lock(requestMutex_);
+            if (!result.success && failureDelayMs_ > 0) {
+                failureDelayMs = failureDelayMs_;
+                failureDelayMs_ = 0;
+            }
+            hold = holdNextSuccess_ && result.success;
+        }
         return translation::AsyncHttpRequest::StartTask(
-            [waitMs](const std::atomic<bool>& cancelled) {
+            [waitMs, failureDelayMs, hold, this](const std::atomic<bool>& cancelled) {
                 for (int elapsed = 0; elapsed < waitMs && !cancelled.load(); elapsed += 2) {
                     std::this_thread::sleep_for(std::chrono::milliseconds(2));
+                }
+                // Counted against the wall clock: a step-counting loop would be
+                // stretched by the system timer granularity (~15.6 ms), turning
+                // a 600 ms delay into several seconds.
+                const ULONGLONG delayedUntil = GetTickCount64() + failureDelayMs;
+                while (GetTickCount64() < delayedUntil && !cancelled.load()) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+                }
+                if (hold) {
+                    std::unique_lock<std::mutex> lock(requestMutex_);
+                    while (holdNextSuccess_ && !cancelled.load()) {
+                        holdCondition_.wait_for(lock, std::chrono::milliseconds(50));
+                    }
                 }
                 return HttpResponse{};
             },
@@ -624,6 +698,11 @@ private:
     std::vector<std::wstring> detectedLanguageSequence_;
     size_t nextDetectedLanguage_ = 0;
     std::vector<std::vector<translation::TranslationSegment>> requestHistory_;
+    std::vector<translation::ErrorCode> failureSequence_;
+    size_t nextFailure_ = 0;
+    int failureDelayMs_ = 0;
+    bool holdNextSuccess_ = false;
+    std::condition_variable holdCondition_;
 };
 
 class FakeCredentialProvider final : public translation::ITranslationCredentialProvider {
@@ -773,6 +852,9 @@ bool RunCapturedProvider(
     std::shared_ptr<ITranslationEngine> engine;
     if (profile.adapterKind == TranslationAdapterKind::MachineTranslation) {
         engine = std::make_shared<MachineTranslationEngine>(
+            settings, transport, std::make_shared<FakeCredentialProvider>());
+    } else if (profile.adapterKind == TranslationAdapterKind::DeepSeekChat) {
+        engine = std::make_shared<DeepSeekTranslationEngine>(
             settings, transport, std::make_shared<FakeCredentialProvider>());
     } else {
         engine = std::make_shared<OpenAICompatibleTranslationEngine>(
@@ -1273,7 +1355,11 @@ int TestCoordinatorMessageChain() {
         return 71;
     }
 
+    // The terminal-failure UI path is exercised with a non-retryable code:
+    // retryable transport/content failures are now retried automatically by the
+    // coordinator, which the retry contract covers separately.
     translator->failNext.store(true);
+    translator->failCode.store(translation::ErrorCode::InvalidRequest);
     bitmap = CreateBitmap(32, 16, 1, 32, nullptr);
     if (!bitmap) {
         coordinator.Shutdown();
@@ -2925,7 +3011,9 @@ int TestProviderPromptAndSchemaContracts() {
         bundle.outputContract.find(L"detectedSourceLanguage") == std::wstring::npos ||
         bundle.outputContract.find(L"translations") == std::wstring::npos ||
         instructions.find(prompt.styleInstruction) == std::wstring::npos ||
-        instructions.size() > 950 ||
+        bundle.coreContract.find(L"untranslatable") == std::wstring::npos ||
+        bundle.coreContract.find(L"never empty") == std::wstring::npos ||
+        instructions.size() > 1005 ||
         instructions.find(L"zh-Hans\":\"en") != std::wstring::npos) return 138;
     TranslationSettings builtInPromptSettings;
     TranslationRequest plainRequest;
@@ -2938,7 +3026,7 @@ int TestProviderPromptAndSchemaContracts() {
     const auto plainInstructions = ComposePromptInstructions(
         ComposeTranslationPrompt(
             builtInPromptSettings, plainRequest, LlmOutputMode::PlainTextSingle));
-    if (nativeInstructions.size() > 600 || plainInstructions.size() > 350 ||
+    if (nativeInstructions.size() > 655 || plainInstructions.size() > 405 ||
         nativeInstructions.find(L"untrusted") == std::wstring::npos ||
         plainInstructions.find(L"untrusted") == std::wstring::npos ||
         plainInstructions.find(L"JSON object") != std::wstring::npos) return 178;
@@ -4081,6 +4169,427 @@ int TestGoogleCommunityLiveSmoke() {
     explicitSource.targetLanguage = L"ja";
     explicitSource.segments = {{L"explicit", L"Thank you."}};
     return run(explicitSource, 1);
+}
+
+// Timeout budget, reasoning wire format, response-schema and diagnostics
+// contracts. Each block pins one behaviour that was previously implicit:
+//   - the receive timeout must be independent from the connect timeout and the
+//     reasoning tier must select it (an assignment that is easy to omit, which
+//     would silently restore the old hard 15 s generation cap);
+//   - TestConnection must not inherit the translation budget;
+//   - the SiliconFlow reasoning parameters must be the documented ones;
+//   - the id contract must be enforced by a strict response schema;
+//   - a contract failure must say what was expected and what arrived.
+int TestTranslationBudgetAndDiagnosticContracts() {
+    using namespace translation;
+    const std::string content = StructuredTranslationContent();
+    const auto makeResponse = [](const nlohmann::json& body) {
+        HttpResponse response;
+        response.statusCode = 200;
+        response.contentType = L"application/json; charset=utf-8";
+        response.body = body.dump();
+        return response;
+    };
+    const auto chatEnvelope = [&](const std::string& model) {
+        return nlohmann::json({
+            {"model", model},
+            {"choices", nlohmann::json::array({{
+                {"message", {{"role", "assistant"}, {"content", content}}},
+                {"finish_reason", "stop"},
+            }})},
+        });
+    };
+    const wchar_t* const kDeepSeekFlash = L"deepseek-ai/DeepSeek-V4-Flash";
+
+    // 1a + 1c: tier selects the receive timeout; the connect timeout stays
+    // short, and the two must be different values.
+    {
+        const auto offProfile = WireProfile(L"siliconflow", kDeepSeekFlash);
+        CapturedProviderCall call;
+        if (!RunCapturedProvider(
+                offProfile, makeResponse(chatEnvelope("deepseek-ai/DeepSeek-V4-Flash")), call) ||
+            !call.result.success) {
+            return 600;
+        }
+        if (call.options.timeoutMs != 15000 ||
+            call.options.receiveTimeoutMs != 60000 ||
+            call.options.deadlineMs != 65000 ||
+            call.options.receiveTimeoutMs == call.options.timeoutMs) {
+            return 601;
+        }
+        const auto highProfile = WireProfile(
+            L"siliconflow", kDeepSeekFlash, TranslationReasoningMode::High);
+        CapturedProviderCall highCall;
+        if (!RunCapturedProvider(
+                highProfile, makeResponse(chatEnvelope("deepseek-ai/DeepSeek-V4-Flash")),
+                highCall) || !highCall.result.success) {
+            return 602;
+        }
+        if (highCall.options.timeoutMs != 15000 ||
+            highCall.options.receiveTimeoutMs != 120000 ||
+            highCall.options.deadlineMs != 125000) {
+            return 603;
+        }
+    }
+
+    // 1b: the DeepSeek engine must consume the same budget source, otherwise
+    // only one of the two engines would honour the tier.
+    {
+        const auto profile = WireProfile(L"deepseek", L"deepseek-v4-flash");
+        CapturedProviderCall call;
+        if (!RunCapturedProvider(
+                profile, makeResponse(chatEnvelope("deepseek-v4-flash")), call) ||
+            !call.result.success) {
+            return 604;
+        }
+        if (call.options.timeoutMs != 15000 ||
+            call.options.receiveTimeoutMs != 60000 ||
+            call.options.deadlineMs != 65000) {
+            return 605;
+        }
+    }
+    {
+        const auto profile = WireProfile(
+            L"deepseek", L"deepseek-v4-flash", TranslationReasoningMode::High);
+        CapturedProviderCall call;
+        if (!RunCapturedProvider(
+                profile, makeResponse(chatEnvelope("deepseek-v4-flash")), call) ||
+            !call.result.success) {
+            return 606;
+        }
+        if (call.options.receiveTimeoutMs != 120000 ||
+            call.options.deadlineMs != 125000) {
+            return 607;
+        }
+    }
+
+    // 1d: TestConnection is a diagnostic and must not inherit a minutes-long
+    // generation budget from the reasoning tier.
+    {
+        TranslationSettings settings;
+        const auto profile = WireProfile(
+            L"siliconflow", kDeepSeekFlash, TranslationReasoningMode::High);
+        settings.providerProfiles = {profile};
+        settings.activeProviderId = profile.id;
+        auto transport = std::make_shared<CaptureTranslationTransport>();
+        // The probe request uses the single segment id "test", so the stub
+        // response has to answer that id.
+        nlohmann::json probeInner = {
+            {"targetLanguage", "zh-Hans"},
+            {"detectedSourceLanguage", "en"},
+            {"translations", nlohmann::json::array({
+                {{"id", "test"}, {"text", "你好"}},
+            })},
+        };
+        transport->response = makeResponse(nlohmann::json({
+            {"model", "deepseek-ai/DeepSeek-V4-Flash"},
+            {"choices", {{{"message", {{"role", "assistant"},
+                {"content", probeInner.dump()}}}, {"finish_reason", "stop"}}}},
+        }));
+        auto engine = std::make_shared<OpenAICompatibleTranslationEngine>(
+            settings, transport, std::make_shared<FakeCredentialProvider>());
+        std::mutex mutex;
+        std::condition_variable condition;
+        bool completed = false;
+        TranslationResult result;
+        auto operation = engine->TestConnection([&](TranslationResult value) {
+            {
+                std::lock_guard<std::mutex> lock(mutex);
+                result = std::move(value);
+                completed = true;
+            }
+            condition.notify_one();
+        });
+        if (operation) {
+            std::unique_lock<std::mutex> lock(mutex);
+            if (!condition.wait_for(lock, std::chrono::seconds(2), [&] { return completed; })) {
+                operation->Cancel();
+                operation->Join();
+                return 608;
+            }
+            operation->Join();
+        }
+        if (!completed || !result.success) return 609;
+        HttpRequestOptions options;
+        {
+            std::lock_guard<std::mutex> lock(transport->mutex);
+            options = transport->postOptions;
+        }
+        if (options.timeoutMs != 15000 || options.receiveTimeoutMs != 15000 ||
+            options.deadlineMs != 20000) {
+            return 610;
+        }
+    }
+
+    // 7: after the migration the SiliconFlow tiers must use the documented
+    // top-level parameters. The nested thinking object must be gone for this
+    // preset, while the deepseek preset keeps it (that is its documented API).
+    {
+        const auto offProfile = WireProfile(L"siliconflow", kDeepSeekFlash);
+        CapturedProviderCall call;
+        if (!RunCapturedProvider(
+                offProfile, makeResponse(chatEnvelope("deepseek-ai/DeepSeek-V4-Flash")), call) ||
+            !call.result.success) {
+            return 611;
+        }
+        const auto body = nlohmann::json::parse(call.body);
+        // The Off tier also pins the measured sampler default: a low temperature
+        // is what keeps the model from dropping the tail of the translations
+        // array (see LlmModelPolicy.cpp).
+        if (!body.contains("enable_thinking") ||
+            body.value("enable_thinking", true) != false ||
+            body.value("temperature", 0.0) != 0.2 ||
+            body.contains("thinking") || body.contains("reasoning_effort")) {
+            return 612;
+        }
+
+        const auto highProfile = WireProfile(
+            L"siliconflow", kDeepSeekFlash, TranslationReasoningMode::High);
+        CapturedProviderCall highCall;
+        if (!RunCapturedProvider(
+                highProfile, makeResponse(chatEnvelope("deepseek-ai/DeepSeek-V4-Flash")),
+                highCall) || !highCall.result.success) {
+            return 613;
+        }
+        const auto highBody = nlohmann::json::parse(highCall.body);
+        if (highBody.value("enable_thinking", false) != true ||
+            highBody.value("reasoning_effort", "") != "high" ||
+            highBody.contains("thinking") ||
+            highBody.contains("thinking_budget") ||
+            highBody.contains("temperature")) {
+            return 614;
+        }
+
+        const auto deepSeekProfile = WireProfile(L"deepseek", L"deepseek-v4-flash");
+        CapturedProviderCall deepSeekCall;
+        if (!RunCapturedProvider(
+                deepSeekProfile, makeResponse(chatEnvelope("deepseek-v4-flash")),
+                deepSeekCall) || !deepSeekCall.result.success) {
+            return 615;
+        }
+        const auto deepSeekBody = nlohmann::json::parse(deepSeekCall.body);
+        if (!deepSeekBody.contains("thinking") ||
+            deepSeekBody["thinking"].value("type", "") != "disabled" ||
+            deepSeekBody.contains("enable_thinking")) {
+            return 616;
+        }
+
+        const auto qwenProfile = WireProfile(L"siliconflow", L"Qwen/Qwen3.5-9B");
+        CapturedProviderCall qwenCall;
+        if (!RunCapturedProvider(
+                qwenProfile, makeResponse(chatEnvelope("Qwen/Qwen3.5-9B")),
+                qwenCall) || !qwenCall.result.success) {
+            return 617;
+        }
+        const auto qwenBody = nlohmann::json::parse(qwenCall.body);
+        if (qwenBody.value("enable_thinking", true) != false ||
+            qwenBody["response_format"].value("type", "") != "json_object" ||
+            qwenBody.contains("thinking")) {
+            return 618;
+        }
+    }
+
+    // 8: the strict response schema must carry the id contract that the
+    // json_object mode never guaranteed.
+    {
+        const auto profile = WireProfile(L"siliconflow", kDeepSeekFlash);
+        TranslationRequest request;
+        request.requestId = L"translation.4.0";
+        request.sourceLanguage = L"en";
+        request.targetLanguage = L"zh-Hans";
+        request.segments = {{L"s1", L"Hello"}, {L"s2", L"World"}};
+        nlohmann::json inner = {
+            {"targetLanguage", "zh-Hans"},
+            {"detectedSourceLanguage", "en"},
+            {"translations", nlohmann::json::array({
+                {{"id", "s1"}, {"text", "你好"}},
+                {{"id", "s2"}, {"text", "世界"}},
+            })},
+        };
+        nlohmann::json outer = {
+            {"model", "deepseek-ai/DeepSeek-V4-Flash"},
+            {"choices", {{{"message", {{"role", "assistant"},
+                {"content", inner.dump()}}}, {"finish_reason", "stop"}}}},
+        };
+        CapturedProviderCall call;
+        if (!RunCapturedProvider(profile, makeResponse(outer), call, &request) ||
+            !call.result.success) {
+            return 619;
+        }
+        const auto body = nlohmann::json::parse(call.body);
+        const auto& format = body["response_format"];
+        if (format.value("type", "") != "json_schema" ||
+            !format.contains("json_schema") ||
+            !format["json_schema"].value("strict", false) ||
+            format["json_schema"].value("name", "") != "zencrop_translation") {
+            return 620;
+        }
+        const auto& schema = format["json_schema"]["schema"];
+        const auto& translations = schema["properties"]["translations"];
+        const auto ids = translations["items"]["properties"]["id"]["enum"];
+        if (translations.value("minItems", 0) != 2 ||
+            translations.value("maxItems", 0) != 2 ||
+            !ids.is_array() || ids.size() != 2 ||
+            ids[0].get<std::string>() != "s1" ||
+            ids[1].get<std::string>() != "s2" ||
+            schema.value("additionalProperties", true) != false) {
+            return 621;
+        }
+        // The custom trace header must NOT be sent: measured against the live
+        // API, SiliconFlow echoes it back in x-siliconcloud-trace-id and thereby
+        // replaces its own troubleshooting id with a value it cannot look up.
+        if (HasHeader(call.headers, L"X-Trace-Id:", true)) return 622;
+    }
+
+    // 9: the two ContentContract failure modes must be distinguishable. Sharing
+    // one message made the id diff unusable for an empty translation (the id
+    // sets match, so the diff would be empty while still claiming a mismatch).
+    {
+        const auto profile = WireProfile(L"siliconflow", kDeepSeekFlash);
+        TranslationRequest request;
+        request.requestId = L"translation.9.0";
+        request.sourceLanguage = L"en";
+        request.targetLanguage = L"zh-Hans";
+        request.segments = {{L"s1", L"Hello"}, {L"s2", L"World"}};
+        nlohmann::json inner = {
+            {"targetLanguage", "zh-Hans"},
+            {"detectedSourceLanguage", "en"},
+            {"translations", nlohmann::json::array({
+                {{"id", "s1"}, {"text", "你好"}},
+            })},
+        };
+        nlohmann::json outer = {
+            {"model", "deepseek-ai/DeepSeek-V4-Flash"},
+            {"choices", {{{"message", {{"role", "assistant"},
+                {"content", inner.dump()}}}, {"finish_reason", "stop"}}}},
+        };
+        CapturedProviderCall call;
+        if (!RunCapturedProvider(profile, makeResponse(outer), call, &request) ||
+            call.result.success ||
+            call.result.code != ErrorCode::ContentContract) {
+            return 623;
+        }
+        if (call.result.error.find(L"Expected 2") == std::wstring::npos ||
+            call.result.error.find(L"received 1") == std::wstring::npos ||
+            call.result.error.find(L"missing 1") == std::wstring::npos ||
+            call.result.error.find(L"s2") == std::wstring::npos) {
+            return 624;
+        }
+    }
+    {
+        const auto profile = WireProfile(L"siliconflow", kDeepSeekFlash);
+        TranslationRequest request;
+        request.requestId = L"translation.9.1";
+        request.sourceLanguage = L"en";
+        request.targetLanguage = L"zh-Hans";
+        request.segments = {{L"s1", L"Hello"}};
+        nlohmann::json inner = {
+            {"targetLanguage", "zh-Hans"},
+            {"detectedSourceLanguage", "en"},
+            {"translations", nlohmann::json::array({
+                {{"id", "s1"}, {"text", ""}},
+            })},
+        };
+        nlohmann::json outer = {
+            {"model", "deepseek-ai/DeepSeek-V4-Flash"},
+            {"choices", {{{"message", {{"role", "assistant"},
+                {"content", inner.dump()}}}, {"finish_reason", "stop"}}}},
+        };
+        CapturedProviderCall call;
+        if (!RunCapturedProvider(profile, makeResponse(outer), call, &request) ||
+            call.result.success ||
+            call.result.code != ErrorCode::ContentContract) {
+            return 625;
+        }
+        if (call.result.error !=
+                L"Segment 's1' returned empty translation text." ||
+            call.result.error.find(L"Missing") != std::wstring::npos) {
+            return 626;
+        }
+    }
+
+    // 11: the provider troubleshooting id must reach the error text.
+    {
+        const auto profile = WireProfile(L"siliconflow", kDeepSeekFlash);
+        HttpResponse response;
+        response.statusCode = 503;
+        response.contentType = L"application/json; charset=utf-8";
+        response.body = nlohmann::json({
+            {"error", {{"message", "overloaded"}}},
+        }).dump();
+        response.traceId = L"zc-trace-3001";
+        CapturedProviderCall call;
+        if (!RunCapturedProvider(profile, response, call) || call.result.success) {
+            return 627;
+        }
+        if (call.result.code != ErrorCode::Server ||
+            call.result.error.find(L"zc-trace-3001") == std::wstring::npos) {
+            return 628;
+        }
+    }
+
+    // A(4): WinHTTP reports its own receive timeout as ERROR_WINHTTP_TIMEOUT
+    // (12002), whose text matches none of the "deadline"/"timeout" patterns.
+    // Without the explicit mapping it would surface as a generic network error,
+    // so the "request timed out, retrying" copy would contradict the code.
+    {
+        const auto profile = WireProfile(L"siliconflow", kDeepSeekFlash);
+        HttpResponse timedOut;
+        timedOut.error = L"WinHttpReceiveResponse failed (12002)";
+        CapturedProviderCall call;
+        if (!RunCapturedProvider(profile, timedOut, call) || call.result.success ||
+            call.result.code != ErrorCode::Timeout) {
+            return 629;
+        }
+        // A different transport failure must stay a network error, so the
+        // mapping above is specific rather than a blanket reclassification.
+        HttpResponse socketError;
+        socketError.error = L"WinHttpConnect failed (12029)";
+        CapturedProviderCall socketCall;
+        if (!RunCapturedProvider(profile, socketError, socketCall) ||
+            socketCall.result.success ||
+            socketCall.result.code != ErrorCode::Network) {
+            return 630;
+        }
+        // The DeepSeek engine shares the budget, so 12002 is reachable there as
+        // well and its classifier must agree with the retry wording.
+        {
+            const auto deepSeekProfile = WireProfile(L"deepseek", L"deepseek-v4-flash");
+            HttpResponse deepSeekTimedOut;
+            deepSeekTimedOut.error = L"WinHttpReceiveResponse failed (12002)";
+            CapturedProviderCall deepSeekCall;
+            if (!RunCapturedProvider(deepSeekProfile, deepSeekTimedOut, deepSeekCall) ||
+                deepSeekCall.result.success ||
+                deepSeekCall.result.code != ErrorCode::Timeout) {
+                return 633;
+            }
+        }
+    }
+
+    // D scope: the custom trace header is SiliconFlow-only, so no other provider
+    // receives an unknown request header.
+    {
+        const auto profile = WireProfile(L"openai", L"gpt-5.4-mini");
+        nlohmann::json responsesBody = {
+            {"status", "completed"},
+            {"model", "gpt-5.4-mini"},
+            {"output", nlohmann::json::array()},
+        };
+        responsesBody["output"].push_back({
+            {"type", "message"},
+            {"content", nlohmann::json::array({{
+                {"type", "output_text"}, {"text", content},
+            }})},
+        });
+        CapturedProviderCall call;
+        if (!RunCapturedProvider(profile, makeResponse(responsesBody), call) ||
+            !call.result.success) {
+            return 631;
+        }
+        if (HasHeader(call.headers, L"X-Trace-Id:", true)) return 632;
+    }
+
+    return 0;
 }
 
 int TestSiliconFlowRequestContract() {
@@ -5613,6 +6122,465 @@ int TestResultWindowPreShowVisibilityContract() {
     return 0;
 }
 
+// Bounded automatic retry contract (coordinator level).
+//
+// The coordinator is the single retry owner: transport-class failures get one
+// extra attempt, content-class failures get one extra attempt from a separate
+// quota, and everything else fails immediately. Retries are issued from the UI
+// thread, so a transport failure that the user would previously have recovered
+// from by pressing "Translate again" now recovers by itself.
+//
+// Not covered here: the "retry refused because the total budget cannot fit one
+// more attempt" branch. Reaching it requires the first attempt to consume more
+// than the remaining budget (135 s - 60 s for the Off tier), which would make
+// this contract take over a minute. The quota branches above exercise the same
+// decision point.
+int TestTranslationAutomaticRetryContract() {
+    using namespace translation;
+    const TranslationSettings previousSettings = LoadTranslationSettings();
+
+    const auto* preset = FindTranslationProviderPreset(L"siliconflow");
+    if (!preset) return 700;
+    TranslationSettings settings = previousSettings;
+    settings.providerProfiles.clear();
+    TranslationProviderProfile profile = CreateTranslationProviderProfile(
+        *preset, L"provider.retry.contract");
+    profile.displayName = L"Siliconflow retry contract";
+    profile.model = L"deepseek-ai/DeepSeek-V4-Flash";
+    profile.customModel = false;
+    profile.enabled = true;
+    profile.reasoningMode = TranslationReasoningMode::Off;
+    settings.providerProfiles.push_back(profile);
+    settings.activeProviderId = profile.id;
+    settings.enabled = true;
+    settings.sourceLanguage = L"auto";
+    settings.targetLanguage = L"zh-Hans";
+    if (!SaveTranslationSettings(settings)) return 701;
+
+    HWND messageWindow = CreateTranslationTestMessageWindow();
+    if (!messageWindow) {
+        SaveTranslationSettings(previousSettings);
+        return 702;
+    }
+    g_translationTestMainWindow = messageWindow;
+    auto translator = std::make_shared<FakeTranslationEngine>();
+    TranslationCoordinator::Dependencies dependencies;
+    dependencies.ocrEngine = std::make_shared<FakeOcrEngine>();
+    dependencies.translationEngine = translator;
+    TranslationCoordinator coordinator(dependencies);
+    g_coordinator = &coordinator;
+
+    const TranslationLaunchContext context{
+        TranslationSourceMode::SelectedText, RECT{0, 0, 32, 16}};
+    const auto finish = [&]() {
+        g_coordinator = nullptr;
+        g_translationTestMainWindow = nullptr;
+        coordinator.Shutdown();
+        DestroyWindow(messageWindow);
+        SaveTranslationSettings(previousSettings);
+    };
+    const auto issue = [&](const std::wstring& text) {
+        translator->ResetRequestHistory();
+        const auto start = coordinator.StartText(nullptr, context, text);
+        PumpTranslationMessages(800);
+        return start.started;
+    };
+    const auto resultWindow = [&]() {
+        return FindWindowW(L"ZenCrop.TranslationResultWindow", nullptr);
+    };
+
+    // 3: one transient transport failure recovers without user action.
+    {
+        translator->failCount.store(0);
+        translator->failNext.store(false);
+        translator->SetFailureSequence(
+            {ErrorCode::Timeout, ErrorCode::None});
+        if (!issue(L"Retry scenario one")) {
+            finish();
+            return 703;
+        }
+        HWND native = resultWindow();
+        if (!native || translator->RequestHistory().size() != 2 ||
+            ControlText(native, 3105) != L"Ready" ||
+            ControlText(native, 3102).find(L"[fake] Retry scenario one") ==
+                std::wstring::npos) {
+            finish();
+            return 704;
+        }
+        // 2: the terminal stage carries no leftover waiting-time suffix.
+        if (ControlText(native, 3118).find(L"s") == std::wstring::npos) {
+            finish();
+            return 705;
+        }
+    }
+
+    // 6: attempts are capped at two for transport failures.
+    {
+        translator->failCode.store(ErrorCode::Timeout);
+        translator->failCount.store(10);
+        if (!issue(L"Retry scenario two")) {
+            finish();
+            return 706;
+        }
+        HWND native = resultWindow();
+        if (!native || translator->RequestHistory().size() != 2 ||
+            ControlText(native, 3105).find(L"fake translation failure") ==
+                std::wstring::npos) {
+            finish();
+            return 707;
+        }
+    }
+
+    // 4: neither a user cancellation nor an authentication failure is retried.
+    {
+        translator->failCode.store(ErrorCode::Cancelled);
+        translator->failCount.store(1);
+        if (!issue(L"Retry scenario three")) {
+            finish();
+            return 708;
+        }
+        if (translator->RequestHistory().size() != 1) {
+            finish();
+            return 709;
+        }
+        translator->failCode.store(ErrorCode::Authentication);
+        translator->failCount.store(1);
+        if (!issue(L"Retry scenario four")) {
+            finish();
+            return 710;
+        }
+        if (translator->RequestHistory().size() != 1) {
+            finish();
+            return 711;
+        }
+    }
+
+    // 10: the two quotas are independent. A transport retry must not consume
+    // the content allowance, so a content failure afterwards still gets its own
+    // single retry and the third attempt succeeds.
+    {
+        translator->failCount.store(0);
+        translator->failNext.store(false);
+        translator->SetFailureSequence({
+            ErrorCode::Timeout, ErrorCode::ContentContract, ErrorCode::None});
+        if (!issue(L"Retry scenario five")) {
+            finish();
+            return 712;
+        }
+        HWND native = resultWindow();
+        if (!native || translator->RequestHistory().size() != 3 ||
+            ControlText(native, 3105) != L"Ready") {
+            finish();
+            return 713;
+        }
+    }
+
+    // ... and a content failure is retried exactly once on its own.
+    {
+        translator->failCount.store(0);
+        translator->failNext.store(false);
+        translator->failCode.store(ErrorCode::ContentContract);
+        translator->failCount.store(10);
+        if (!issue(L"Retry scenario six")) {
+            finish();
+            return 714;
+        }
+        if (translator->RequestHistory().size() != 2) {
+            finish();
+            return 715;
+        }
+    }
+
+    // 2 (intermediate state): a retry has to be visible while it is in flight,
+    // and the waiting seconds must keep counting up rather than restart at the
+    // retry. The first attempt is delayed by 600 ms so a restarted counter
+    // (~0.6 s once the held attempt has been observed for another 600 ms) reads
+    // clearly below a cumulative one (~1.2 s).
+    {
+        translator->failCount.store(0);
+        translator->failNext.store(false);
+        translator->SetFailureSequence({ErrorCode::Timeout, ErrorCode::None});
+        translator->HoldNextSuccessfulAttempt(600);
+        translator->ResetRequestHistory();
+        if (!coordinator.StartText(nullptr, context, L"Retry scenario seven").started) {
+            translator->ReleaseHeldAttempt();
+            finish();
+            return 716;
+        }
+        HWND native = resultWindow();
+        if (!native) {
+            translator->ReleaseHeldAttempt();
+            finish();
+            return 717;
+        }
+        bool sawRetryStage = false;
+        const ULONGLONG retryStageDeadline = GetTickCount64() + 3000;
+        while (GetTickCount64() < retryStageDeadline) {
+            PumpTranslationMessages(50);
+            if (ControlText(native, 3105).find(L"retrying") != std::wstring::npos) {
+                sawRetryStage = true;
+                break;
+            }
+        }
+        if (!sawRetryStage) {
+            // Distinguish "the retry never started" from "the retry wording was
+            // lost": a non-ASCII label prints as '?' here.
+            std::string label;
+            for (const wchar_t character : ControlText(native, 3105)) {
+                label.push_back(character < 0x80 ? static_cast<char>(character) : '?');
+            }
+            std::cerr << "retry stage never appeared: attempts="
+                      << translator->RequestHistory().size()
+                      << " label='" << label << "'\n";
+            translator->ReleaseHeldAttempt();
+            finish();
+            return 718;
+        }
+        // Keep the retry in flight long enough for the counter to pass the first
+        // attempt's delay, then read the seconds appended to the retry wording.
+        PumpTranslationMessages(600);
+        const std::wstring heldStage = ControlText(native, 3105);
+        const size_t secondsSeparator = heldStage.rfind(L' ');
+        const double elapsedSeconds = secondsSeparator == std::wstring::npos
+            ? 0.0 : std::wcstod(heldStage.c_str() + secondsSeparator + 1, nullptr);
+        if (elapsedSeconds < 0.9) {
+            translator->ReleaseHeldAttempt();
+            finish();
+            return 719;
+        }
+        translator->ReleaseHeldAttempt();
+        PumpTranslationMessages(1000);
+        if (ControlText(native, 3105) != L"Ready" ||
+            translator->RequestHistory().size() != 2) {
+            finish();
+            return 720;
+        }
+    }
+
+    translator->failCount.store(0);
+    translator->failNext.store(false);
+    finish();
+    return 0;
+}
+
+// Untranslatable pass-through contract. Segments that carry no prose (URLs,
+// paths, hashes, identifiers) are kept verbatim by the coordinator and never
+// sent: an LLM asked for them can only answer with an empty "text" -- a
+// ContentContract failure -- or waste a retry on content that has nothing to
+// translate.
+int TestUntranslatableSegmentContract() {
+    using namespace translation;
+
+    // 1: the classifier stays conservative. The positive cases have nothing to
+    // translate; the negative cases must keep going to the model.
+    const std::vector<std::wstring> untranslatable = {
+        L"https://example.com/a/b?c=d#e",
+        L"(https://example.com/doc).",
+        L"C:\\Users\\me\\project\\src\\main.cpp",
+        L"C:/Users/me/project/main.cpp",
+        L"\\\\server\\share\\folder\\file.txt",
+        L"/usr/local/bin/zencrop",
+        L"src\\translation\\TranslationCoordinator.cpp",
+        L"a3f9c1b2e4d5",
+        L"5d41402abc4b2a76b9719d911017c592",
+        L"123e4567-e89b-12d3-a456-426614174000",
+        L"v1.2.3-rc.1",
+        L"==1.2.4",
+        L"--dry-run",
+        L"foo.bar()",
+        L"std::vector<int>",
+        L"user@example.com",
+        L"example.com",
+        L"1.2",
+        L"123",
+        L"42",
+        // Shapes that produced empty "text" answers in live runs on 2026-09-15.
+        L"---------- divider ----------",
+        L"* * *",
+        L"node_modules/@types/node/index.d.ts:42:5",
+        L"src\\translation\\TranslationCoordinator.cpp]",
+    };
+    for (size_t index = 0; index < untranslatable.size(); ++index) {
+        if (!IsUntranslatableSegment(untranslatable[index])) {
+            std::cerr << "expected untranslatable at index " << index << "\n";
+            return 800;
+        }
+    }
+    const std::vector<std::wstring> translatable = {
+        L"Please translate this sentence.",
+        L"See C:\\Users\\me\\my folder\\file.txt for details",
+        L"\u8def\u5f84 C:\\a\\b \u89c1\u6587\u6863",
+        L"Hello World",
+        L"and/or",
+        L"Hello.",
+        L"e.g.",
+        L"Untranslatable",
+        L"Hmm...",
+        L"Wait...",
+        L"Wow!!!",
+        L"The value is 42.",
+        L"ERROR: the request timed out after 60 seconds.",
+    };
+    for (size_t index = 0; index < translatable.size(); ++index) {
+        if (IsUntranslatableSegment(translatable[index])) {
+            std::cerr << "expected translatable at index " << index << "\n";
+            return 801;
+        }
+    }
+
+    const TranslationSettings previousSettings = LoadTranslationSettings();
+    const auto* preset = FindTranslationProviderPreset(L"siliconflow");
+    if (!preset) return 802;
+    TranslationSettings settings = previousSettings;
+    settings.providerProfiles.clear();
+    TranslationProviderProfile profile = CreateTranslationProviderProfile(
+        *preset, L"provider.passthrough.contract");
+    profile.displayName = L"Siliconflow passthrough contract";
+    profile.model = L"deepseek-ai/DeepSeek-V4-Flash";
+    profile.customModel = false;
+    profile.enabled = true;
+    profile.reasoningMode = TranslationReasoningMode::Off;
+    settings.providerProfiles.push_back(profile);
+    settings.activeProviderId = profile.id;
+    settings.enabled = true;
+    settings.sourceLanguage = L"auto";
+    settings.targetLanguage = L"zh-Hans";
+    if (!SaveTranslationSettings(settings)) return 803;
+
+    HWND messageWindow = CreateTranslationTestMessageWindow();
+    if (!messageWindow) {
+        SaveTranslationSettings(previousSettings);
+        return 804;
+    }
+    g_translationTestMainWindow = messageWindow;
+    auto translator = std::make_shared<FakeTranslationEngine>();
+    TranslationCoordinator::Dependencies dependencies;
+    dependencies.ocrEngine = std::make_shared<FakeOcrEngine>();
+    dependencies.translationEngine = translator;
+    TranslationCoordinator coordinator(dependencies);
+    g_coordinator = &coordinator;
+
+    const TranslationLaunchContext context{
+        TranslationSourceMode::SelectedText, RECT{0, 0, 32, 16}};
+    const auto finish = [&]() {
+        g_coordinator = nullptr;
+        g_translationTestMainWindow = nullptr;
+        coordinator.Shutdown();
+        DestroyWindow(messageWindow);
+        SaveTranslationSettings(previousSettings);
+    };
+    const auto resultWindow = []() {
+        return FindWindowW(L"ZenCrop.TranslationResultWindow", nullptr);
+    };
+
+    // 2: only the translatable segments reach the provider, and the URL keeps
+    // its place in the assembled text.
+    {
+        translator->ResetRequestHistory();
+        if (!coordinator.StartText(nullptr, context,
+                L"Hello world\nhttps://example.com/a/b\nGoodbye world").started) {
+            finish();
+            return 805;
+        }
+        PumpTranslationMessages(800);
+        HWND native = resultWindow();
+        if (!native) {
+            finish();
+            return 806;
+        }
+        const auto history = translator->RequestHistory();
+        const bool sentOnlyTranslatable = history.size() == 1 &&
+            history[0].size() == 2 &&
+            history[0][0].id == L"s1" && history[0][0].text == L"Hello world" &&
+            history[0][1].id == L"s3" && history[0][1].text == L"Goodbye world";
+        const std::wstring body = ControlText(native, 3102);
+        if (!sentOnlyTranslatable || ControlText(native, 3105) != L"Ready" ||
+            body.find(L"[fake] Hello world") == std::wstring::npos ||
+            body.find(L"https://example.com/a/b") == std::wstring::npos ||
+            body.find(L"[fake] Goodbye world") == std::wstring::npos) {
+            finish();
+            return 807;
+        }
+    }
+
+    // 3: a source that is untranslatable end to end never reaches the provider,
+    // which also covers the local-finish path that used to return early.
+    {
+        translator->ResetRequestHistory();
+        if (!coordinator.StartText(nullptr, context,
+                L"https://example.com/a/b").started) {
+            finish();
+            return 808;
+        }
+        PumpTranslationMessages(500);
+        HWND native = resultWindow();
+        if (!native || !translator->RequestHistory().empty() ||
+            ControlText(native, 3105) != L"Ready" ||
+            ControlText(native, 3102).find(L"https://example.com/a/b") ==
+                std::wstring::npos) {
+            finish();
+            return 809;
+        }
+    }
+
+    // 4: a retry reuses the stored batch, so the local segment must survive it.
+    {
+        translator->failCount.store(0);
+        translator->failNext.store(false);
+        translator->SetFailureSequence({ErrorCode::Timeout, ErrorCode::None});
+        translator->ResetRequestHistory();
+        if (!coordinator.StartText(nullptr, context,
+                L"Hello again\nC:\\Users\\me\\file.txt\nBye").started) {
+            finish();
+            return 810;
+        }
+        PumpTranslationMessages(800);
+        HWND native = resultWindow();
+        const std::wstring body = native ? ControlText(native, 3102) : std::wstring{};
+        if (!native || translator->RequestHistory().size() != 2 ||
+            ControlText(native, 3105) != L"Ready" ||
+            body.find(L"[fake] Hello again") == std::wstring::npos ||
+            body.find(L"C:\\Users\\me\\file.txt") == std::wstring::npos ||
+            body.find(L"[fake] Bye") == std::wstring::npos) {
+            finish();
+            return 811;
+        }
+    }
+
+    // 5: the completion list keeps one entry per source segment, in order. The
+    // dashboard translation cache compares this list positionally.
+    {
+        EmbeddedSink sink;
+        const std::vector<TranslationSegment> segments = {
+            {L"b1", L"Hello"},
+            {L"b2", L"https://example.com/a/b"},
+            {L"b3", L"World"},
+        };
+        translator->ResetRequestHistory();
+        translator->failCount.store(0);
+        translator->failNext.store(false);
+        if (!coordinator.StartEmbeddedSegments(
+                nullptr, RECT{0, 0, 32, 16}, segments, &sink)) {
+            finish();
+            return 812;
+        }
+        PumpTranslationMessages(800);
+        if (sink.completed != 1 || sink.translations.size() != 3 ||
+            sink.translations[0].id != L"b1" ||
+            sink.translations[0].text != L"[fake] Hello" ||
+            sink.translations[1].id != L"b2" ||
+            sink.translations[1].text != L"https://example.com/a/b" ||
+            sink.translations[2].id != L"b3" ||
+            sink.translations[2].text != L"[fake] World") {
+            finish();
+            return 813;
+        }
+    }
+
+    finish();
+    return 0;
+}
+
 int main() {
     wchar_t testDataDirectory[2] = {};
     if (GetEnvironmentVariableW(
@@ -5682,6 +6650,27 @@ int main() {
     if (siliconFlowResult != 0) {
         std::cerr << "siliconflow contract failed: " << siliconFlowResult << "\n";
         return siliconFlowResult;
+    }
+    const int budgetResult = TestTranslationBudgetAndDiagnosticContracts();
+    if (budgetResult != 0) {
+        std::cerr << "translation budget/diagnostic contract failed: "
+                  << budgetResult << "\n";
+        return budgetResult;
+    }
+    // Deliberately before the coordinator contract below: that contract has a
+    // pre-existing, environment-dependent flaky failure (see the 545 note), and
+    // an abort there must not skip the retry coverage. A run that reports 545
+    // has already passed this contract.
+    const int retryResult = TestTranslationAutomaticRetryContract();
+    if (retryResult != 0) {
+        std::cerr << "automatic retry contract failed: " << retryResult << "\n";
+        return retryResult;
+    }
+    const int passthroughResult = TestUntranslatableSegmentContract();
+    if (passthroughResult != 0) {
+        std::cerr << "untranslatable pass-through contract failed: "
+                  << passthroughResult << "\n";
+        return passthroughResult;
     }
     const int preShowVisibilityResult = TestResultWindowPreShowVisibilityContract();
     if (preShowVisibilityResult != 0) {

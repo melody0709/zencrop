@@ -44,6 +44,8 @@ struct ProviderCapabilities {
     bool allowsCustomBaseUrl = false;
     bool allowsCustomModel = false;
     bool supportsTemperature = false;
+    // Applied when the profile carries no temperature of its own.
+    std::optional<double> defaultTemperature;
     bool supportsBatch = true;
     bool acceptsRegion = false;
     LlmOutputMode outputMode = LlmOutputMode::PromptJson;

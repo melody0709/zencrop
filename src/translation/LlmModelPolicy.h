@@ -3,6 +3,7 @@
 #include "core/Settings.h"
 
 #include <cstddef>
+#include <optional>
 #include <set>
 #include <string>
 
@@ -47,6 +48,9 @@ struct LlmModelPolicy {
     TranslationReasoningMode defaultReasoning = TranslationReasoningMode::Off;
     ReasoningWireFormat reasoningWireFormat = ReasoningWireFormat::None;
     bool allowsTemperature = false;
+    // Sent when the profile does not specify its own temperature. Only set for
+    // models where a low value was measured to matter (see LlmModelPolicy.cpp).
+    std::optional<double> defaultTemperature;
     LlmOutputMode outputMode = LlmOutputMode::PromptJson;
     InstructionChannel instructionChannel = InstructionChannel::System;
     TokenLimitKind tokenLimitKind = TokenLimitKind::MaxTokens;

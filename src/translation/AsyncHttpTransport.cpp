@@ -147,6 +147,21 @@ std::wstring QueryHeader(HINTERNET request, DWORD query) {
     return value;
 }
 
+// Reads a response header by name. A missing header is a normal outcome
+// (ERROR_WINHTTP_HEADER_NOT_FOUND) and yields an empty string rather than an
+// error, because troubleshooting headers are provider-specific and optional.
+std::wstring QueryNamedHeader(HINTERNET request, const wchar_t* name) {
+    DWORD bytes = 0;
+    WinHttpQueryHeaders(request, WINHTTP_QUERY_CUSTOM, name,
+        WINHTTP_NO_OUTPUT_BUFFER, &bytes, WINHTTP_NO_HEADER_INDEX);
+    if (GetLastError() != ERROR_INSUFFICIENT_BUFFER || bytes < sizeof(wchar_t)) return {};
+    std::wstring value(bytes / sizeof(wchar_t), L'\0');
+    if (!WinHttpQueryHeaders(request, WINHTTP_QUERY_CUSTOM, name,
+        value.data(), &bytes, WINHTTP_NO_HEADER_INDEX)) return {};
+    while (!value.empty() && value.back() == L'\0') value.pop_back();
+    return value;
+}
+
 void Complete(const std::shared_ptr<AsyncHttpExecutionState>& state, HttpResponse response) {
     if (!state || state->completionClaimed.exchange(true)) return;
 
@@ -282,8 +297,16 @@ void RunHttp(const std::shared_ptr<AsyncHttpExecutionState>& state,
         finish();
         return;
     }
-    const int timeoutMs = options.timeoutMs > 0 ? options.timeoutMs : 15000;
-    WinHttpSetTimeouts(session, timeoutMs, timeoutMs, timeoutMs, timeoutMs);
+    // Resolve / connect / send keep the short connect budget; only the receive
+    // timeout can be raised independently. A non-streaming LLM response does
+    // not send its headers until generation has finished, so a single shared
+    // value silently turned dwReceiveTimeout into "the whole generation must
+    // finish within the connect timeout".
+    const int connectTimeoutMs = options.timeoutMs > 0 ? options.timeoutMs : 15000;
+    const int receiveTimeoutMs = options.receiveTimeoutMs > 0
+        ? options.receiveTimeoutMs : connectTimeoutMs;
+    WinHttpSetTimeouts(session, connectTimeoutMs, connectTimeoutMs,
+        connectTimeoutMs, receiveTimeoutMs);
 
     if (IsStopped(state)) {
         response.error = StopError(state);
@@ -366,6 +389,9 @@ void RunHttp(const std::shared_ptr<AsyncHttpExecutionState>& state,
     }
     response.statusCode = static_cast<int>(status);
     response.contentType = QueryHeader(request, WINHTTP_QUERY_CONTENT_TYPE);
+    // Provider troubleshooting id (SiliconFlow). Read on every response so a
+    // failure path can quote an identifier the provider can look up.
+    response.traceId = QueryNamedHeader(request, L"x-siliconcloud-trace-id");
     ReadBody(request, options.maxResponseBytes, state, response.body, response.error);
     finish();
 }

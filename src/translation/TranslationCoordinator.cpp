@@ -1,6 +1,9 @@
 #include "TranslationCoordinator.h"
 
 #include "TranslationEngineFactory.h"
+#include "TranslationBudget.h"
+#include "TranslationDiagnostics.h"
+#include "TranslationUntranslatable.h"
 #include "TranslationProviderCatalog.h"
 #include "TranslationCredentialStore.h"
 #include "TranslationPreflight.h"
@@ -39,6 +42,42 @@ constexpr size_t kMaxSegmentChars = 4000;
 constexpr size_t kPreferredBreakSearchChars = 512;
 constexpr DWORD kMinimumImageOcrWatchdogMs = 90000;
 constexpr DWORD kMinimumDocumentOcrWatchdogMs = 150000;
+// Content-class retry quota, independent from the transport-class quota in
+// TranslationBudget::maxAttempts. The evidence for retrying a protocol/content
+// failure is direct: the user's "translate again" succeeds. A strict response
+// schema cannot remove these failures either, because the schema constrains the
+// shape (id from an enum, text is a string) and cannot express "each id exactly
+// once" or "text is non-empty".
+constexpr int kContentRetryQuota = 1;
+
+// Transmission failures: retrying is what turns "the user pressed translate
+// again" into an automatic recovery. RateLimited/Server have documented
+// provider meanings (429 TPM limit, 503 model overloaded).
+bool IsTransportRetryableFailure(ErrorCode code) {
+    switch (code) {
+    case ErrorCode::Timeout:
+    case ErrorCode::Network:
+    case ErrorCode::Server:
+    case ErrorCode::RateLimited:
+        return true;
+    default:
+        return false;
+    }
+}
+
+// Content/protocol failures: the request was delivered but the response did not
+// satisfy the contract, so a resample can succeed.
+bool IsContentRetryableFailure(ErrorCode code) {
+    switch (code) {
+    case ErrorCode::ContentContract:
+    case ErrorCode::InvalidJson:
+    case ErrorCode::SchemaMismatch:
+    case ErrorCode::EmptyContent:
+        return true;
+    default:
+        return false;
+    }
+}
 
 std::wstring StageText(const wchar_t* chinese, const wchar_t* english) {
     return S::IsChinese() ? chinese : english;
@@ -734,6 +773,7 @@ bool TranslationCoordinator::StartEmbeddedSegments(
         return fail(StageText(L"没有可翻译的 OCR 文本。",
                               L"There is no OCR text to translate."));
     }
+    RefreshUntranslatableSegments();
 
     translationEngine_ = dependencies_.translationEngine;
     active_ = true;
@@ -799,6 +839,7 @@ void TranslationCoordinator::HandleOcrDone(uint64_t generation, OcrOutput* resul
     for (size_t i = 0; i < sourcePlan.chunks.size(); ++i) {
         request_.segments.push_back({L"s" + std::to_wstring(i + 1), sourcePlan.chunks[i]});
     }
+    RefreshUntranslatableSegments();
     if (request_.segments.empty()) {
         if (resultWindow_ && resultWindow_->IsValid()) {
             resultWindow_->SetRetryOcrMode(true);
@@ -855,20 +896,38 @@ void TranslationCoordinator::HandleTranslationDone(
             owned->requestId != currentBatchRequestId_) {
             return;
         }
+        // Bounded automatic retry. Deliberately here: this runs on the UI
+        // thread, the failing batch is still current, and
+        // translationOperation_ is only ever written on this thread. It must
+        // also happen before invalidateCurrentTranslation(), which bumps
+        // generation_ and would make a retry impossible.
+        if (TryRetryFailedTranslation(*owned, generation)) {
+            return;
+        }
         if (!currentBatchRequestId_.empty()) {
             completedBatchRequestIds_.insert(currentBatchRequestId_);
         }
         invalidateCurrentTranslation();
+        RecordTranslationDiagnostic(L"failed", true, owned->code, owned->error,
+            owned->requestId);
         ShowError(owned->error.empty()
             ? StageText(L"翻译失败。", L"Translation failed.") : owned->error);
         return;
     } else {
-        const size_t remaining = nextSegmentIndex_ >= request_.segments.size()
-            ? 0 : request_.segments.size() - nextSegmentIndex_;
-        if (currentBatchRequestId_.empty() ||
-            owned->requestId != currentBatchRequestId_ ||
-            owned->translations.empty() ||
-            owned->translations.size() > remaining) {
+        // Validate against the batch that was actually sent rather than against
+        // nextSegmentIndex_ arithmetic: untranslatable segments sit inside the
+        // batch range but are never sent, so a position-based expectation no
+        // longer matches what the provider was asked for. A short response is
+        // still tolerated -- the remaining segments are re-sliced into the next
+        // batch, exactly as before.
+        const std::vector<TranslationSegment>& sentSegments =
+            lastIssuedBatch_.request.segments;
+        const bool batchMatches = lastIssuedBatch_.generation == generation &&
+            !currentBatchRequestId_.empty() &&
+            lastIssuedBatch_.request.requestId == currentBatchRequestId_ &&
+            owned->requestId == currentBatchRequestId_;
+        if (!batchMatches || owned->translations.empty() ||
+            owned->translations.size() > sentSegments.size()) {
             invalidateCurrentTranslation();
             ShowError(StageText(
                 L"翻译 Provider 返回了不匹配的批次结果。",
@@ -876,9 +935,7 @@ void TranslationCoordinator::HandleTranslationDone(
             return;
         }
         for (size_t index = 0; index < owned->translations.size(); ++index) {
-            const size_t segmentIndex = nextSegmentIndex_ + index;
-            if (segmentIndex >= request_.segments.size() ||
-                owned->translations[index].id != request_.segments[segmentIndex].id ||
+            if (owned->translations[index].id != sentSegments[index].id ||
                 owned->translations[index].text.empty()) {
                 invalidateCurrentTranslation();
                 ShowError(StageText(
@@ -936,14 +993,26 @@ void TranslationCoordinator::HandleTranslationDone(
         return;
     }
 
+    // Assemble the batch range in source order. Untranslatable segments keep
+    // their source text; the rest consume the provider's translations in order,
+    // so the last one wins the position where a short response ran out.
     std::wstring translated;
-    for (size_t i = 0; i < owned->translations.size(); ++i) {
-        translated += owned->translations[i].text;
-        completedTranslations_.push_back(owned->translations[i]);
-        const size_t segmentIndex = nextSegmentIndex_ + i;
-        if (segmentIndex < segmentBreaksAfter_.size()) {
-            translated += segmentBreaksAfter_[segmentIndex];
+    size_t consumed = 0;
+    size_t index = nextSegmentIndex_;
+    while (index < lastIssuedBatch_.endIndex) {
+        if (IsUntranslatableIndex(index)) {
+            translated += request_.segments[index].text;
+            completedTranslations_.push_back(request_.segments[index]);
+        } else {
+            if (consumed >= owned->translations.size()) break;
+            translated += owned->translations[consumed].text;
+            completedTranslations_.push_back(owned->translations[consumed]);
+            ++consumed;
         }
+        if (index < segmentBreaksAfter_.size()) {
+            translated += segmentBreaksAfter_[index];
+        }
+        ++index;
     }
     if (translated.empty()) {
         invalidateCurrentTranslation();
@@ -951,30 +1020,12 @@ void TranslationCoordinator::HandleTranslationDone(
         return;
     }
     translatedBuffer_ += translated;
-    nextSegmentIndex_ += owned->translations.size();
+    nextSegmentIndex_ = index;
     if (nextSegmentIndex_ < request_.segments.size()) {
         BeginNextTranslationBatch(generation);
         return;
     }
-    translatedBuffer_ += translationTrailingBreaks_;
-    currentBatchRequestId_.clear();
-    if (resultWindow_ && resultWindow_->IsValid()) {
-        resultWindow_->SetBusy(false);
-        const ULONGLONG elapsed = translationStartedTick_ == 0 ? 0 :
-            GetTickCount64() - translationStartedTick_;
-        resultWindow_->SetTranslationElapsed(static_cast<DWORD>(
-            (std::min)(elapsed, static_cast<ULONGLONG>(MAXDWORD))));
-        resultWindow_->SetStage(StageText(L"就绪", L"Ready"));
-        resultWindow_->SetTranslationText(translatedBuffer_);
-    }
-    if (embeddedMode_ && embeddedSink_) {
-        const ULONGLONG elapsed = translationStartedTick_ == 0 ? 0 :
-            GetTickCount64() - translationStartedTick_;
-        embeddedSink_->OnTranslationCompleted(
-            generation_, completedTranslations_, detectedSourceLanguage_,
-            static_cast<DWORD>((std::min)(
-                elapsed, static_cast<ULONGLONG>(MAXDWORD))));
-    }
+    FinalizePlainTranslation(generation);
 }
 
 bool TranslationCoordinator::StartOcrRecognition(uint64_t generation) {
@@ -1170,6 +1221,7 @@ void TranslationCoordinator::ClearTranslationTextState() {
     clear(translatedBuffer_);
     for (std::wstring& breaks : segmentBreaksAfter_) clear(breaks);
     segmentBreaksAfter_.clear();
+    untranslatableSegments_.clear();
     clear(translationLeadingBreaks_);
     clear(translationTrailingBreaks_);
     clear(detectedSourceLanguage_);
@@ -1232,7 +1284,92 @@ void TranslationCoordinator::BeginTranslation(uint64_t generation) {
     currentBatchRequestId_.clear();
     completedBatchRequestIds_.clear();
     completedTranslations_.clear();
+    translationBatchCount_ = 0;
+    // Start the waiting-time feedback once per translation. The underlying tick
+    // is deliberately not reset by a retry: the user should see total waiting
+    // time, which is also how a retry becomes perceptible.
+    if (resultWindow_ && resultWindow_->IsValid()) {
+        resultWindow_->BeginTranslationElapsed();
+    }
     BeginNextTranslationBatch(generation);
+}
+
+void TranslationCoordinator::RefreshUntranslatableSegments() {
+    untranslatableSegments_.assign(request_.segments.size(), 0);
+    for (size_t index = 0; index < request_.segments.size(); ++index) {
+        untranslatableSegments_[index] =
+            IsUntranslatableSegment(request_.segments[index].text) ? 1 : 0;
+    }
+}
+
+bool TranslationCoordinator::IsUntranslatableIndex(size_t index) const {
+    // An empty flag vector means "everything is translatable", which is how the
+    // structured paths keep their existing behaviour.
+    return index < untranslatableSegments_.size() && untranslatableSegments_[index] != 0;
+}
+
+void TranslationCoordinator::AppendUntranslatableRange(size_t begin, size_t end) {
+    for (size_t index = begin; index < end && index < request_.segments.size(); ++index) {
+        if (!IsUntranslatableIndex(index)) continue;
+        const TranslationSegment& segment = request_.segments[index];
+        translatedBuffer_ += segment.text;
+        completedTranslations_.push_back(segment);
+        if (index < segmentBreaksAfter_.size()) {
+            translatedBuffer_ += segmentBreaksAfter_[index];
+        }
+    }
+}
+
+void TranslationCoordinator::FinalizePlainTranslation(uint64_t generation) {
+    translatedBuffer_ += translationTrailingBreaks_;
+    currentBatchRequestId_.clear();
+    if (resultWindow_ && resultWindow_->IsValid()) {
+        resultWindow_->SetBusy(false);
+        const ULONGLONG elapsed = translationStartedTick_ == 0 ? 0 :
+            GetTickCount64() - translationStartedTick_;
+        resultWindow_->SetTranslationElapsed(static_cast<DWORD>(
+            (std::min)(elapsed, static_cast<ULONGLONG>(MAXDWORD))));
+        resultWindow_->SetStage(StageText(L"就绪", L"Ready"));
+        resultWindow_->SetTranslationText(translatedBuffer_);
+    }
+    if (embeddedMode_ && embeddedSink_) {
+        const ULONGLONG elapsed = translationStartedTick_ == 0 ? 0 :
+            GetTickCount64() - translationStartedTick_;
+        embeddedSink_->OnTranslationCompleted(
+            generation, completedTranslations_, detectedSourceLanguage_,
+            static_cast<DWORD>((std::min)(
+                elapsed, static_cast<ULONGLONG>(MAXDWORD))));
+    }
+    RecordTranslationDiagnostic(L"ready", false, ErrorCode::None, {},
+        lastIssuedBatch_.request.requestId);
+}
+
+void TranslationCoordinator::RecordTranslationDiagnostic(
+    const wchar_t* outcome, bool failed, ErrorCode code,
+    const std::wstring& error, const std::wstring& batchId) {
+    // A clean translation is not recorded: only retries and terminal failures
+    // carry information worth persisting.
+    if (!failed && translationAttempt_ == 0 && translationContentAttempt_ == 0) {
+        return;
+    }
+    TranslationDiagnosticRecord record;
+    record.generation = generation_;
+    // Callers pass the id explicitly: the failure path clears
+    // currentBatchRequestId_ before recording.
+    record.batchId = batchId;
+    record.segmentCount = request_.segments.size();
+    record.untranslatableCount = static_cast<size_t>(std::count(
+        untranslatableSegments_.begin(), untranslatableSegments_.end(), '\1'));
+    record.batchCount = translationBatchCount_;
+    record.transportRetries = translationAttempt_;
+    record.contentRetries = translationContentAttempt_;
+    record.structured = structuredPlan_ != nullptr;
+    record.elapsedMs = translationStartedTick_ == 0 ? 0 :
+        GetTickCount64() - translationStartedTick_;
+    record.outcome = outcome;
+    if (code != ErrorCode::None) record.errorCode = ErrorCodeName(code);
+    record.error = error;
+    AppendTranslationDiagnostic(record);
 }
 
 void TranslationCoordinator::BeginNextTranslationBatch(uint64_t generation) {
@@ -1257,23 +1394,83 @@ void TranslationCoordinator::BeginNextTranslationBatch(uint64_t generation) {
         std::to_wstring(nextSegmentIndex_);
     currentBatchRequestId_ = batch.requestId;
     batch.segments.clear();
-    size_t characters = 0;
     const auto* activeProvider = FindActiveTranslationProvider(settings_);
     const bool singleSegmentOnly = activeProvider &&
         RequiresSingleSegmentRequests(*activeProvider);
-    while (nextSegmentIndex_ + batch.segments.size() < request_.segments.size()) {
-        const auto& segment = request_.segments[nextSegmentIndex_ + batch.segments.size()];
-        if (!batch.segments.empty() &&
-            (singleSegmentOnly || characters + segment.text.size() > 12000)) break;
-        batch.segments.push_back(segment);
-        characters += segment.text.size();
-        if (characters >= 12000) break;
+    // Slice one batch as a *range* of the global segment list. Untranslatable
+    // segments belong to the range but are never sent, so they do not consume
+    // the character budget. A range with no translatable segment at all is
+    // completed locally instead of issuing a request that has nothing to ask for.
+    for (;;) {
+        size_t rangeEnd = nextSegmentIndex_;
+        size_t characters = 0;
+        size_t batchSegments = 0;
+        while (rangeEnd < request_.segments.size()) {
+            if (IsUntranslatableIndex(rangeEnd)) {
+                ++rangeEnd;
+                continue;
+            }
+            const std::wstring& text = request_.segments[rangeEnd].text;
+            if (batchSegments > 0 &&
+                (singleSegmentOnly || characters + text.size() > 12000)) break;
+            characters += text.size();
+            ++batchSegments;
+            ++rangeEnd;
+            if (characters >= 12000) break;
+        }
+        if (batchSegments == 0) {
+            AppendUntranslatableRange(nextSegmentIndex_, rangeEnd);
+            nextSegmentIndex_ = rangeEnd;
+            if (nextSegmentIndex_ >= request_.segments.size()) {
+                FinalizePlainTranslation(generation);
+                return;
+            }
+            continue;
+        }
+        for (size_t index = nextSegmentIndex_; index < rangeEnd; ++index) {
+            if (!IsUntranslatableIndex(index)) {
+                batch.segments.push_back(request_.segments[index]);
+            }
+        }
+        lastIssuedBatch_.endIndex = rangeEnd;
+        break;
     }
     if (batch.segments.empty()) return;
-    auto engine = translationEngine_;
+    // A new batch restarts both retry quotas and the total-budget window. The
+    // budget is intentionally per batch: the retry threshold only ever asks
+    // "can this batch afford one more attempt", which needs just the current
+    // batch's start tick (see the budget scope note in the design doc).
+    translationAttempt_ = 0;
+    translationContentAttempt_ = 0;
+    translationBudgetStartTick_ = GetTickCount64();
+    // Retrying reuses this copy rather than re-slicing, so the requestId and
+    // segment set cannot diverge from what was actually sent.
+    lastIssuedBatch_.request = batch;
+    lastIssuedBatch_.generation = generation;
+    lastIssuedBatch_.beginIndex = nextSegmentIndex_;
+    ++translationBatchCount_;
+    // The stage wording belongs to the caller. A structured leaf retry keeps
+    // "retrying format-safe segments..."; everything else announces a fresh
+    // translation. Re-applying the leaf wording here is idempotent for the batch
+    // that BeginStructuredLeafRetry already announced, and it clears the "request
+    // timed out, retrying..." wording that a mid-batch retry leaves behind once
+    // it succeeds -- otherwise that stale wording would stick for every batch
+    // that follows it in the same leaf retry.
     if (resultWindow_ && resultWindow_->IsValid()) {
-        resultWindow_->SetStage(StageText(L"正在翻译…", L"Translating..."));
+        resultWindow_->SetStage(
+            structuredTranslationMode_ == StructuredTranslationMode::LeafRetry
+                ? StageText(L"正在重试格式安全分段…",
+                            L"Retrying format-safe segments...")
+                : StageText(L"正在翻译…", L"Translating..."));
     }
+    IssueTranslationBatch(std::move(batch));
+}
+
+void TranslationCoordinator::IssueTranslationBatch(TranslationRequest batch) {
+    if (shuttingDown_ || batch.segments.empty()) return;
+    auto engine = translationEngine_;
+    if (!engine) return;
+    const uint64_t generation = generation_;
     const HWND resultWindow = resultWindow_ ? resultWindow_->WindowHandle() : nullptr;
     const std::wstring batchRequestId = batch.requestId;
     // Some adapters report configuration/content failures synchronously and
@@ -1339,6 +1536,85 @@ void TranslationCoordinator::BeginNextTranslationBatch(uint64_t generation) {
     }
 }
 
+long long TranslationCoordinator::RemainingTranslationBudgetMs() const {
+    const auto* activeProfile = FindActiveTranslationProvider(settings_);
+    if (!activeProfile) return 0;
+    const TranslationBudget budget = ResolveTranslationBudget(*activeProfile);
+    if (translationBudgetStartTick_ == 0) return budget.requestDeadlineMs;
+    const ULONGLONG elapsed = GetTickCount64() - translationBudgetStartTick_;
+    const long long remaining = static_cast<long long>(budget.requestDeadlineMs) -
+        static_cast<long long>(elapsed);
+    return remaining > 0 ? remaining : 0;
+}
+
+bool TranslationCoordinator::TryRetryFailedTranslation(
+    const TranslationResult& result, uint64_t generation) {
+    // HandleTranslationDone tolerates legacy error results that omit requestId,
+    // but a failure that cannot be attributed to the current batch must never
+    // consume a retry. The callback wrapper in IssueTranslationBatch normalizes
+    // an empty id before posting, so this is defense in depth rather than a
+    // reachable path.
+    if (result.requestId.empty()) return false;
+    const bool transportRetryable = IsTransportRetryableFailure(result.code);
+    const bool contentRetryable = IsContentRetryableFailure(result.code);
+    if (!transportRetryable && !contentRetryable) return false;
+
+    const auto* activeProfile = FindActiveTranslationProvider(settings_);
+    if (!activeProfile) return false;
+    // Without an engine there is nothing to re-issue, and reporting a retry
+    // that never happens would leave the stage stuck on "retrying".
+    if (!translationEngine_) return false;
+    const TranslationBudget budget = ResolveTranslationBudget(*activeProfile);
+
+    // The retried request must be byte-identical to the one that just failed.
+    // Reusing the stored copy (instead of re-slicing) is what guarantees the
+    // requestId and segment set cannot drift; the generation/requestId check
+    // rejects the case where a newer batch or workflow took over meanwhile.
+    if (lastIssuedBatch_.generation != generation ||
+        lastIssuedBatch_.request.requestId.empty() ||
+        lastIssuedBatch_.request.requestId != currentBatchRequestId_) {
+        return false;
+    }
+
+    // Independent quotas per failure class, so a content failure cannot consume
+    // the transport allowance and vice versa. translationAttempt_ counts retries
+    // already issued, and maxAttempts counts total attempts including the first.
+    // Known residual risk, not hardened further: the requestId is identical
+    // across attempts, so an adapter that delivered the same failure twice would
+    // consume two attempts. AsyncHttpRequest::Complete() claims the delivery
+    // exactly once, and the attempt caps bound the worst case.
+    if (contentRetryable) {
+        if (translationContentAttempt_ >= kContentRetryQuota) return false;
+    } else if (translationAttempt_ + 1 >= budget.maxAttempts) {
+        return false;
+    }
+
+    // A retry that cannot fit inside the remaining budget would only produce the
+    // same timeout after a longer wait, so show the original error instead.
+    if (RemainingTranslationBudgetMs() < budget.attemptTimeoutMs) return false;
+
+    if (contentRetryable) {
+        ++translationContentAttempt_;
+    } else {
+        ++translationAttempt_;
+    }
+    if (resultWindow_ && resultWindow_->IsValid()) {
+        // Said before IssueTranslationBatch runs: that function never sets the
+        // stage, so this wording survives into the elapsed-tick refresh (which
+        // keeps counting up rather than restarting).
+        resultWindow_->SetStage(result.code == ErrorCode::Timeout
+            ? StageText(L"请求超时，正在重试…", L"Request timed out, retrying...")
+            : StageText(L"翻译未完成，正在重试…",
+                L"Translation incomplete, retrying..."));
+    }
+    // Release the finished operation before replacing it. Cancel is idempotent
+    // for a completed request; this makes the lifetime explicit rather than
+    // relying on the destructor's implicit Cancel+Join.
+    CancelActiveTranslation();
+    IssueTranslationBatch(lastIssuedBatch_.request);
+    return true;
+}
+
 void TranslationCoordinator::StartTranslationForSource(
     const std::wstring& source,
     const std::wstring& sourceLanguage,
@@ -1388,6 +1664,7 @@ void TranslationCoordinator::StartTranslationForSource(
     for (size_t i = 0; i < sourcePlan.chunks.size(); ++i) {
         request_.segments.push_back({L"s" + std::to_wstring(i + 1), sourcePlan.chunks[i]});
     }
+    RefreshUntranslatableSegments();
     if (resultWindow_ && resultWindow_->IsValid()) {
         resultWindow_->SetTranslationText(L"");
         resultWindow_->ClearTranslationElapsed();

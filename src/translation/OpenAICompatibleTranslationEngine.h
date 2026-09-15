@@ -2,6 +2,7 @@
 
 #include "TranslationEngine.h"
 #include "AsyncHttpTransport.h"
+#include "TranslationBudget.h"
 #include "TranslationCredentialStore.h"
 
 #include "core/Settings.h"
@@ -23,6 +24,15 @@ public:
     std::wstring Name() const override;
 
 private:
+    // Shared request path. `budgetOverride` is null for real translations (the
+    // budget is resolved from the active profile) and points at the light
+    // probe budget for TestConnection, which must not inherit the translation
+    // timeout.
+    std::shared_ptr<AsyncHttpRequest> IssueTranslate(
+        const TranslationRequest& request,
+        Callback callback,
+        const TranslationBudget* budgetOverride);
+
     TranslationSettings settings_;
     std::shared_ptr<IAsyncHttpTransport> transport_;
     std::shared_ptr<ITranslationCredentialProvider> credentialProvider_;

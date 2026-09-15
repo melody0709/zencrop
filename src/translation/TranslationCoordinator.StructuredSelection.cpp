@@ -122,6 +122,9 @@ void TranslationCoordinator::StartStructuredTranslation(
     translationLeadingBreaks_.clear();
     translationTrailingBreaks_.clear();
     request_ = {};
+    // Structured segments follow the marker protocol / leaf accounting instead
+    // of the plain-text pass-through rules, so the flags stay clear here.
+    untranslatableSegments_.clear();
     request_.sourceLanguage = selectedSourceLanguage_;
     request_.targetLanguage = resolvedTargetLanguage_;
     request_.preserveParagraphs = true;
@@ -263,6 +266,7 @@ bool TranslationCoordinator::BeginStructuredLeafRetry(uint64_t generation) {
         return false;
     }
     request_.segments.clear();
+    untranslatableSegments_.clear();
     std::unordered_set<std::wstring> retryLeafIds;
     for (const auto& blockId : structuredInvalidBlocks_) {
         const auto block = structuredBlockLeaves_.find(blockId);
@@ -323,6 +327,8 @@ void TranslationCoordinator::FinalizeStructuredTranslation(bool degraded) {
             : StageText(L"就绪", L"Ready"));
         resultWindow_->SetTranslationText(translatedBuffer_);
     }
+    RecordTranslationDiagnostic(degraded ? L"degraded" : L"ready", false,
+        ErrorCode::None, {}, lastIssuedBatch_.request.requestId);
 }
 
 } // namespace translation

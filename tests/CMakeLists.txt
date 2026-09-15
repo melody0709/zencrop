@@ -270,6 +270,8 @@ zencrop_add_simple_hermetic(test_translation_contract
         ${CMAKE_SOURCE_DIR}/src/translation/TranslationResultWindow.StructuredSelection.cpp
         ${CMAKE_SOURCE_DIR}/src/translation/TranslationCoordinator.cpp
         ${CMAKE_SOURCE_DIR}/src/translation/TranslationCoordinator.StructuredSelection.cpp
+        ${CMAKE_SOURCE_DIR}/src/translation/TranslationUntranslatable.cpp
+        ${CMAKE_SOURCE_DIR}/src/translation/TranslationDiagnostics.cpp
         ${CMAKE_SOURCE_DIR}/src/ocr/ui/OcrMarkdownPreviewHost.cpp
         ${CMAKE_SOURCE_DIR}/src/ocr/ui/OcrMarkdownPreviewProtocol.cpp
         ${CMAKE_SOURCE_DIR}/src/ocr/ui/dashboard/DashboardTranslationCache.cpp

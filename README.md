@@ -1,17 +1,17 @@
-# ZenCrop v2.9.24
+# ZenCrop v2.9.25
 
 [中文文档](doc/README_zh.md)
 
 An independent, **enhanced** reimplementation of [PowerToys Crop And Lock](https://github.com/microsoft/PowerToys/tree/main/src/modules/CropAndLock/), with rich screenshot annotation, long screenshot, multi-engine OCR, and OCR Dashboard.
 
-## What's new in v2.9.24
+## What's new in v2.9.25
 
-- **Manual Selection Translation Input**: Press `Shift+A` without a readable selection to open the existing non-modal result window and type or paste text in its WYSIWYG Preview editor.
-- **Structured Selection Translation**: When the clipboard-copy fallback reads rich text (HTML), code blocks, tables, and lists keep their structure through translation, with WYSIWYG editing (including tables) in the result window.
-- **Compact Result Window**: Borderless translation windows place the language selectors, source/preview toggle, and a recognize-again button in a compact titlebar; press `Ctrl+W` to close the window.
-- **Smoother Translation Windows**: OCR and selection translation resize in place with a short ease-out animation instead of repeatedly rebuilding and repainting the full window.
-- **Reusable Results**: Repeating the same translation mode reuses its existing window and WebViews while preserving the user-selected position, manual size, splitter ratio, and always-on-top state.
-- **Reliable Preview Switching**: Hidden WebView2 previews continue reporting content metrics, preventing Preview from remaining stuck on the editable Source fallback and reducing white flashes during content replacement.
+- **Reliable long translations**: The receive timeout is now tiered (60 s / 120 s) and separated from the 15 s connect timeout. A non-streaming LLM only sends its headers once generation has finished, so the old shared 15 s value silently capped every large page; `WinHttpReceiveResponse failed (12002)` is gone.
+- **Automatic retries**: Transport failures are retried once (two attempts total) and content/contract failures get their own separate single retry, so a transient provider hiccup recovers without pressing "Translate again". Cancellations and credential errors are never retried.
+- **Waiting-time feedback**: The status line counts up while a translation is in flight, keeps counting across a retry, and switches to `Request timed out, retrying...` when that happens.
+- **Non-translatable segments stay local**: Segments that are entirely a URL, a file path, a hash, a version, a code identifier or a decorative line are kept verbatim instead of being sent to the model — no wasted tokens and no empty-answer contract failures.
+- **Fewer empty answers**: Measured against the live API, the SiliconFlow DeepSeek-V4-Flash model answers with empty text for the tail of the translations array on the provider's default sampler (6 of 34 runs); a 0.2 default temperature removed it (0 of 32 runs), and strict JSON-schema output plus an explicit "never return an empty string" instruction back it up.
+- **Diagnosable failures**: Error messages carry the provider's own trace id again (the custom `X-Trace-Id` was replacing it), and retries/failures append one line — counts, codes, timings, batch id, never text — to `%LOCALAPPDATA%\ZenCrop\translation_diagnostics.log`.
 
 See [CHANGELOG](doc/CHANGELOG.md) for the complete release notes.
 

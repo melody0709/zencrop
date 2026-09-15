@@ -1,5 +1,6 @@
 #include "DeepSeekTranslationEngine.h"
 
+#include "TranslationBudget.h"
 #include "TranslationCredentialStore.h"
 #include "TranslationProviderCatalog.h"
 #include "TranslationPromptComposer.h"
@@ -24,8 +25,13 @@ namespace {
 
 constexpr wchar_t kEndpoint[] = L"https://api.deepseek.com/chat/completions";
 constexpr wchar_t kModelsEndpoint[] = L"https://api.deepseek.com/models";
-constexpr int kTimeoutMs = 15000;
-constexpr int kDeadlineMs = 60000;
+// Connect-side timeout only. The receive timeout comes from the resolved
+// TranslationBudget so a long generation is not capped by the connect value.
+constexpr int kConnectTimeoutMs = 15000;
+// Slack for the transport's deadline watchdog, which only exists to close a
+// stuck handle slightly after the receive timeout so the user sees the timeout
+// message rather than the watchdog's.
+constexpr int kWatchdogSlackMs = 5000;
 constexpr size_t kMaxInputChars = 12000;
 constexpr size_t kMaxResponseBytes = 2097152;
 constexpr int kMaxOutputTokens = 16384;
@@ -40,6 +46,23 @@ std::string WideToUtf8(const std::wstring& value) {
     WideCharToMultiByte(CP_UTF8, 0, value.data(), static_cast<int>(value.size()),
         result.data(), length, nullptr, nullptr);
     return result;
+}
+
+// Transport failure classification, matching the OpenAI-compatible engine.
+// WinHTTP reports its own receive timeout as ERROR_WINHTTP_TIMEOUT (12002),
+// whose text matches none of the "deadline"/"timeout" patterns, so it needs the
+// explicit mapping: with the budget-driven receive timeout this code is
+// reachable here too, and the coordinator's retry wording should agree with the
+// reported code.
+ErrorCode ErrorCodeFromTransportMessage(const std::wstring& message) {
+    if (message == L"Request cancelled.") return ErrorCode::Cancelled;
+    if (message.find(L"(12002)") != std::wstring::npos ||
+        message.find(L"deadline") != std::wstring::npos ||
+        message.find(L"timed out") != std::wstring::npos ||
+        message.find(L"timeout") != std::wstring::npos) {
+        return ErrorCode::Timeout;
+    }
+    return ErrorCode::Network;
 }
 
 std::wstring Utf8ToWide(const std::string& value) {
@@ -278,11 +301,16 @@ std::shared_ptr<AsyncHttpRequest> DeepSeekTranslationEngine::Translate(
     const TranslationSettings settings = settings_;
     const auto transport = transport_;
     const auto credentialProvider = credentialProvider_;
+    // Resolve the same budget the coordinator uses for its retry threshold, so
+    // the two can never disagree about the allowance for one attempt.
+    const auto* activeProfile = FindActiveTranslationProvider(settings_);
+    const TranslationBudget budget = activeProfile
+        ? ResolveTranslationBudget(*activeProfile) : TranslationBudget{};
     auto retryState = std::make_shared<RetryState>();
     retryState->deadline = std::chrono::steady_clock::now() +
-        std::chrono::milliseconds(kDeadlineMs);
+        std::chrono::milliseconds(budget.requestDeadlineMs);
     auto operation = IssueTranslate(settings, transport, credentialProvider, normalized,
-        std::move(callback), 0, kMaxOutputTokens, retryState);
+        std::move(callback), 0, kMaxOutputTokens, retryState, budget);
     BindRetryOperation(retryState, operation, true);
     return operation;
 }
@@ -295,7 +323,13 @@ std::shared_ptr<AsyncHttpRequest> DeepSeekTranslationEngine::IssueTranslate(
     Callback callback,
     int attempt,
     int maxTokens,
-    const std::shared_ptr<RetryState>& retryState) {
+    const std::shared_ptr<RetryState>& retryState,
+    const TranslationBudget& budget) {
+    // `attempt` is retained because the operation chain (BindRetryOperation)
+    // and TestConnection's two-step flow still model attempts explicitly, but
+    // the engine no longer retries on its own: the coordinator is the single
+    // retry owner, so two layers can never multiply into four real generations.
+    static_cast<void>(attempt);
     const auto* profile = FindActiveTranslationProvider(settings);
     if (!profile) {
         InvokeTranslationCallbackSafely(callback, MakeError(
@@ -328,7 +362,7 @@ std::shared_ptr<AsyncHttpRequest> DeepSeekTranslationEngine::IssueTranslate(
         L"Accept: application/json",
     };
     HttpRequestOptions options;
-    options.timeoutMs = kTimeoutMs;
+    options.timeoutMs = kConnectTimeoutMs;
     const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
         retryState->deadline - std::chrono::steady_clock::now()).count();
     if (remaining <= 0) {
@@ -337,8 +371,16 @@ std::shared_ptr<AsyncHttpRequest> DeepSeekTranslationEngine::IssueTranslate(
             ErrorCode::Timeout, L"DeepSeek request deadline exceeded.", request.requestId));
         return {};
     }
-    options.deadlineMs = static_cast<int>((std::min)(
-        remaining, static_cast<decltype(remaining)>(kDeadlineMs)));
+    // Single-attempt ceiling, including watchdog slack. This is a same-layer
+    // self-constraint: this engine still owns its retry state and its clock, so
+    // it clamps its own watchdog. It also keeps the coordinator's total-budget
+    // arithmetic true (maxAttempts x (attempt + slack) <= requestDeadlineMs);
+    // letting the watchdog reach requestDeadlineMs would allow one hung attempt
+    // to consume the whole budget. `remaining` is checked above only to fail
+    // fast on an exhausted budget -- for a fresh attempt it is always larger
+    // than this ceiling.
+    options.receiveTimeoutMs = budget.attemptTimeoutMs;
+    options.deadlineMs = budget.attemptTimeoutMs + kWatchdogSlackMs;
     options.maxResponseBytes = kMaxResponseBytes;
     options.allowRedirects = false;
     const json requestBody = BuildRequestBody(settings, request, maxTokens);
@@ -352,15 +394,11 @@ std::shared_ptr<AsyncHttpRequest> DeepSeekTranslationEngine::IssueTranslate(
     }
     std::string body = requestBody.dump();
     auto operation = transport->StartPost(kEndpoint, body, headers, options,
-        [settings, transport, credentialProvider, request,
-         callback = std::move(callback), attempt, maxTokens, retryState]
+        [request, callback = std::move(callback)]
         (HttpResponse response) mutable {
             if (!response.error.empty()) {
-                const ErrorCode code = response.error == L"Request cancelled."
-                    ? ErrorCode::Cancelled
-                    : (response.error.find(L"deadline") != std::wstring::npos ||
-                       response.error.find(L"timed out") != std::wstring::npos
-                        ? ErrorCode::Timeout : ErrorCode::Network);
+                const ErrorCode code =
+                    ErrorCodeFromTransportMessage(response.error);
                 SecureClear(response.body);
                 InvokeTranslationCallbackSafely(
                     callback, MakeError(code, response.error, request.requestId));
@@ -375,12 +413,11 @@ std::shared_ptr<AsyncHttpRequest> DeepSeekTranslationEngine::IssueTranslate(
             }
             TranslationResult result = ParseResponse(request, response);
             SecureClear(response.body);
-            if (result.code == ErrorCode::EmptyContent && attempt == 0) {
-                auto retry = IssueTranslate(settings, transport, credentialProvider, request,
-                    std::move(callback), 1, maxTokens, retryState);
-                BindRetryOperation(retryState, retry, false);
-                return;
-            }
+            // The engine intentionally does not retry on its own any more. It
+            // used to re-issue one request on EmptyContent, which combined with
+            // the coordinator's retry to allow up to four real generations for
+            // one batch. The coordinator owns retries and attempt accounting;
+            // per-attempt timeouts still come from the shared budget above.
             InvokeTranslationCallbackSafely(callback, std::move(result));
         });
     SecureClear(key);
@@ -393,12 +430,8 @@ TranslationResult DeepSeekTranslationEngine::ParseResponse(
     const TranslationRequest& request,
     const HttpResponse& response) {
     if (!response.error.empty()) {
-        const ErrorCode code = response.error == L"Request cancelled."
-            ? ErrorCode::Cancelled
-            : (response.error.find(L"deadline") != std::wstring::npos ||
-               response.error.find(L"timed out") != std::wstring::npos
-                ? ErrorCode::Timeout : ErrorCode::Network);
-        return MakeError(code, response.error, request.requestId);
+        return MakeError(ErrorCodeFromTransportMessage(response.error),
+            response.error, request.requestId);
     }
     if (response.statusCode < 200 || response.statusCode >= 300) {
         return MakeError(ErrorCodeForStatus(response.statusCode),
@@ -563,12 +596,15 @@ std::shared_ptr<AsyncHttpRequest> DeepSeekTranslationEngine::TestConnection(
         L"Authorization: Bearer " + key,
         L"Accept: application/json",
     };
+    // Diagnostics, not translation. The probe keeps its own light budget:
+    // reusing the translation budget would let a dead connection spin in the
+    // settings dialog for minutes at the High reasoning tier.
     auto retryState = std::make_shared<RetryState>();
     retryState->deadline = std::chrono::steady_clock::now() +
-        std::chrono::milliseconds(kDeadlineMs);
+        std::chrono::milliseconds(kConnectionProbeBudget.requestDeadlineMs);
     HttpRequestOptions options;
-    options.timeoutMs = kTimeoutMs;
-    options.deadlineMs = kDeadlineMs;
+    options.timeoutMs = kConnectionProbeBudget.attemptTimeoutMs;
+    options.deadlineMs = kConnectionProbeBudget.requestDeadlineMs;
     options.maxResponseBytes = kMaxResponseBytes;
     options.allowRedirects = false;
     const TranslationSettings settings = settings_;
@@ -580,11 +616,8 @@ std::shared_ptr<AsyncHttpRequest> DeepSeekTranslationEngine::TestConnection(
          callback = std::move(callback), retryState]
         (HttpResponse response) mutable {
             if (!response.error.empty() || response.statusCode < 200 || response.statusCode >= 300) {
-                const ErrorCode errorCode = response.error == L"Request cancelled."
-                    ? ErrorCode::Cancelled
-                    : (response.error.find(L"deadline") != std::wstring::npos ||
-                       response.error.find(L"timed out") != std::wstring::npos
-                        ? ErrorCode::Timeout : ErrorCode::Network);
+                const ErrorCode errorCode =
+                    ErrorCodeFromTransportMessage(response.error);
                 SecureClear(response.body);
                 InvokeTranslationCallbackSafely(callback, MakeError(
                     response.error.empty() ? ErrorCodeForStatus(response.statusCode) : errorCode,
@@ -631,7 +664,7 @@ std::shared_ptr<AsyncHttpRequest> DeepSeekTranslationEngine::TestConnection(
             request.targetLanguage = L"zh-Hans";
             request.segments.push_back({L"test", L"Hello"});
             auto retry = IssueTranslate(settings, transport, credentialProvider, request,
-                std::move(callback), 0, 64, retryState);
+                std::move(callback), 0, 64, retryState, kConnectionProbeBudget);
             BindRetryOperation(retryState, retry, false);
         });
     SecureClear(key);
