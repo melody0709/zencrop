@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.15)
-project(ZenCrop VERSION 2.9.26)
+project(ZenCrop VERSION 2.9.27)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

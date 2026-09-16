@@ -559,7 +559,7 @@ struct TranslationSettings {
     TranslationSettings() {
         TranslationProviderProfile profile;
         profile.id = kDefaultTranslationProviderId;
-        profile.displayName = L"Google Translate Community";
+        profile.displayName = L"Google Translate";
         profile.presetKind = L"google-translate-community";
         profile.adapterKind = TranslationAdapterKind::MachineTranslation;
         profile.authMode = TranslationAuthMode::None;

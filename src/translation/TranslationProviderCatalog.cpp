@@ -305,7 +305,7 @@ std::vector<TranslationProviderPreset> BuildPresets() {
 
     auto googleCommunity = buildMachinePreset(
         L"google-translate-community",
-        L"Google Translate Community",
+        L"Google Translate",
         L"https://translate-pa.googleapis.com/v1/translateHtml",
         L"translate-pa.googleapis.com", MachineTranslationProtocol::GoogleCommunity);
     googleCommunity.capabilities.authModes = {TranslationAuthMode::None};

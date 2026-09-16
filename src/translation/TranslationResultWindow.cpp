@@ -44,6 +44,18 @@ constexpr int kTranslationTranslationMinHeight = 150;
 constexpr int kTranslationSourceDefaultPercent = 36;
 constexpr int kTranslationSourceMaxPercent = 50;
 constexpr int kTranslationAutomaticMinimumWidth = 800;
+// The compact OCR header keeps the selector combos, the OCR route combo and the
+// recognize button on a single row, so it needs more width than the shared
+// minimum: with every combo at the shared floor (150) that row already measures
+// ~890 design units, and the common label set needs ~900. Every other case
+// (selected-text translation, bordered windows) keeps the shared minimum.
+constexpr int kTranslationCompactOcrMinimumWidth = 940;
+// The compact header paints every combo at one width so the row reads as a set:
+// a row of four mismatched boxes looks accidental, and the provider must keep
+// room for longer profile names even while a short one is selected. The shared
+// width follows the longest label currently shown, bounded to [150, 200].
+constexpr int kTranslationCompactComboMinWidth = 150;
+constexpr int kTranslationCompactComboMaxWidth = 200;
 constexpr int kTranslationPreviewMetricSafety = 6;
 constexpr ULONGLONG kTranslationResizeAnimationDurationMs = 120;
 constexpr UINT kTranslationResizeAnimationFrameMs = 15;
@@ -130,15 +142,13 @@ UINT MonitorDpi(HMONITOR monitor) {
 }
 
 SIZE CalculateInitialTranslationWindowSize(
-    const RECT& sourceRect, UINT dpi, bool ocrToolbarOwnRow) {
+    const RECT& sourceRect, UINT dpi, int minWidth) {
     HMONITOR monitor = MonitorFromRect(&sourceRect, MONITOR_DEFAULTTONEAREST);
     MONITORINFO monitorInfo = { sizeof(monitorInfo) };
     if (!monitor || !GetMonitorInfoW(monitor, &monitorInfo)) {
-        return { ScaleForDpi(kTranslationAutomaticMinimumWidth, dpi),
-            ScaleForDpi(680, dpi) };
+        return { minWidth, ScaleForDpi(680, dpi) };
     }
 
-    const int minWidth = ScaleForDpi(kTranslationAutomaticMinimumWidth, dpi);
     const int minHeight = ScaleForDpi(420, dpi);
     const int maxWidth = (std::max)(minWidth,
         (std::min)(static_cast<int>(monitorInfo.rcWork.right - monitorInfo.rcWork.left) -
@@ -152,12 +162,10 @@ SIZE CalculateInitialTranslationWindowSize(
         MulDiv(cropWidth, 8, 10), ScaleForDpi(720, dpi));
     const int cropHeightHint = (std::min)(
         MulDiv(cropHeight, 8, 10), ScaleForDpi(520, dpi));
-    // OCR keeps its engine actions above the translation selectors, while
-    // selected-text translation keeps every selector in the title bar.
+    // Compact headers keep every selector on the title bar row, so the chrome
+    // holds exactly one control row regardless of the translation source mode.
     const int compactChromeHeight = ScaleForDpi(
-        30 + 3 + (ocrToolbarOwnRow
-            ? 24 + kTranslationControlRowGap * 2
-            : kTranslationControlRowGap) + 4, dpi);
+        30 + 3 + kTranslationControlRowGap + 4, dpi);
     const int minimumBodyHeight = (std::max)(0, minHeight - compactChromeHeight);
     const int bodyHeight = (std::max)(minimumBodyHeight, cropHeightHint);
     const int width = (std::clamp)((std::max)(minWidth, cropWidthHint),
@@ -294,23 +302,39 @@ std::wstring CharacterCountText(const std::wstring& text) {
         std::to_wstring(text.size());
 }
 
+// OCR engine display names mirror the Settings > OCR "Mode" wording, so the
+// translation window's OCR route reads exactly like the mode picked there.
+// "paddle_local" (PaddleOCR-VL with document parsing off) is not offered by the
+// route menu -- its local entry is the document-parsing variant -- but it can
+// still be the resolved engine, so it keeps an explicit suffix.
 std::wstring FriendlyOcrProviderLabelImpl(const std::wstring& provider) {
-    if (provider == L"local") return L"Windows OCR";
-    if (provider == L"paddle_local") {
-        return S::IsChinese() ? L"Paddle \u672c\u5730\u00b7\u56fe\u50cf" : L"Paddle Local · Image";
+    if (provider == L"local") {
+        return S::IsChinese() ? L"\u672c\u5730\uff08Windows OCR\uff09"
+                              : L"Local (Windows OCR)";
     }
     if (provider == L"paddle_local_doc") {
-        return S::IsChinese() ? L"Paddle \u672c\u5730\u00b7\u6587\u6863" : L"Paddle Local · Doc";
+        // The route menu keeps the full Settings wording ("PaddleOCR-VL 1.6
+        // Local"); the button/badge drops the " Local" suffix to fit the shared
+        // one-row header.
+        return L"PaddleOCR-VL 1.6";
+    }
+    if (provider == L"paddle_local") {
+        return S::IsChinese() ? L"PaddleOCR-VL 1.6 \u56fe\u50cf"
+                              : L"PaddleOCR-VL 1.6 Image";
     }
     if (provider == L"paddle_cloud") {
-        return S::IsChinese() ? L"Paddle \u4e91\u7aef" : L"Paddle Cloud";
+        return S::IsChinese() ? L"PaddleOCR \u4e91\u7aef" : L"PaddleOCR Cloud";
     }
-    if (provider == L"ppocrv6_onnx") return L"PP-OCRv6";
+    if (provider == L"ppocrv6_onnx") {
+        return S::IsChinese() ? L"PP-OCRv6 \u672c\u5730" : L"PP-OCRv6 Local";
+    }
     return provider;
 }
 
 std::wstring CompactOcrRouteLabel(const std::wstring& route) {
-    if (route == L"current") return S::IsChinese() ? L"\u5f53\u524d\u8bbe\u7f6e" : L"Current";
+    if (route == L"current") {
+        return S::IsChinese() ? L"\u5f53\u524d\u8bbe\u7f6e" : L"Current settings";
+    }
     return FriendlyOcrProviderLabelImpl(route);
 }
 
@@ -558,7 +582,7 @@ TranslationResultWindow::TranslationResultWindow(
     const UINT initialDpi = MonitorDpi(
         MonitorFromRect(&sourceRect_, MONITOR_DEFAULTTONEAREST));
     const SIZE initialSize = CalculateInitialTranslationWindowSize(
-        sourceRect_, initialDpi, sourceMode_ == TranslationSourceMode::OcrImage);
+        sourceRect_, initialDpi, MinimumWindowWidth(initialDpi));
     window_ = CreateWindowExW(
         // Keep the result window in the taskbar even after Show() assigns the
         // durable application window as its owner.
@@ -842,7 +866,7 @@ TranslationResultWindow::TranslationResultWindow(
         }
         const UINT dpi = LayoutDpi();
         const SIZE layoutSize = CalculateInitialTranslationWindowSize(
-            sourceRect_, dpi, sourceMode_ == TranslationSourceMode::OcrImage);
+            sourceRect_, dpi, MinimumWindowWidth(dpi));
         RECT currentRect = {};
         if (GetWindowRect(window_, &currentRect) &&
             (currentRect.right - currentRect.left != layoutSize.cx ||
@@ -986,7 +1010,7 @@ void TranslationResultWindow::CreateControls(const TranslationRequest& request) 
     targetLabel_ = create(0, L"STATIC", L"\u2192", staticStyle | SS_CENTER,
         kTargetLabel);
     showSourceToggle_ = create(0, L"BUTTON",
-        S::IsChinese() ? L"\u663e\u793a\u539f\u6587" : L"Show source",
+        S::IsChinese() ? L"\u539f\u6587" : L"Source",
         buttonStyle, kShowSource);
 
     sourceCombo_ = create(0, L"BUTTON", L"", buttonStyle, kSourceCombo);
@@ -1112,18 +1136,20 @@ void TranslationResultWindow::CreateControls(const TranslationRequest& request) 
     AddLanguage(targetLanguages_, L"\ud55c\uad6d\uc5b4", L"ko");
 
     if (sourceMode_ == TranslationSourceMode::OcrImage) {
+        // Mirrors Settings > OCR "Mode" (same wording, same order). The local
+        // PaddleOCR entry is the PaddleOCR-VL 1.6 document-parsing route; there
+        // is no separate image entry, so the window cannot silently drop the
+        // user into plain image OCR.
         AddOcrRoute(S::IsChinese() ? L"\u5f53\u524d\u8bbe\u7f6e" :
             L"Current settings", L"current");
-        AddOcrRoute(L"Windows OCR", L"local");
-        AddOcrRoute(S::IsChinese()
-            ? L"PaddleOCR \u672c\u5730\u00b7\u56fe\u50cf" :
-                L"PaddleOCR Local · Image", L"paddle_local");
-        AddOcrRoute(S::IsChinese()
-            ? L"PaddleOCR \u672c\u5730\u00b7\u6587\u6863" :
-                L"PaddleOCR Local · Document", L"paddle_local_doc");
+        AddOcrRoute(S::IsChinese() ? L"\u672c\u5730\uff08Windows OCR\uff09" :
+            L"Local (Windows OCR)", L"local");
         AddOcrRoute(S::IsChinese() ? L"PaddleOCR \u4e91\u7aef" :
             L"PaddleOCR Cloud", L"paddle_cloud");
-        AddOcrRoute(L"PP-OCRv6 · ONNX", L"ppocrv6_onnx");
+        AddOcrRoute(S::IsChinese() ? L"PaddleOCR-VL 1.6 \u672c\u5730" :
+            L"PaddleOCR-VL 1.6 Local", L"paddle_local_doc");
+        AddOcrRoute(S::IsChinese() ? L"PP-OCRv6 \u672c\u5730" :
+            L"PP-OCRv6 Local", L"ppocrv6_onnx");
     }
 
     const TranslationSettings providerSettings = LoadTranslationSettings();
@@ -1353,7 +1379,7 @@ void TranslationResultWindow::FitToMonitorWorkArea(HMONITOR monitor, UINT target
 
     const UINT dpi = targetDpi ? targetDpi : LayoutDpi();
     const int gap = ScaleForDpi(10, dpi);
-    const int minimumWidth = ScaleForDpi(kTranslationAutomaticMinimumWidth, dpi);
+    const int minimumWidth = MinimumWindowWidth(dpi, monitor);
     const int minimumHeight = ScaleForDpi(420, dpi);
     const int workWidth = static_cast<int>(info.rcWork.right - info.rcWork.left);
     const int workHeight = static_cast<int>(info.rcWork.bottom - info.rcWork.top);
@@ -1399,10 +1425,10 @@ SIZE TranslationResultWindow::CalculateAutomaticWindowSize() const {
     MONITORINFO monitorInfo = { sizeof(monitorInfo) };
     if (!monitor || !GetMonitorInfoW(monitor, &monitorInfo)) {
         return CalculateInitialTranslationWindowSize(
-            sourceRect_, dpi, sourceMode_ == TranslationSourceMode::OcrImage);
+            sourceRect_, dpi, MinimumWindowWidth(dpi));
     }
 
-    const int minWidth = ScaleForDpi(kTranslationAutomaticMinimumWidth, dpi);
+    const int minWidth = MinimumWindowWidth(dpi, monitor);
     const int minHeight = ScaleForDpi(420, dpi);
     const int maxWidth = (std::max)(minWidth,
         (std::min)(static_cast<int>(monitorInfo.rcWork.right - monitorInfo.rcWork.left) -
@@ -1417,8 +1443,7 @@ SIZE TranslationResultWindow::CalculateAutomaticWindowSize() const {
     const int cardFooterGap = ScaleForDpi(kTranslationCardFooterGap, dpi);
     const int controlRowHeight = ScaleForDpi(24, dpi);
     const int controlRowGap = ScaleForDpi(kTranslationControlRowGap, dpi);
-    const bool selectorsInHeader = !showWindowBorder_ &&
-        sourceMode_ != TranslationSourceMode::OcrImage;
+    const bool selectorsInHeader = SelectorsInCompactHeader();
     const int headerHeight = ScaleForDpi(showWindowBorder_ ? 58 : 30, dpi);
     const int chromeHeight = headerHeight + ScaleForDpi(3, dpi) + margin +
         (selectorsInHeader
@@ -1673,7 +1698,14 @@ void TranslationResultWindow::SetOcrEngineLabel(const std::wstring& label) {
     if (sourceMode_ != TranslationSourceMode::OcrImage) return;
     // A pending route change temporarily shows the selected route here;
     // recognition restores the actual engine label supplied by the coordinator.
-    if (engineLabel_) SetWindowTextW(engineLabel_, label.c_str());
+    if (!engineLabel_) return;
+    wchar_t current[128] = {};
+    GetWindowTextW(engineLabel_, current, static_cast<int>(std::size(current)));
+    if (std::wstring(current) == label) return;
+    SetWindowTextW(engineLabel_, label.c_str());
+    // The route combo is measured from this text, so a longer badge has to widen
+    // the shared combo width now rather than at the next unrelated layout pass.
+    LayoutControls();
 }
 
 void TranslationResultWindow::SetOcrRouteSelection(const std::wstring& route) {
@@ -2202,8 +2234,13 @@ void TranslationResultWindow::RefreshFontForLayoutDpi() {
         SendMessageW(child, WM_SETFONT, static_cast<WPARAM>(parameter), TRUE);
         return TRUE;
     }, reinterpret_cast<LPARAM>(font_));
+    // Must stay in sync with the compact-font list in CreateControls(): a control
+    // painted with compactFont_ but measured with font_ would be laid out too
+    // narrow (the provider combo and the source-mode button were the ones missing
+    // here).
     for (HWND control : {stageLabel_, engineLabel_, targetLabel_,
-                         showSourceToggle_, sourceCombo_, targetCombo_}) {
+                         showSourceToggle_, sourceCombo_, targetCombo_,
+                         providerCombo_, sourceModeButton_}) {
         if (control) {
             SendMessageW(control, WM_SETFONT,
                 reinterpret_cast<WPARAM>(compactFont_), TRUE);
@@ -2246,6 +2283,29 @@ void TranslationResultWindow::AdjustSourceEditFontSize(int step, bool reset) {
     ResizeToAutomaticWindowSize();
 }
 
+int TranslationResultWindow::MinimumWindowWidth(UINT dpi, HMONITOR monitor) const {
+    const bool compactOcr = !showWindowBorder_ &&
+        sourceMode_ == TranslationSourceMode::OcrImage;
+    const int designMinimum = ScaleForDpi(
+        compactOcr ? kTranslationCompactOcrMinimumWidth
+                   : kTranslationAutomaticMinimumWidth, dpi);
+    if (!compactOcr) return designMinimum;
+    // A small monitor at a high scale factor can offer less than the one-row
+    // header wants. Cap the requirement by the work area (never below the shared
+    // minimum) so the window still opens fully on screen; the shared combo width
+    // then narrows as a set instead of the window running off screen.
+    if (!monitor) {
+        monitor = MonitorFromRect(&sourceRect_, MONITOR_DEFAULTTONEAREST);
+    }
+    MONITORINFO monitorInfo = { sizeof(monitorInfo) };
+    if (!monitor || !GetMonitorInfoW(monitor, &monitorInfo)) return designMinimum;
+    const int workWidthLimit = (std::max)(
+        ScaleForDpi(kTranslationAutomaticMinimumWidth, dpi),
+        static_cast<int>(monitorInfo.rcWork.right - monitorInfo.rcWork.left) -
+            ScaleForDpi(40, dpi));
+    return (std::min)(designMinimum, workWidthLimit);
+}
+
 void TranslationResultWindow::LayoutControls(bool redraw) {
     if (!window_) return;
     RECT rc = {};
@@ -2268,10 +2328,13 @@ void TranslationResultWindow::LayoutControls(bool redraw) {
     const int sourceModeHeight = ScaleForDpi(22, dpi);
     const int sourceModeTop = headerButtonTop +
         (headerButtonWidth - sourceModeHeight) / 2;
-    const int rowGap = ScaleForDpi(6, dpi);
+    // The compact header tightens its horizontal rhythm to 5 units to keep the
+    // single control row narrow; the bordered layout keeps 6.
+    const int rowGap = ScaleForDpi(compactHeader ? 5 : 6, dpi);
     const int controlRowHeight = ScaleForDpi(24, dpi);
     const int comboHeight = ScaleForDpi(24, dpi);
-    const int showSourceWidth = ScaleForDpi(124, dpi);
+    // Checkbox + gap + the short "Source" / "原文" label.
+    const int showSourceWidth = ScaleForDpi(76, dpi);
     const int controlRowGap = ScaleForDpi(kTranslationControlRowGap, dpi);
     const int cardPadding = ScaleForDpi(8, dpi);
     const int cardFooterHeight = ScaleForDpi(kTranslationCardFooterHeight, dpi);
@@ -2306,7 +2369,7 @@ void TranslationResultWindow::LayoutControls(bool redraw) {
     const bool showOcrControls =
         sourceMode_ == TranslationSourceMode::OcrImage;
     const bool compactOcrHeader = compactHeader && showOcrControls;
-    const bool selectorsInHeader = compactHeader && !showOcrControls;
+    const bool selectorsInHeader = SelectorsInCompactHeader();
     const bool showSourceInHeader = compactHeader;
     const bool showSourceMode = sourceModeButton_ && showSourceText_;
     const bool sourceModeInHeader = !compactHeader && showSourceMode;
@@ -2315,12 +2378,11 @@ void TranslationResultWindow::LayoutControls(bool redraw) {
         if (redraw) SetControlVisible(sourceModeButton_, showSourceMode);
     }
     const int metadataLeft = ScaleForDpi(kTranslationMetadataTextInset, dpi);
-    const int minimumStageWidth = stageInHeader
-        ? ScaleForDpi(48, dpi)
-        : (compactOcrHeader
-            ? showSourceWidth + ScaleForDpi(80, dpi) : 0);
-    const int minimumEngineWidth = showOcrControls
-        ? ScaleForDpi(128, dpi) : 0;
+    const int stageMinimumWidth = stageInHeader ? ScaleForDpi(48, dpi) : 0;
+    // Every control width is budgeted in a single pass once the label text has
+    // been measured, because the compact header row holds Show source, the
+    // selectors and (OCR only) the route combo plus the recognize button at
+    // once. Placement happens after that budget, so it stays below.
     const int minimumRecognizeWidth = showOcrControls
         ? (compactOcrHeader ? headerButtonWidth : ScaleForDpi(132, dpi)) : 0;
     int recognizeWidth = showOcrControls
@@ -2328,26 +2390,239 @@ void TranslationResultWindow::LayoutControls(bool redraw) {
     const int recognizeHeight = compactOcrHeader ? headerButtonWidth : actionHeight;
     const int recognizeTop = headerButtonTop +
         (headerButtonWidth - recognizeHeight) / 2;
-    int engineWidth = showOcrControls
-        ? (std::min)(ScaleForDpi(232, dpi),
-            (std::max)(ScaleForDpi(128, dpi), contentWidth / 3))
+    const int engineMaximumWidth = ScaleForDpi(compactOcrHeader ? 240 : 232, dpi);
+    const int engineMinimumWidth = showOcrControls
+        ? ScaleForDpi(compactOcrHeader ? 150 : 128, dpi) : 0;
+
+    const int bodyTop = headerHeight + ScaleForDpi(3, dpi);
+    const int arrowWidth = ScaleForDpi(16, dpi);
+    const int actionWidth = (std::min)(retranslateWidth,
+        (std::max)(ScaleForDpi(128, dpi), contentWidth / 5));
+    // "Translate" is longer than the existing "Save" label. Keep both
+    // source-editor actions readable at the default window size and DPI.
+    const int sourceEditorActionWidth = ScaleForDpi(96, dpi);
+    const int showSourceToComboGap = ScaleForDpi(24, dpi);
+    const int minimumComboWidth = ScaleForDpi(68, dpi);
+    const int minimumTargetComboWidth = compactHeader
+        ? ScaleForDpi(120, dpi) : minimumComboWidth;
+    const int minimumProviderWidth = ScaleForDpi(96, dpi);
+    const int providerMaximumWidth = ScaleForDpi(200, dpi);
+    const int selectorClusterGaps = rowGap * 3;
+    const int minimumSelectorWidth = minimumProviderWidth + minimumComboWidth +
+        minimumTargetComboWidth + arrowWidth + selectorClusterGaps;
+    // Combo boxes are sized by the label they currently show, not by their
+    // longest option: the popup menus measure their own width, so this keeps the
+    // shared header row as narrow as the current selection needs and stops an
+    // unused long name (provider profile, language, route) from starving the
+    // other controls of the one-row compact header.
+    int sourceLanguageTextWidth = 0;
+    int targetLanguageTextWidth = 0;
+    int providerTextWidth = 0;
+    int engineTextWidth = 0;
+    HDC languageMeasureDc = GetDC(window_);
+    if (languageMeasureDc && compactFont_) {
+        HGDIOBJ previousFont = SelectObject(languageMeasureDc, compactFont_);
+        const auto measureLabel = [&](const std::wstring& text) {
+            if (text.empty()) return 0;
+            SIZE textSize = {};
+            GetTextExtentPoint32W(languageMeasureDc, text.c_str(),
+                static_cast<int>(text.size()), &textSize);
+            return static_cast<int>(textSize.cx);
+        };
+        const auto selectedLanguageLabel =
+            [](const std::vector<LanguageOption>& languages, int index) {
+                if (index < 0 || index >= static_cast<int>(languages.size())) {
+                    return std::wstring();
+                }
+                return languages[static_cast<size_t>(index)].label;
+            };
+        sourceLanguageTextWidth = measureLabel(
+            selectedLanguageLabel(sourceLanguages_, sourceLanguageIndex_));
+        targetLanguageTextWidth = measureLabel(
+            selectedLanguageLabel(targetLanguages_, targetLanguageIndex_));
+        if (providerIndex_ >= 0 &&
+            providerIndex_ < static_cast<int>(providerOptions_.size())) {
+            // Must match the painted label: the compact header drops the
+            // "Provider：" prefix, so its button is sized for the bare name.
+            const std::wstring& name =
+                providerOptions_[static_cast<size_t>(providerIndex_)].label;
+            providerTextWidth = measureLabel(
+                compactHeader ? name : ProviderButtonLabel(name));
+        }
+        if (ocrRouteIndex_ >= 0 &&
+            ocrRouteIndex_ < static_cast<int>(ocrRoutes_.size())) {
+            // Same rule as the provider button: a compact header paints the
+            // route label without the "OCR：" prefix.
+            const std::wstring& value =
+                ocrRoutes_[static_cast<size_t>(ocrRouteIndex_)].value;
+            engineTextWidth = measureLabel(compactOcrHeader
+                ? CompactOcrRouteLabel(value) : OcrRouteButtonLabel(value));
+        }
+        // The route button also shows the resolved engine badge, which the
+        // coordinator sets independently of the menu selection ("Current
+        // settings" resolves to a concrete engine, so the two usually differ).
+        if (compactOcrHeader && engineLabel_) {
+            wchar_t badge[128] = {};
+            if (GetWindowTextW(engineLabel_, badge,
+                    static_cast<int>(std::size(badge))) > 0) {
+                std::wstring badgeText(badge);
+                const size_t separator = badgeText.find_first_of(L":\uff1a");
+                if (separator != std::wstring::npos) {
+                    badgeText.erase(0, separator + 1);
+                    while (!badgeText.empty() && badgeText.front() == L' ') {
+                        badgeText.erase(0, 1);
+                    }
+                }
+                engineTextWidth = (std::max)(engineTextWidth, measureLabel(badgeText));
+            }
+        }
+        SelectObject(languageMeasureDc, previousFont);
+    }
+    if (languageMeasureDc) ReleaseDC(window_, languageMeasureDc);
+
+    const int comboTextExtra = ScaleForDpi(24, dpi);
+    const auto preferredComboWidth = [&](int textWidth, int minimumWidth) {
+        const int fallbackWidth = ScaleForDpi(112, dpi);
+        return (std::min)(ScaleForDpi(240, dpi),
+            (std::max)(minimumWidth,
+                textWidth > 0 ? textWidth + comboTextExtra : fallbackWidth));
+    };
+    // Every combo in the compact header shares one width (see
+    // kTranslationCompactComboMinWidth): it follows the longest label currently
+    // shown so a longer selection widens the whole set together, and it keeps a
+    // comfortable floor so the provider never collapses to its own minimum.
+    const int sharedComboWidth = compactHeader
+        ? (std::clamp)(
+              (std::max)((std::max)(providerTextWidth, sourceLanguageTextWidth),
+                         (std::max)(targetLanguageTextWidth, engineTextWidth)) +
+                  comboTextExtra,
+              ScaleForDpi(kTranslationCompactComboMinWidth, dpi),
+              ScaleForDpi(kTranslationCompactComboMaxWidth, dpi))
         : 0;
-    const int topGapCount = (showOcrControls ? (stageInHeader ? 3 : 2) :
-        (stageInHeader ? 1 : 0)) + (sourceModeInHeader ? 1 : 0);
-    int topShortfall = minimumStageWidth + rowGap * topGapCount + engineWidth +
-        (sourceModeInHeader ? sourceModeWidth : 0) + recognizeWidth -
-        (pinX - metadataLeft);
-    if (topShortfall > 0) {
-        const int recognizeReduction = (std::min)(topShortfall,
-            recognizeWidth - minimumRecognizeWidth);
-        recognizeWidth -= recognizeReduction;
-        topShortfall -= recognizeReduction;
+    int providerWidth = compactHeader
+        ? sharedComboWidth
+        : (std::min)(providerMaximumWidth,
+            (std::max)(minimumProviderWidth,
+                providerTextWidth > 0 ? providerTextWidth + comboTextExtra
+                                      : ScaleForDpi(128, dpi)));
+    int sourceComboWidth = compactHeader
+        ? sharedComboWidth
+        : preferredComboWidth(sourceLanguageTextWidth, minimumComboWidth);
+    int targetComboWidth = compactHeader
+        ? sharedComboWidth
+        : preferredComboWidth(targetLanguageTextWidth, minimumTargetComboWidth);
+    int engineWidth = 0;
+    if (showOcrControls) {
+        // The compact route combo takes the shared width; the bordered window
+        // keeps sizing it by a fraction of the window instead.
+        engineWidth = compactOcrHeader
+            ? sharedComboWidth
+            : (std::min)(engineMaximumWidth,
+                (std::max)(engineMinimumWidth, contentWidth / 3));
     }
-    if (topShortfall > 0) {
-        const int engineReduction = (std::min)(topShortfall,
-            engineWidth - minimumEngineWidth);
-        engineWidth -= engineReduction;
+
+    if (compactHeader) {
+        // One row: Source | selectors | [OCR route | recognize]. The combos share
+        // one width, so relief comes out of that shared width first (the whole set
+        // narrows together and the row keeps its rhythm); only if the shared floor
+        // is not enough do the individual controls give way, cheapest-loss-first
+        // (route label, then provider name).
+        const int rowLeft = toggleX + showSourceWidth + rowGap;
+        const int rowRight = pinX - rowGap;
+        // The content that must fit is the selector cluster plus, for OCR, the
+        // trailing route/recognize pair. The gap before the pin button is already
+        // enforced by the right-anchored placement, so charging it here would make
+        // the combos give way earlier than the geometry requires.
+        int shortfall = providerWidth + sourceComboWidth + targetComboWidth +
+            arrowWidth + selectorClusterGaps +
+            (showOcrControls ? rowGap + engineWidth + rowGap + recognizeWidth : 0) -
+            (std::max)(0, rowRight - rowLeft);
+        if (shortfall > 0) {
+            // providerWidth is the shared width in this branch (all combos were
+            // set to sharedComboWidth above), and unlike engineWidth it is always
+            // present -- selected-text translation has no OCR route combo.
+            const int comboCount = showOcrControls ? 4 : 3;
+            const int sharedFloor = ScaleForDpi(kTranslationCompactComboMinWidth, dpi);
+            const int reduction = (std::min)(shortfall,
+                (std::max)(0, providerWidth - sharedFloor) * comboCount);
+            if (reduction > 0) {
+                const int perCombo = reduction / comboCount;
+                if (perCombo > 0) {
+                    providerWidth -= perCombo;
+                    sourceComboWidth -= perCombo;
+                    targetComboWidth -= perCombo;
+                    if (showOcrControls) engineWidth -= perCombo;
+                    shortfall -= perCombo * comboCount;
+                }
+            }
+        }
+        if (shortfall > 0) {
+            const int reduction = (std::min)(shortfall,
+                engineWidth - engineMinimumWidth);
+            engineWidth -= reduction;
+            shortfall -= reduction;
+        }
+        if (shortfall > 0) {
+            const int reduction = (std::min)(shortfall,
+                providerWidth - minimumProviderWidth);
+            providerWidth -= reduction;
+            shortfall -= reduction;
+        }
+        if (shortfall > 0) {
+            const int reduction = (std::min)(shortfall,
+                sourceComboWidth - minimumComboWidth);
+            sourceComboWidth -= reduction;
+            shortfall -= reduction;
+        }
+        if (shortfall > 0) {
+            const int reduction = (std::min)(shortfall,
+                targetComboWidth - minimumTargetComboWidth);
+            targetComboWidth -= reduction;
+        }
+    } else {
+        // Bordered window: the header row keeps the stage label and the OCR
+        // controls; the selectors keep their own row below it.
+        const int topGapCount = (showOcrControls ? 3 : 1) +
+            (sourceModeInHeader ? 1 : 0);
+        int topShortfall = stageMinimumWidth + rowGap * topGapCount + engineWidth +
+            (sourceModeInHeader ? sourceModeWidth : 0) + recognizeWidth -
+            (pinX - metadataLeft);
+        if (topShortfall > 0) {
+            const int reduction = (std::min)(topShortfall,
+                recognizeWidth - minimumRecognizeWidth);
+            recognizeWidth -= reduction;
+            topShortfall -= reduction;
+        }
+        if (topShortfall > 0) {
+            const int reduction = (std::min)(topShortfall,
+                engineWidth - engineMinimumWidth);
+            engineWidth -= reduction;
+        }
+        const int selectorStart = margin + showSourceWidth + rowGap +
+            showSourceToComboGap;
+        const int selectorAvailable = (std::max)(minimumSelectorWidth,
+            (clientWidth - margin) - selectorStart);
+        int selectorShortfall = providerWidth + sourceComboWidth + targetComboWidth +
+            arrowWidth + selectorClusterGaps - selectorAvailable;
+        if (selectorShortfall > 0) {
+            const int providerReduction = (std::min)(selectorShortfall,
+                providerWidth - minimumProviderWidth);
+            providerWidth -= providerReduction;
+            selectorShortfall -= providerReduction;
+        }
+        if (selectorShortfall > 0) {
+            const int sourceReduction = (std::min)(selectorShortfall,
+                sourceComboWidth - minimumComboWidth);
+            sourceComboWidth -= sourceReduction;
+            selectorShortfall -= sourceReduction;
+        }
+        if (selectorShortfall > 0) {
+            const int targetReduction = (std::min)(selectorShortfall,
+                targetComboWidth - minimumTargetComboWidth);
+            targetComboWidth -= targetReduction;
+        }
     }
+
     const int recognizeX = showOcrControls
         ? pinX - rowGap - recognizeWidth : pinX;
     const int engineX = showOcrControls
@@ -2356,6 +2631,16 @@ void TranslationResultWindow::LayoutControls(bool redraw) {
         rowGap - sourceModeWidth;
     const int engineAnchor = sourceModeInHeader
         ? sourceModeX : (showOcrControls ? engineX : pinX);
+    // A compact OCR header right-aligns the selectors against the route combo;
+    // every other case right-aligns them against the window (or the card edge).
+    const int controlRowRight = compactHeader
+        ? (showOcrControls ? engineX - rowGap : pinX - rowGap)
+        : clientWidth - margin;
+    const int clusterRight = compactHeader
+        ? controlRowRight
+        : (std::max)(controlRowRight, margin + showSourceWidth +
+            showSourceToComboGap + rowGap + minimumSelectorWidth);
+
     if (sourceModeInHeader) {
         move(sourceModeButton_, sourceModeX, sourceModeTop,
             sourceModeWidth, sourceModeHeight);
@@ -2371,109 +2656,13 @@ void TranslationResultWindow::LayoutControls(bool redraw) {
     }
     if (stageInHeader) {
         move(stageLabel_, metadataLeft, metadataTop,
-            (std::max)(minimumStageWidth, engineAnchor - metadataLeft - rowGap),
+            (std::max)(stageMinimumWidth, engineAnchor - metadataLeft - rowGap),
             metadataHeight);
     }
     if (showOcrControls) {
         move(engineLabel_, engineX,
             compactOcrHeader ? (headerHeight - actionHeight) / 2 : metadataTop,
             engineWidth, compactOcrHeader ? actionHeight : metadataHeight);
-    }
-
-    const int bodyTop = headerHeight + ScaleForDpi(3, dpi);
-    const int arrowWidth = ScaleForDpi(16, dpi);
-    const int actionWidth = (std::min)(retranslateWidth,
-        (std::max)(ScaleForDpi(128, dpi), contentWidth / 5));
-    // "Translate" is longer than the existing "Save" label. Keep both
-    // source-editor actions readable at the default window size and DPI.
-    const int sourceEditorActionWidth = ScaleForDpi(96, dpi);
-    const int showSourceToComboGap = ScaleForDpi(24, dpi);
-    const int minimumComboWidth = ScaleForDpi(68, dpi);
-    const int minimumTargetComboWidth = compactHeader
-        ? ScaleForDpi(120, dpi) : minimumComboWidth;
-    const int minimumProviderWidth = ScaleForDpi(96, dpi);
-    const int minimumSelectorWidth = minimumProviderWidth +
-        minimumComboWidth + minimumTargetComboWidth + arrowWidth + rowGap * 3;
-    const int controlRowLeadingWidth = compactOcrHeader
-        ? 0 : showSourceWidth + showSourceToComboGap + rowGap;
-    const int minimumControlRowWidth = controlRowLeadingWidth + minimumSelectorWidth;
-    const int controlRowRight = selectorsInHeader
-        ? pinX - rowGap : clientWidth - margin;
-    const int clusterRight = (std::max)(controlRowRight,
-        margin + minimumControlRowWidth);
-    int sourceLanguageTextWidth = 0;
-    int targetLanguageTextWidth = 0;
-    int providerTextWidth = 0;
-    HDC languageMeasureDc = GetDC(window_);
-    if (languageMeasureDc && compactFont_) {
-        HGDIOBJ previousFont = SelectObject(languageMeasureDc, compactFont_);
-        const auto measureLanguageText = [&](const std::vector<LanguageOption>& languages) {
-            int width = 0;
-            for (const auto& language : languages) {
-                SIZE textSize = {};
-                GetTextExtentPoint32W(languageMeasureDc, language.label.c_str(),
-                    static_cast<int>(language.label.size()), &textSize);
-                width = (std::max)(width, static_cast<int>(textSize.cx));
-            }
-            return width;
-        };
-        sourceLanguageTextWidth = measureLanguageText(sourceLanguages_);
-        targetLanguageTextWidth = measureLanguageText(targetLanguages_);
-        for (const auto& provider : providerOptions_) {
-            // Must match the painted label: the compact header drops the
-            // "Provider：" prefix, so its button is sized for the bare name.
-            const std::wstring label = compactHeader
-                ? provider.label : ProviderButtonLabel(provider.label);
-            SIZE textSize = {};
-            GetTextExtentPoint32W(languageMeasureDc, label.c_str(),
-                static_cast<int>(label.size()), &textSize);
-            providerTextWidth = (std::max)(providerTextWidth,
-                static_cast<int>(textSize.cx));
-        }
-        SelectObject(languageMeasureDc, previousFont);
-    }
-    if (languageMeasureDc) ReleaseDC(window_, languageMeasureDc);
-
-    const int comboTextExtra = ScaleForDpi(36, dpi);
-    const auto preferredComboWidth = [&](int textWidth, int minimumWidth) {
-        const int fallbackWidth = ScaleForDpi(112, dpi);
-        return (std::min)(ScaleForDpi(240, dpi),
-            (std::max)(minimumWidth,
-                textWidth > 0 ? textWidth + comboTextExtra : fallbackWidth));
-    };
-    const int providerMaximumWidth = ScaleForDpi(
-        compactOcrHeader ? 240 : 200, dpi);
-    int providerWidth = (std::min)(providerMaximumWidth,
-        (std::max)(minimumProviderWidth,
-            providerTextWidth > 0 ? providerTextWidth + comboTextExtra
-                                  : ScaleForDpi(128, dpi)));
-    int sourceComboWidth = preferredComboWidth(sourceLanguageTextWidth,
-        minimumComboWidth);
-    int targetComboWidth = preferredComboWidth(targetLanguageTextWidth,
-        minimumTargetComboWidth);
-    const int selectorStart = compactOcrHeader
-        ? margin + cardPadding
-        : margin + showSourceWidth + rowGap + showSourceToComboGap;
-    const int selectorAvailable = (std::max)(minimumSelectorWidth,
-        clusterRight - selectorStart);
-    int selectorShortfall = providerWidth + sourceComboWidth + targetComboWidth +
-        arrowWidth + rowGap * 3 - selectorAvailable;
-    if (selectorShortfall > 0) {
-        const int providerReduction = (std::min)(selectorShortfall,
-            providerWidth - minimumProviderWidth);
-        providerWidth -= providerReduction;
-        selectorShortfall -= providerReduction;
-    }
-    if (selectorShortfall > 0) {
-        const int sourceReduction = (std::min)(selectorShortfall,
-            sourceComboWidth - minimumComboWidth);
-        sourceComboWidth -= sourceReduction;
-        selectorShortfall -= sourceReduction;
-    }
-    if (selectorShortfall > 0) {
-        const int targetReduction = (std::min)(selectorShortfall,
-            targetComboWidth - minimumTargetComboWidth);
-        targetComboWidth -= targetReduction;
     }
 
     int controlTop = selectorsInHeader
@@ -2828,8 +3017,10 @@ void TranslationResultWindow::DrawOwnerDrawControl(const DRAWITEMSTRUCT& draw) {
                    providerIndex_ < static_cast<int>(providerOptions_.size())) {
             visualLabel = providerOptions_[providerIndex_].label.c_str();
         }
-        const int textPadding = ScaleForDpi(id == kEngineLabel ? 8 : 10, dpi);
-        const int arrowWidth = ScaleForDpi(22, dpi);
+        // Padding 6 + caret column 16 = 22, matching comboTextExtra (24) with a
+        // two unit slack so rounding can never ellipsize a fitting label.
+        const int textPadding = ScaleForDpi(6, dpi);
+        const int arrowWidth = ScaleForDpi(16, dpi);
         RECT text = { draw.rcItem.left + textPadding, draw.rcItem.top,
             draw.rcItem.right - arrowWidth, draw.rcItem.bottom };
         SetBkMode(draw.hDC, TRANSPARENT);
@@ -3034,7 +3225,9 @@ LRESULT TranslationResultWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wPara
         if (right) return HTRIGHT;
         if (top) return HTTOP;
         if (bottom) return HTBOTTOM;
-        const int headerHitHeight = ScaleForDpi(showWindowBorder_ ? 58 : 30, LayoutDpi());
+        // The compact header row is packed with controls, so the 3px strip
+        // between it and the first card counts as drag area as well.
+        const int headerHitHeight = ScaleForDpi(showWindowBorder_ ? 58 : 33, LayoutDpi());
         if (point.y < headerHitHeight &&
             !PointInChild(hwnd, showSourceToggle_, point) &&
             !PointInChild(hwnd, providerCombo_, point) &&
@@ -3242,7 +3435,7 @@ LRESULT TranslationResultWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wPara
     case WM_GETMINMAXINFO: {
         auto* info = reinterpret_cast<MINMAXINFO*>(lParam);
         const UINT dpi = LayoutDpi();
-        info->ptMinTrackSize.x = ScaleForDpi(kTranslationAutomaticMinimumWidth, dpi);
+        info->ptMinTrackSize.x = MinimumWindowWidth(dpi);
         info->ptMinTrackSize.y = ScaleForDpi(420, dpi);
         return 0;
     }

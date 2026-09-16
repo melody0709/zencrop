@@ -1,14 +1,15 @@
-# ZenCrop v2.9.26
+# ZenCrop v2.9.27
 
 [English](../README.md)
 
 ZenCrop 是对 [PowerToys Crop And Lock](https://github.com/microsoft/PowerToys/tree/main/src/modules/CropAndLock/) 的独立、**增强型**重构实现，并融合了丰富的截图标注、长截图、多引擎 OCR 和 OCR 工作台。
 
-## v2.9.26 更新重点
+## v2.9.27 更新重点
 
-- **`Shift+A` 划词翻译不再偶发闪退**：剪贴板里还留着截图时（PixPin 等工具复制图片会发布 `CF_BITMAP`），模拟复制兜底在"备份剪贴板"这一步把 **GDI 句柄当成 HGLOBAL** 交给了 `GlobalSize()`。对其中一部分句柄值，ntdll 会按堆块校验该句柄并判定堆损坏，直接 fail-fast 结束进程（没有对话框，也无法捕获）。现在在触碰句柄前按格式 id 拦截全部 GDI 句柄类格式（`CF_BITMAP`、`CF_PALETTE`、`CF_ENHMETAFILE`、`CF_OWNERDISPLAY`、`CF_DSP*`、`CF_GDIOBJ*`）。这也解释了它为什么"看运气"：同类句柄是否致命取决于句柄数值（实测 `0x3205179a` 返回 0，`0xffffffffd0051737` 直接杀进程）。
-- **不再每次弹「剪贴板原内容未能完整恢复」**：旧判定只有一个"是否完全一致"的标志，于是"GDI 表示无法快照、但图像内容已经通过 `CF_DIB`/`CF_DIBV5` 保全"这种用户无感的差异也会每次弹一条 4.2 秒的顶层提示，压住刚打开的译文窗口。现在按缺失原因分级：冗余的 GDI 表示**不提示**；被 32 MB/64 MB 上限放弃 → 1.8 秒提示；真正交接失败 → 3.2 秒警告并说明原因。
-- **提示不再遮挡译文窗口**：提示改为优先放到结果窗口的右侧/左侧/下方/上方，都不行才退到工作区右下角；不再锚在鼠标光标上（光标必然紧挨着那个窗口）。
+- **紧凑翻译窗回到一行控件**: 关闭标题栏时，OCR 模式此前会把语言/Provider 选择器挤到第二行，而且**折叠原文时那一行仍然在**——白占约 30 设计单位、视觉上还断了。现在 OCR 与划词共用同一行：OCR 只多出路由组合框与 ↻ 按钮，展开原文只多一张原文卡。带边框形态不变。
+- **这一行里不再有标签被挤掉**: Provider 按钮原先按"所有已启用 Provider 里最长的名字"量宽，只要列表里有一个长名（如 `Google Translate Community`）就会被恒定顶到 200 上限，把 OCR 路由标签压成 `PaddleOCR-VL…`。现在四个下拉框**统一定宽**，宽度只跟各自**当前显示的标签**有关（下限 150、上限 200），宽度不足时整组一起收——最小窗口下你实际会看到的那几个标签（Provider 名、两个语言、OCR 路由）都不会被切；比这个共享宽度还长的 Provider 名仍会在按钮上截断，弹窗菜单里始终显示全称。
+- **OCR 路由菜单与设置页一致**: 与 设置 ▸ OCR「Mode」同措辞同顺序（`当前设置` / `Local (Windows OCR)` / `PaddleOCR Cloud` / `PaddleOCR-VL 1.6 Local` / `PP-OCRv6 Local`）。本地项就是文档解析（Layout + VLM）路由，不再有单独的 Image 项。
+- **标签更短更整齐**: `Show source` → `Source`、路由按钮与徽标去掉 ` Local`（菜单保留全称）、引擎名沿用设置页措辞，内置的 `Google Translate Community` 更名为 `Google Translate`（已有配置会自动跟随预设名）。
 
 完整变更请参阅 [CHANGELOG](CHANGELOG.md)。
 

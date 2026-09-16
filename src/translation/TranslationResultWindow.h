@@ -294,6 +294,19 @@ private:
         const std::wstring& token, uint64_t generation, bool success,
         const std::wstring& planJson, const std::wstring& errorCode);
     void CancelPendingStructuredSelection(const std::wstring& errorCode);
+    // Single source of truth for "where do the language/provider selectors go".
+    // LayoutControls() and CalculateAutomaticWindowSize() must agree, otherwise
+    // the automatic window height is off by one control row. Every compact
+    // (borderless) window keeps the selectors in the header row -- OCR only adds
+    // its route combo and recognize button to that same row.
+    bool SelectorsInCompactHeader() const { return !showWindowBorder_; }
+    // Narrowest width this window may take. The compact OCR header needs more
+    // than the shared minimum because it puts the selectors, the OCR route combo
+    // and the recognize button on one row. A work area that cannot offer that
+    // width caps the requirement (never below the shared minimum) so the window
+    // still opens fully on screen and the shared row narrows instead; the monitor
+    // defaults to the source rect's monitor, matching the automatic size.
+    int MinimumWindowWidth(UINT dpi, HMONITOR monitor = nullptr) const;
     void LayoutControls(bool redraw = true);
     void RefreshFontForLayoutDpi();
     void AdjustSourceEditFontSize(int step, bool reset);

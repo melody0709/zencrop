@@ -362,29 +362,47 @@ bool VerifyCompactTitlebarHitTargets(HWND window, bool expectOcrControls) {
         RECT sourceFooter = {};
         RECT translationEdit = {};
         RECT target = {};
-        RECT client = {};
-        POINT clientOrigin = {};
         if (!GetWindowRect(GetDlgItem(window, 3114), &engine) ||
             !GetWindowRect(GetDlgItem(window, 3121), &recognize) ||
             !GetWindowRect(GetDlgItem(window, 3106), &sourceFooter) ||
             !GetWindowRect(GetDlgItem(window, 3102), &translationEdit) ||
-            !GetWindowRect(GetDlgItem(window, 3104), &target) ||
-            !GetClientRect(window, &client) ||
-            !ClientToScreen(window, &clientOrigin) ||
-            showSource.top != engine.top || showSource.right >= engine.left ||
-            recognize.right - recognize.left != recognize.bottom - recognize.top ||
-            sourceFooter.bottom > provider.top ||
-            provider.bottom > translationEdit.top ||
-            clientOrigin.x + client.right - target.right > 8) {
+            !GetWindowRect(GetDlgItem(window, 3104), &target)) {
             return false;
         }
+        // One control row: the selectors, the OCR route combo and the recognize
+        // button share the header row with Show source, exactly like the
+        // selected-text window. The source card and its footer sit below them.
+        const auto rowCenter = [](const RECT& rect) {
+            return (rect.top + rect.bottom) / 2;
+        };
+        // The recognize button is a 30x30 icon while the combos are 24 tall, so
+        // an exact centre match is not required -- one pixel of rounding is
+        // expected. A second control row would be tens of pixels off.
+        const int headerCenter = rowCenter(showSource);
+        const int rowTolerance = (std::max)(1,
+            (std::max)(static_cast<int>(showSource.bottom - showSource.top),
+                static_cast<int>(provider.bottom - provider.top)) / 8);
+        const auto sameRow = [&](const RECT& rect) {
+            return std::abs(rowCenter(rect) - headerCenter) <= rowTolerance;
+        };
+        if (!sameRow(provider) || !sameRow(engine) ||
+            !sameRow(recognize) || !sameRow(target)) {
+            return false;
+        }
+        if (recognize.right - recognize.left != recognize.bottom - recognize.top) {
+            return false;
+        }
+        if (target.right > engine.left) return false;
+        if (provider.bottom >= sourceFooter.top) return false;
+        if (provider.bottom >= translationEdit.top) return false;
         wchar_t recognizeName[64] = {};
         GetWindowTextW(GetDlgItem(window, 3121), recognizeName,
             static_cast<int>(std::size(recognizeName)));
         if (std::wstring(recognizeName) != L"Recognize again") return false;
+        if (provider.left - showSource.right < 2) return false;
         const POINT dragPoint = {
-            (showSource.right + engine.left) / 2,
-            (engine.top + engine.bottom) / 2,
+            (showSource.right + provider.left) / 2,
+            (showSource.top + showSource.bottom) / 2,
         };
         return HitTestScreenPoint(window, dragPoint) == HTCAPTION;
     }
@@ -1921,6 +1939,9 @@ int TestResultWindowLayoutContract() {
     }
     window.Show(nullptr);
     window.SetShowWindowBorder(false);
+    // The compact OCR minimum is wider than the plain one, so switching the
+    // border off starts an automatic resize; let it settle before measuring.
+    PumpMessagesFor(250);
     window.SetStage(L"Ready");
     if (IsWindowVisible(GetDlgItem(native, 3105))) return 571;
     if (!VerifyCompactTitlebarHitTargets(native, true)) return 572;
@@ -1941,9 +1962,84 @@ int TestResultWindowLayoutContract() {
     };
     RECT initialWindowRect = {};
     if (!GetWindowRect(native, &initialWindowRect) ||
-        initialWindowRect.right - initialWindowRect.left != scaleForInitialDpi(800) ||
+        // The compact OCR header keeps the selectors, the OCR route combo and
+        // the recognize button on one row, so it has a wider minimum than the
+        // shared kTranslationAutomaticMinimumWidth (800).
+        initialWindowRect.right - initialWindowRect.left != scaleForInitialDpi(940) ||
         initialWindowRect.bottom - initialWindowRect.top != scaleForInitialDpi(420)) {
         return 174;
+    }
+    {
+        // At that minimum -- which is also the width a small crop opens with --
+        // the four combos must form one set: equal widths, and never below the
+        // shared floor. Individual labels may still be ellipsized when a very
+        // long provider name is selected, which is the documented trade-off of
+        // the uniform-width row (the popup menus list every label in full).
+        const auto controlWidth = [&](int controlId) {
+            RECT rect = {};
+            if (!GetDlgItem(native, controlId) ||
+                !GetWindowRect(GetDlgItem(native, controlId), &rect)) {
+                return -1;
+            }
+            return static_cast<int>(rect.right - rect.left);
+        };
+        // Every combo in a compact header shares one width (see
+        // kTranslationCompactComboMinWidth). That width is what keeps the row
+        // readable; an individual provider name longer than the shared width is
+        // ellipsized by design, because the popup menus list full labels.
+        const int providerW = controlWidth(3122);
+        const int sourceW = controlWidth(3103);
+        const int targetW = controlWidth(3104);
+        const int routeW = controlWidth(3114);
+        const int tolerance = scaleForInitialDpi(2);
+        const int floorWidth = scaleForInitialDpi(150);
+        if (providerW <= 0 || sourceW <= 0 || targetW <= 0 || routeW <= 0) return 745;
+        if (std::abs(providerW - sourceW) > tolerance ||
+            std::abs(providerW - targetW) > tolerance ||
+            std::abs(providerW - routeW) > tolerance) {
+            return 746;
+        }
+        if (providerW < floorWidth) return 747;
+        // The OCR route is the designated shortfall target: when a long provider
+        // name pushes the row over budget the route label ellipsizes first,
+        // because the popup menu always lists the full route labels. It must
+        // still keep its documented minimum instead of collapsing.
+        RECT routeRect = {};
+        if (!GetWindowRect(GetDlgItem(native, 3114), &routeRect) ||
+            routeRect.right - routeRect.left < scaleForInitialDpi(150)) {
+            return 744;
+        }
+    }
+    {
+        // Folded source, compact OCR: one control row, so the translation card
+        // starts right below the header instead of below a second control row.
+        translation::TranslationResultWindow foldedWindow(
+            request, launchContext,
+            [](translation::TranslationResultWindow::Command) {});
+        if (!foldedWindow.IsValid()) return 742;
+        const HWND foldedNative = foldedWindow.WindowHandle();
+        foldedWindow.SetShowSourceText(false);
+        foldedWindow.SetSourceText(L"Folded compact source.");
+        foldedWindow.SetTranslationText(L"Translation.");
+        foldedWindow.Show(nullptr);
+        foldedWindow.SetShowWindowBorder(false);
+        PumpMessagesFor(250);
+        RECT foldedEdit = {};
+        RECT foldedClient = {};
+        POINT foldedOrigin = {};
+        RECT foldedProvider = {};
+        RECT foldedSource = {};
+        if (!GetWindowRect(GetDlgItem(foldedNative, 3102), &foldedEdit) ||
+            !GetClientRect(foldedNative, &foldedClient) ||
+            !ClientToScreen(foldedNative, &foldedOrigin) ||
+            !GetWindowRect(GetDlgItem(foldedNative, 3122), &foldedProvider) ||
+            !GetWindowRect(GetDlgItem(foldedNative, 3116), &foldedSource) ||
+            foldedProvider.left - foldedSource.right < 2 ||
+            foldedProvider.right >= foldedOrigin.x + foldedClient.right ||
+            foldedEdit.top - foldedOrigin.y !=
+                scaleForInitialDpi(30 + 3 + 8)) {
+            return 743;
+        }
     }
     const RECT largeSourceRect = {
         monitorInfo.rcWork.left + 20,
@@ -2310,7 +2406,7 @@ int TestResultWindowLayoutContract() {
 
         MINMAXINFO minmax = {};
         SendMessageW(native, WM_GETMINMAXINFO, 0, reinterpret_cast<LPARAM>(&minmax));
-        const int expectedMinWidth = scaleForResultDpi(800, targetDpi);
+        const int expectedMinWidth = scaleForResultDpi(940, targetDpi);
         const int expectedMinHeight = scaleForResultDpi(420, targetDpi);
         if (minmax.ptMinTrackSize.x != expectedMinWidth ||
             minmax.ptMinTrackSize.y != expectedMinHeight) {
@@ -2331,6 +2427,18 @@ int TestResultWindowLayoutContract() {
         if (!showSourceFont ||
             GetObjectW(showSourceFont, sizeof(controlFont), &controlFont) == 0) {
             return 117;
+        }
+        // Every compact control is painted with compactFont_ and measured with the
+        // same handle; a control left on the larger font_ would be laid out too
+        // narrow after a DPI change (the provider combo used to be that control).
+        // 3103/3104 are the language combos, 3114 the OCR route combo, 3120 the
+        // source mode button and 3122 the provider.
+        for (int compactControlId : {3103, 3104, 3114, 3120, 3122}) {
+            const HFONT compactFont = reinterpret_cast<HFONT>(
+                SendMessageW(GetDlgItem(native, compactControlId), WM_GETFONT, 0, 0));
+            if (!compactFont || compactFont != showSourceFont) {
+                return 748;
+            }
         }
         const int controlFontHeight = std::abs(controlFont.lfHeight);
         if (targetDpi == 96 && defaultControlFontHeightAt96 == 0) {

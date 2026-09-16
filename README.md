@@ -1,14 +1,15 @@
-# ZenCrop v2.9.26
+# ZenCrop v2.9.27
 
 [中文文档](doc/README_zh.md)
 
 An independent, **enhanced** reimplementation of [PowerToys Crop And Lock](https://github.com/microsoft/PowerToys/tree/main/src/modules/CropAndLock/), with rich screenshot annotation, long screenshot, multi-engine OCR, and OCR Dashboard.
 
-## What's new in v2.9.26
+## What's new in v2.9.27
 
-- **`Shift+A` selection translation no longer disappears**: When a screenshot was still on the clipboard (PixPin and similar tools publish `CF_BITMAP`), the simulated-copy fallback handed a **GDI handle to `GlobalSize()`** while backing the clipboard up. For some handle values ntdll validates that value as a heap block, declares heap corruption, and fail-fasts the process — no dialog, and not catchable. All GDI-handle clipboard formats (`CF_BITMAP`, `CF_PALETTE`, `CF_ENHMETAFILE`, `CF_OWNERDISPLAY`, `CF_DSP*`, `CF_GDIOBJ*`) are now rejected by format id before the handle is touched. That is also why it looked random: whether a value is fatal depends on the handle itself (measured: `0x3205179a` returns 0, `0xffffffffd0051737` kills the process).
-- **No more "could not be fully restored" on every capture**: The old check was a single "is everything identical" flag, so a GDI representation we can never snapshot — while the image content itself was already kept as `CF_DIB`/`CF_DIBV5` — triggered a 4.2 s topmost toast that covered the translation window. Missing data is now classified by cause: a redundant GDI representation stays silent, a format dropped by the 32 MB/64 MB caps gets a 1.8 s note, and a genuinely failed hand-off gets a 3.2 s warning that says what to do.
-- **Transient messages stay off the result window**: Toasts now prefer the right/left/below/above side of the window that was just opened and only fall back to the work-area corner, instead of being anchored to the mouse cursor (which is always next to that window).
+- **The compact translation window is one control row again**: with the title bar off, OCR mode used to push the language/provider selectors onto a second row — and that row stayed even with the source text collapsed, wasting ~30 design units and breaking the visual flow. OCR and selection translation now share **one** row: OCR only adds its route picker and the ↻ button, and expanding the source text adds the source card instead of another control row. The bordered window is unchanged.
+- **No more clipped labels in that row**: the provider button used to be sized for the longest *enabled* profile name, so a single long name (e.g. `Google Translate Community`) pinned it to its 200-unit cap and the OCR route label got squeezed to `PaddleOCR-VL…`. All four dropdowns now share one width derived from the label each one is *currently showing* (floored at 150, capped at 200) and narrow as a set, so the labels you actually see — provider name, both languages, the OCR route — are never clipped at the minimum window size. A provider name longer than that shared width is still ellipsized in the button; the dropdown always lists it in full.
+- **The OCR route menu matches Settings**: same wording and order as Settings ▸ OCR "Mode" (`Current settings` / `Local (Windows OCR)` / `PaddleOCR Cloud` / `PaddleOCR-VL 1.6 Local` / `PP-OCRv6 Local`). The local entry is the document-parsing (Layout + VLM) route — there is no separate image entry.
+- **Smaller, tidier labels**: `Show source` → `Source`, the route button/badge drop the ` Local` suffix (menus keep the full name), engine names follow the Settings wording, and the built-in `Google Translate Community` profile is now `Google Translate` (existing configs follow the preset automatically).
 
 See [CHANGELOG](doc/CHANGELOG.md) for the complete release notes.
 
