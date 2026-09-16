@@ -43,12 +43,20 @@ bool IsWhitespace(wchar_t value) {
     if (value == L' ' || value == L'\t' || value == L'\r' || value == L'\n') {
         return true;
     }
+    // CJK documents indent with U+3000, and iswspace() only recognizes it in a
+    // Chinese locale: a line built from ideographic spaces is still blank.
+    if (value == 0x3000) return true;
     return std::iswspace(static_cast<wint_t>(value)) != 0;
 }
 
 bool HasWhitespace(const std::wstring& text) {
     return std::any_of(text.begin(), text.end(),
         [](wchar_t value) { return IsWhitespace(value); });
+}
+
+bool HasNonWhitespace(const std::wstring& text) {
+    return std::any_of(text.begin(), text.end(),
+        [](wchar_t value) { return !IsWhitespace(value); });
 }
 
 // Removes one layer of a matching quote/bracket pair and trailing sentence
@@ -276,8 +284,19 @@ bool IsCodeIdentifierToken(const std::wstring& text) {
 
 } // namespace
 
+bool IsBlankSegment(const std::wstring& text) {
+    return !HasNonWhitespace(text);
+}
+
 bool IsUntranslatableSegment(const std::wstring& text) {
-    if (text.empty() || text.size() > kMaxUntranslatableChars) return false;
+    // Checked before the size gate: a long whitespace-only line is still blank,
+    // and "long text is almost always prose" says nothing about it. Measured
+    // 2026-09-16 on a screen selection that covered indented and empty lines:
+    // both the DeepSeek and the Google path failed on exactly the blank
+    // segments, each answering with an empty string, while every text segment
+    // of the same batch was fine.
+    if (IsBlankSegment(text)) return true;
+    if (text.size() > kMaxUntranslatableChars) return false;
     for (const wchar_t value : text) {
         if (value == L'\r' || value == L'\n' || IsCjkText(value)) return false;
     }

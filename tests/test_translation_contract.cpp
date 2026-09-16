@@ -6651,6 +6651,13 @@ int TestUntranslatableSegmentContract() {
         L"* * *",
         L"node_modules/@types/node/index.d.ts:42:5",
         L"src\\translation\\TranslationCoordinator.cpp]",
+        // Blank line content a screen selection carries along. Measured
+        // 2026-09-16: both the DeepSeek and the Google path failed on exactly
+        // these segments while the text segments of the same batch were fine.
+        L"",
+        L"   ",
+        L"\t\t",
+        L"\u3000\u3000",
     };
     for (size_t index = 0; index < untranslatable.size(); ++index) {
         if (!IsUntranslatableSegment(untranslatable[index])) {
@@ -6799,7 +6806,77 @@ int TestUntranslatableSegmentContract() {
         }
     }
 
-    // 5: the completion list keeps one entry per source segment, in order. The
+    // 5: blank lines of a selection (spaces, tabs, ideographic spaces) are
+    // layout, not prose. They stay local instead of being sent, where every
+    // provider answers them with an empty string and fails the whole batch.
+    {
+        translator->failCount.store(0);
+        translator->failNext.store(false);
+        translator->ResetRequestHistory();
+        if (!coordinator.StartText(nullptr, context,
+                L"Hello world\n   \n\t\n\u3000\u3000\nGoodbye world").started) {
+            finish();
+            return 814;
+        }
+        PumpTranslationMessages(800);
+        HWND native = resultWindow();
+        const auto history = translator->RequestHistory();
+        const bool sentOnlyTextLines = history.size() == 1 &&
+            history[0].size() == 2 &&
+            history[0][0].id == L"s1" && history[0][0].text == L"Hello world" &&
+            history[0][1].id == L"s5" && history[0][1].text == L"Goodbye world";
+        const std::wstring body = native ? ControlText(native, 3102) : std::wstring{};
+        if (!native || !sentOnlyTextLines ||
+            ControlText(native, 3105) != L"Ready" ||
+            body.find(L"[fake] Hello world") == std::wstring::npos ||
+            body.find(L"   \r\n") == std::wstring::npos ||
+            body.find(L"\t\r\n") == std::wstring::npos ||
+            body.find(L"\u3000\u3000\r\n") == std::wstring::npos ||
+            body.find(L"[fake] Goodbye world") == std::wstring::npos) {
+            finish();
+            return 815;
+        }
+    }
+
+    // 6: the same rule in the structured path. A blank leaf is kept local, so
+    // the block that would have held nothing but markers is never issued and
+    // the projection keeps the blank text without degrading the result.
+    {
+        selection::SelectionContent content;
+        content.kind = selection::SelectionContentKind::Html;
+        content.fidelity = selection::SelectionFidelity::Semantic;
+        content.requestToken = L"55555555555555555555555555555555";
+        content.requestGeneration = 905;
+        content.structuredPlanJson =
+            L"{\"version\":1,\"token\":\"" + content.requestToken +
+            L"\",\"generation\":905,\"sourceMarkdown\":\"Hello\\r\\n   \","
+            L"\"parts\":[{\"segmentId\":\"t00001\"},{\"literal\":\"\\r\\n\"},"
+            L"{\"segmentId\":\"t00002\"}],\"leaves\":["
+            L"{\"id\":\"t00001\",\"blockId\":\"b1\",\"text\":\"Hello\"},"
+            L"{\"id\":\"t00002\",\"blockId\":\"b2\",\"text\":\"   \"}]}";
+        translator->ResetRequestHistory();
+        if (!coordinator.StartSelection(
+                nullptr, context, std::move(content)).started) {
+            finish();
+            return 816;
+        }
+        PumpTranslationMessages(800);
+        HWND native = resultWindow();
+        const auto history = translator->RequestHistory();
+        const bool onlyTextLeafSent = history.size() == 1 &&
+            history[0].size() == 1 &&
+            history[0][0].text.find(L"M1") != std::wstring::npos &&
+            history[0][0].text.find(L"M2") == std::wstring::npos;
+        const std::wstring body = native ? ControlText(native, 3102) : std::wstring{};
+        if (!native || !onlyTextLeafSent ||
+            ControlText(native, 3105) != L"Ready" ||
+            body != L"Hello\r\n   ") {
+            finish();
+            return 817;
+        }
+    }
+
+    // 7: the completion list keeps one entry per source segment, in order. The
     // dashboard translation cache compares this list positionally.
     {
         EmbeddedSink sink;

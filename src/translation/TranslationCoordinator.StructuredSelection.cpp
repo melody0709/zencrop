@@ -1,6 +1,7 @@
 #include "TranslationCoordinator.h"
 
 #include "TranslationProviderCatalog.h"
+#include "TranslationUntranslatable.h"
 #include "core/Strings.h"
 
 #include <algorithm>
@@ -118,6 +119,15 @@ void TranslationCoordinator::StartStructuredTranslation(
     structuredLeafTranslations_.clear();
     structuredInvalidBlocks_.clear();
     structuredRetryAttempted_ = false;
+    // Blank leaves are layout, not prose. Keeping them local stops a block from
+    // being built out of bare markers and stops a direct provider from being
+    // asked for an answer that can only come back empty; the projection then
+    // finds them already translated instead of reporting a degraded result.
+    for (const auto& leaf : structuredPlan_->leaves) {
+        if (IsBlankSegment(leaf.text)) {
+            structuredLeafTranslations_[leaf.id] = leaf.text;
+        }
+    }
     segmentBreaksAfter_.clear();
     translationLeadingBreaks_.clear();
     translationTrailingBreaks_.clear();
@@ -135,6 +145,7 @@ void TranslationCoordinator::StartStructuredTranslation(
     if (directMt) {
         structuredTranslationMode_ = StructuredTranslationMode::DirectLeaves;
         for (const auto& leaf : structuredPlan_->leaves) {
+            if (structuredLeafTranslations_.contains(leaf.id)) continue;
             request_.segments.push_back({leaf.id, leaf.text});
         }
     } else {
@@ -144,6 +155,7 @@ void TranslationCoordinator::StartStructuredTranslation(
         std::vector<std::wstring> blockOrder;
         for (size_t index = 0; index < structuredPlan_->leaves.size(); ++index) {
             const auto& leaf = structuredPlan_->leaves[index];
+            if (structuredLeafTranslations_.contains(leaf.id)) continue;
             auto [found, inserted] = blockLeaves.try_emplace(
                 leaf.blockId,
                 std::vector<const selection::StructuredSelectionLeaf*>{});
