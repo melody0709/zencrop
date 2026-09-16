@@ -2420,7 +2420,9 @@ void TranslationResultWindow::LayoutControls(bool redraw) {
         sourceLanguageTextWidth = measureLanguageText(sourceLanguages_);
         targetLanguageTextWidth = measureLanguageText(targetLanguages_);
         for (const auto& provider : providerOptions_) {
-            const std::wstring label = compactOcrHeader
+            // Must match the painted label: the compact header drops the
+            // "Provider：" prefix, so its button is sized for the bare name.
+            const std::wstring label = compactHeader
                 ? provider.label : ProviderButtonLabel(provider.label);
             SIZE textSize = {};
             GetTextExtentPoint32W(languageMeasureDc, label.c_str(),
@@ -2806,7 +2808,13 @@ void TranslationResultWindow::DrawOwnerDrawControl(const DRAWITEMSTRUCT& draw) {
         wchar_t label[128] = {};
         GetWindowTextW(draw.hwndItem, label, static_cast<int>(std::size(label)));
         const wchar_t* visualLabel = label;
-        const bool compactOcr = !showWindowBorder_ &&
+        // Every compact (borderless) header paints the bare profile name for the
+        // provider control, not just the OCR variant. At the default compact
+        // window size the "Provider：" prefix alone eats most of the button's
+        // text width, so the name -- the only part that identifies the model
+        // actually in use -- was the piece that got ellipsized.
+        const bool compactHeader = !showWindowBorder_;
+        const bool compactOcr = compactHeader &&
             sourceMode_ == TranslationSourceMode::OcrImage;
         if (compactOcr && id == kEngineLabel) {
             const wchar_t* separator = wcschr(label, L':');
@@ -2815,7 +2823,7 @@ void TranslationResultWindow::DrawOwnerDrawControl(const DRAWITEMSTRUCT& draw) {
                 visualLabel = separator + 1;
                 while (*visualLabel == L' ') ++visualLabel;
             }
-        } else if (compactOcr && id == kProviderCombo &&
+        } else if (compactHeader && id == kProviderCombo &&
                    providerIndex_ >= 0 &&
                    providerIndex_ < static_cast<int>(providerOptions_.size())) {
             visualLabel = providerOptions_[providerIndex_].label.c_str();
