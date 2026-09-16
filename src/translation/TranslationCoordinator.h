@@ -81,6 +81,10 @@ public:
         HWND topLevelWindow,
         uint64_t requestGeneration,
         std::function<void(selection::SelectionContent)> callback);
+    // Screen rect of the current result window. Callers that show transient
+    // feedback next to the selection use it to keep that feedback off the window
+    // the workflow just opened. False when no result window is open.
+    bool ResultWindowRect(RECT& rect) const;
     // Starts a block-aware, windowless translation workflow. Segment ids are
     // preserved in the final completion so a document projection can rebuild
     // Markdown and PreviewBlocks without touching the OCR model.

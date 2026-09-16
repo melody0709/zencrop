@@ -61,6 +61,14 @@ enum class ClipboardDisposition {
     Untouched,
     Restored,
     RestoreSkippedExternalUpdate,
+    // The restore itself worked, but a part of the previous clipboard could not
+    // be carried over because it exceeded the snapshot capacity caps. This is a
+    // deliberate, bounded loss rather than a failure, so it must not be reported
+    // with the same weight as a failed restore.
+    RestoreContentDropped,
+    // The restore failed: the clipboard was held open by another process, or the
+    // OLE hand-off failed. The previous content is not back and the user may
+    // want to retry.
     RestoreIncomplete,
 };
 
@@ -113,5 +121,14 @@ SelectionAcquisitionDisposition ClassifySelectionAcquisition(
     const SelectionAcquisitionResult& result);
 RECT ChooseSelectionAnchor(
     const std::vector<RECT>& lineRectangles, POINT cursor);
+
+// Top-left corner for the selection toast inside `work`. Prefers the anchor
+// offset (mirrored to the other side when it would leave the work area), then
+// the first side of `avoid` that fits, and finally the work-area corner.
+// `avoid` may be null; when it is given the toast is never placed on top of it,
+// so an informational toast cannot cover the window it belongs to.
+POINT ChooseToastPosition(
+    const RECT& work, int width, int height, POINT anchor,
+    int offsetX, int offsetY, const RECT* avoid);
 
 } // namespace selection

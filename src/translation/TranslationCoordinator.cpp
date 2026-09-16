@@ -1156,6 +1156,11 @@ void TranslationCoordinator::CancelOcrWatchdog() {
     ocrWatchdog_.reset();
 }
 
+bool TranslationCoordinator::ResultWindowRect(RECT& rect) const {
+    if (!resultWindow_ || !resultWindow_->IsValid()) return false;
+    return GetWindowRect(resultWindow_->WindowHandle(), &rect) != FALSE;
+}
+
 void TranslationCoordinator::CleanupInvalid() {
     if (resultWindow_ && !resultWindow_->IsValid()) {
         ++generation_;

@@ -18,6 +18,12 @@ namespace {
 // 晚于该预算耗尽，回退采集前必须重新起算，否则回退天生带着过期 deadline。
 constexpr DWORD kSelectionAcquireDeadlineMs = 2200;
 constexpr UINT kCopyTimeoutToastMilliseconds = 1000;
+// Restoring the clipboard can fail for reasons the user has to act on (another
+// app holding the clipboard), while a capacity drop is informational only. They
+// get different weights and different lifetimes instead of one vague warning
+// that has to be read every single time.
+constexpr UINT kClipboardRestoreFailureToastMilliseconds = 3200;
+constexpr UINT kClipboardContentDroppedToastMilliseconds = 1800;
 
 std::wstring StageText(const wchar_t* chinese, const wchar_t* english) {
     return S::IsChinese() ? chinese : english;
@@ -361,8 +367,13 @@ void SelectionTranslationController::ShowAcquisitionError(
     if (result.clipboardDisposition ==
         ClipboardDisposition::RestoreIncomplete) {
         message += StageText(
-            L"\n另外，剪贴板原内容未能完整恢复。",
-            L"\nThe previous clipboard contents could not be fully restored.");
+            L"\n另外，剪贴板原内容未能还原，可能被其他程序占用。",
+            L"\nThe previous clipboard contents could not be restored; another app may be holding the clipboard.");
+    } else if (result.clipboardDisposition ==
+               ClipboardDisposition::RestoreContentDropped) {
+        message += StageText(
+            L"\n另外，剪贴板内容过多或过大，部分内容未能保留。",
+            L"\nPart of the clipboard was too large to keep, so it was not restored.");
     } else if (result.clipboardDisposition ==
                ClipboardDisposition::RestoreSkippedExternalUpdate) {
         message += StageText(
@@ -375,17 +386,31 @@ void SelectionTranslationController::ShowAcquisitionError(
 
 void SelectionTranslationController::ShowClipboardDispositionWarning(
     ClipboardDisposition disposition, POINT anchor) {
+    // The result window was opened just before this call, and the mouse cursor
+    // sits next to it, so an anchored toast would land on top of the translation
+    // the user is waiting for.
+    RECT resultWindow = {};
+    const RECT* avoid = translation_.ResultWindowRect(resultWindow)
+        ? &resultWindow : nullptr;
     if (disposition == ClipboardDisposition::RestoreIncomplete) {
         toast_.Show(StageText(
-            L"剪贴板原内容未能完整恢复。",
-            L"The previous clipboard contents could not be fully restored."),
-            anchor, SelectionToastKind::Warning);
+            L"剪贴板原内容未能还原，可能被其他程序占用。",
+            L"The previous clipboard contents could not be restored; another app may be holding the clipboard."),
+            anchor, SelectionToastKind::Warning, false,
+            kClipboardRestoreFailureToastMilliseconds, avoid);
+    } else if (disposition == ClipboardDisposition::RestoreContentDropped) {
+        toast_.Show(StageText(
+            L"剪贴板内容过多或过大，部分内容未能保留。",
+            L"Part of the clipboard was too large to keep, so it was not restored."),
+            anchor, SelectionToastKind::Info, false,
+            kClipboardContentDroppedToastMilliseconds, avoid);
     } else if (disposition ==
                ClipboardDisposition::RestoreSkippedExternalUpdate) {
         toast_.Show(StageText(
             L"检测到其他程序更新剪贴板，ZenCrop 未覆盖该更新。",
             L"Another app updated the clipboard, so ZenCrop left that update untouched."),
-            anchor, SelectionToastKind::Info);
+            anchor, SelectionToastKind::Info, false,
+            kClipboardContentDroppedToastMilliseconds, avoid);
     }
 }
 

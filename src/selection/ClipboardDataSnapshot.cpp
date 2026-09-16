@@ -242,6 +242,40 @@ bool OpenCurrentClipboard() {
 
 } // namespace
 
+bool ClipboardFormatCarriesGdiHandle(UINT format) {
+    switch (format) {
+    case CF_BITMAP:          // HBITMAP
+    case CF_PALETTE:         // HPALETTE
+    case CF_ENHMETAFILE:     // HENHMETAFILE
+    case CF_OWNERDISPLAY:    // HDC
+    case CF_DSPBITMAP:       // HBITMAP
+    case CF_DSPMETAFILEPICT: // metafile handle
+    case CF_DSPENHMETAFILE:  // HENHMETAFILE
+        return true;
+    default:
+        break;
+    }
+    // CF_DSPTEXT (0x0081) is deliberately absent above: it carries HGLOBAL
+    // text. CF_METAFILEPICT is an HGLOBAL holding a METAFILEPICT as well.
+    // CF_GDIOBJFIRST..CF_GDIOBJLAST are GDI objects by definition.
+    return format >= CF_GDIOBJFIRST && format <= CF_GDIOBJLAST;
+}
+
+ClipboardSnapshotGap ClassifySnapshotGap(
+    bool capacityDropped, bool unmaterializableDropped,
+    bool gdiRepresentationSkipped, bool hglobalImageCaptured) {
+    if (capacityDropped || unmaterializableDropped) {
+        return ClipboardSnapshotGap::ContentDropped;
+    }
+    if (!gdiRepresentationSkipped) return ClipboardSnapshotGap::None;
+    // A GDI representation alone is not user-visible loss as long as the image
+    // content itself travelled through an HGLOBAL format. Without one, the only
+    // copy of that content was the representation we cannot snapshot.
+    return hglobalImageCaptured
+        ? ClipboardSnapshotGap::RedundantGdiRepresentation
+        : ClipboardSnapshotGap::ContentDropped;
+}
+
 ClipboardDataSnapshot::~ClipboardDataSnapshot() {
     Reset();
 }
@@ -250,14 +284,17 @@ void ClipboardDataSnapshot::Reset() {
     if (dataObject_) dataObject_->Release();
     dataObject_ = nullptr;
     formatCount_ = 0;
-    complete_ = false;
+    gap_ = ClipboardSnapshotGap::None;
 }
 
 bool ClipboardDataSnapshot::Capture(IDataObject* source) {
     Reset();
 
     bool clipboardEnumerationComplete = false;
-    bool hitLimit = false;
+    bool capacityDropped = false;
+    bool unmaterializableDropped = false;
+    bool gdiRepresentationSkipped = false;
+    bool hglobalImageCaptured = false;
     SIZE_T totalBytes = 0;
     std::vector<MaterializedFormat> materialized;
     std::vector<CLIPFORMAT> clipboardFormats;
@@ -266,13 +303,26 @@ bool ClipboardDataSnapshot::Capture(IDataObject* source) {
                                 DWORD aspect, LONG index) {
         if (!global || HasFormatId(materialized, format)) return false;
         const SIZE_T bytes = GlobalSize(global);
-        if (bytes == 0 || bytes > kMaximumSnapshotFormatBytes ||
+        if (bytes == 0) {
+            // Either a zero-length format (nothing to lose) or a value that is not
+            // a memory-backed handle at all -- a registered format holding a GDI
+            // handle, for instance. Neither is content the user could act on, and
+            // the restore later reports a genuine failure separately, so this
+            // stays silent instead of training the user to ignore the toast.
+            return false;
+        }
+        if (bytes > kMaximumSnapshotFormatBytes ||
             totalBytes > kMaximumSnapshotTotalBytes - bytes) {
-            hitLimit = true;
+            capacityDropped = true;
             return false;
         }
         const void* sourceBytes = GlobalLock(global);
-        if (!sourceBytes) return false;
+        if (!sourceBytes) {
+            // The handle claimed a size but could not be read: that is real,
+            // unexpected loss and has to stay reportable.
+            unmaterializableDropped = true;
+            return false;
+        }
         MaterializedFormat saved;
         saved.format = {format, nullptr,
             aspect == 0 ? DVASPECT_CONTENT : aspect, index, TYMED_HGLOBAL};
@@ -280,6 +330,9 @@ bool ClipboardDataSnapshot::Capture(IDataObject* source) {
         std::memcpy(saved.bytes.data(), sourceBytes, bytes);
         GlobalUnlock(global);
         totalBytes += bytes;
+        if (format == CF_DIB || format == CF_DIBV5 || format == CF_TIFF) {
+            hglobalImageCaptured = true;
+        }
         materialized.push_back(std::move(saved));
         return true;
     };
@@ -289,19 +342,28 @@ bool ClipboardDataSnapshot::Capture(IDataObject* source) {
         for (UINT format = EnumClipboardFormats(0); format != 0;
              format = EnumClipboardFormats(format)) {
             if (clipboardFormats.size() >= kMaximumSnapshotFormats) {
-                hitLimit = true;
+                capacityDropped = true;
                 break;
             }
             const CLIPFORMAT clipboardFormat = static_cast<CLIPFORMAT>(format);
             clipboardFormats.push_back(clipboardFormat);
             HANDLE data = GetClipboardData(format);
+            // The raw clipboard enumeration carries no TYMED information, so a
+            // GDI-handle format has to be skipped before its handle is used as
+            // an HGLOBAL. The gap classification later decides whether that
+            // costs the user anything.
             if (data) {
-                saveGlobal(clipboardFormat, static_cast<HGLOBAL>(data),
-                    DVASPECT_CONTENT, -1);
+                if (ClipboardFormatCarriesGdiHandle(clipboardFormat)) {
+                    gdiRepresentationSkipped = true;
+                } else {
+                    saveGlobal(clipboardFormat, static_cast<HGLOBAL>(data),
+                        DVASPECT_CONTENT, -1);
+                }
             }
             SetLastError(ERROR_SUCCESS);
         }
-        clipboardEnumerationComplete = !hitLimit && GetLastError() == ERROR_SUCCESS;
+        clipboardEnumerationComplete = !capacityDropped &&
+            GetLastError() == ERROR_SUCCESS;
         CloseClipboard();
     }
 
@@ -351,19 +413,17 @@ bool ClipboardDataSnapshot::Capture(IDataObject* source) {
     }
 
     if (materialized.empty()) return false;
-    const bool allClipboardFormatsCaptured = clipboardEnumerationComplete &&
-        !hitLimit && std::all_of(
-            clipboardFormats.begin(), clipboardFormats.end(),
-            [&materialized](CLIPFORMAT format) {
-                return HasFormatId(materialized, format);
-            });
+    // An enumeration that ended on an error may have hidden formats we never
+    // looked at, so it counts as dropped content rather than as a clean capture.
+    if (!clipboardEnumerationComplete) capacityDropped = true;
     const std::size_t capturedCount = materialized.size();
     auto* object = new (std::nothrow) MaterializedClipboardDataObject(
         std::move(materialized));
     if (!object) return false;
     dataObject_ = object;
     formatCount_ = capturedCount;
-    complete_ = allClipboardFormatsCaptured;
+    gap_ = ClassifySnapshotGap(capacityDropped, unmaterializableDropped,
+        gdiRepresentationSkipped, hglobalImageCaptured);
     return true;
 }
 

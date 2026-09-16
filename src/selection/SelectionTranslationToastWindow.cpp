@@ -1,5 +1,6 @@
 #include "SelectionTranslationToastWindow.h"
 
+#include "SelectionTypes.h"
 #include "core/Strings.h"
 
 #include <shellscalingapi.h>
@@ -81,12 +82,14 @@ bool SelectionTranslationToastWindow::EnsureWindow() {
 
 void SelectionTranslationToastWindow::Show(
     std::wstring message, POINT anchor, SelectionToastKind kind,
-    bool workAreaCorner, UINT visibleMilliseconds) {
+    bool workAreaCorner, UINT visibleMilliseconds, const RECT* avoidRect) {
     if (message.empty()) return;
     message_ = std::move(message);
     anchor_ = anchor;
     kind_ = kind;
     workAreaCorner_ = workAreaCorner;
+    hasAvoidRect_ = avoidRect != nullptr;
+    avoidRect_ = avoidRect ? *avoidRect : RECT{};
     if (!EnsureWindow()) return;
     PositionAndShow();
     KillTimer(window_, kTimerId);
@@ -109,10 +112,6 @@ void SelectionTranslationToastWindow::PositionAndShow() {
     RECT work = {0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)};
     if (monitor && GetMonitorInfoW(monitor, &monitorInfo)) {
         work = monitorInfo.rcWork;
-    }
-    POINT anchor = anchor_;
-    if (workAreaCorner_) {
-        anchor = {work.right - 1, work.bottom - 1};
     }
 
     // The toast is initially created at a neutral position. Derive scale from
@@ -158,17 +157,17 @@ void SelectionTranslationToastWindow::PositionAndShow() {
     const int height = (std::min)(workHeight,
         (std::max)(ScaleForDpi(50, dpi),
             measuredHeight + paddingY * 2));
-    int x = anchor.x + ScaleForDpi(14, dpi);
-    int y = anchor.y + ScaleForDpi(20, dpi);
-    if (x + width > work.right) x = anchor.x - width - ScaleForDpi(14, dpi);
-    if (y + height > work.bottom) y = anchor.y - height - ScaleForDpi(14, dpi);
-    const int maximumX = (std::max)(static_cast<int>(work.left),
-        static_cast<int>(work.right) - width);
-    const int maximumY = (std::max)(static_cast<int>(work.top),
-        static_cast<int>(work.bottom) - height);
-    x = (std::clamp)(x, static_cast<int>(work.left), maximumX);
-    y = (std::clamp)(y, static_cast<int>(work.top), maximumY);
-    SetWindowPos(window_, HWND_TOPMOST, x, y, width, height,
+    const int offsetX = ScaleForDpi(14, dpi);
+    const int offsetY = ScaleForDpi(20, dpi);
+    // The work-area corner anchor is expressed by moving the anchor point; the
+    // shared placement helper then flips it back inside the work area.
+    const POINT anchor = workAreaCorner_
+        ? POINT{work.right - 1, work.bottom - 1}
+        : anchor_;
+    const POINT position = ChooseToastPosition(
+        work, width, height, anchor, offsetX, offsetY,
+        hasAvoidRect_ ? &avoidRect_ : nullptr);
+    SetWindowPos(window_, HWND_TOPMOST, position.x, position.y, width, height,
         SWP_NOACTIVATE | SWP_SHOWWINDOW);
 }
 

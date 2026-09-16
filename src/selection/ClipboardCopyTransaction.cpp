@@ -172,6 +172,9 @@ struct ClipboardObservedState {
 enum class RestoreOutcome {
     Restored,
     SkippedExternalUpdate,
+    // The hand-off itself succeeded, but the snapshot could not carry every
+    // format because it exceeded the capacity caps.
+    ContentDropped,
     Incomplete,
 };
 
@@ -181,6 +184,8 @@ ClipboardDisposition ToDisposition(RestoreOutcome outcome) {
         return ClipboardDisposition::Restored;
     case RestoreOutcome::SkippedExternalUpdate:
         return ClipboardDisposition::RestoreSkippedExternalUpdate;
+    case RestoreOutcome::ContentDropped:
+        return ClipboardDisposition::RestoreContentDropped;
     default:
         return ClipboardDisposition::RestoreIncomplete;
     }
@@ -614,11 +619,20 @@ RestoreOutcome RestoreClipboard(
         }
         return RestoreOutcome::Incomplete;
     }
-    if (!snapshot.data.Complete()) {
+    // A GDI-handle representation (CF_BITMAP and friends) can never be
+    // snapshotted, and it is not user-visible loss when the image content itself
+    // travelled through CF_DIB/CF_DIBV5/CF_TIFF. Reporting that on every capture
+    // only trains the user to ignore the toast, so it is classified as a clean
+    // restore; only a format dropped by the capacity caps keeps a message, and a
+    // failed hand-off below still reports a failure.
+    const ClipboardSnapshotGap gap = snapshot.data.Gap();
+    if (gap == ClipboardSnapshotGap::ContentDropped) {
         setDiagnostic(L"RESTORE_OLE_PARTIAL_SNAPSHOT");
-        return RestoreOutcome::Incomplete;
+        return RestoreOutcome::ContentDropped;
     }
-    setDiagnostic(L"RESTORE_OLE_OK");
+    setDiagnostic(gap == ClipboardSnapshotGap::RedundantGdiRepresentation
+        ? L"RESTORE_OLE_OK_REDUNDANT_GDI_REPRESENTATION"
+        : L"RESTORE_OLE_OK");
     return RestoreOutcome::Restored;
 }
 

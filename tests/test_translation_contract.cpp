@@ -6066,6 +6066,66 @@ int TestSelectionPlatformContracts() {
     result.content.plainText = invalidHigh;
     if (selection::ClassifySelectionAcquisition(result) !=
         selection::SelectionAcquisitionDisposition::Error) return 706;
+
+    // Regression for the SHIFT+A 0xC0000374 crash: the raw clipboard
+    // enumeration used to push every GetClipboardData() result into GlobalSize,
+    // including the formats that hand back a GDI handle instead of an HGLOBAL.
+    // A screenshot still sitting on the clipboard (PixPin publishes CF_BITMAP)
+    // therefore killed the process for roughly half of all bitmap handle
+    // values. These ids must stay rejected before any handle is touched.
+    const UINT gdiHandleFormats[] = {
+        CF_BITMAP, CF_PALETTE, CF_ENHMETAFILE, CF_OWNERDISPLAY, CF_DSPBITMAP,
+        CF_DSPMETAFILEPICT, CF_DSPENHMETAFILE, CF_GDIOBJFIRST, CF_GDIOBJLAST};
+    for (const UINT format : gdiHandleFormats) {
+        if (!selection::ClipboardFormatCarriesGdiHandle(format)) return 730;
+    }
+    // HGLOBAL-backed formats must keep flowing through the snapshot: dropping
+    // them would silently lose them from the clipboard restore around the
+    // synthetic copy.
+    const UINT hGlobalFormats[] = {
+        CF_TEXT, CF_METAFILEPICT, CF_OEMTEXT, CF_DIB, CF_HDROP, CF_LOCALE,
+        CF_UNICODETEXT, CF_DIBV5, CF_DSPTEXT, CF_PRIVATEFIRST, CF_PRIVATELAST,
+        0xC009 /* OLE DataObject */, 0xC25C /* PixPin image payload */};
+    for (const UINT format : hGlobalFormats) {
+        if (selection::ClipboardFormatCarriesGdiHandle(format)) return 731;
+    }
+
+    // Snapshot gap classification: a missing GDI representation is invisible to
+    // the user only while the image content itself was captured as HGLOBAL data
+    // (CF_DIB/CF_DIBV5/CF_TIFF). Everything else has to stay reportable.
+    if (selection::ClassifySnapshotGap(false, false, false, false) !=
+        selection::ClipboardSnapshotGap::None) return 732;
+    if (selection::ClassifySnapshotGap(false, false, true, true) !=
+        selection::ClipboardSnapshotGap::RedundantGdiRepresentation) return 733;
+    if (selection::ClassifySnapshotGap(false, false, true, false) !=
+        selection::ClipboardSnapshotGap::ContentDropped) return 734;
+    if (selection::ClassifySnapshotGap(true, false, true, true) !=
+        selection::ClipboardSnapshotGap::ContentDropped) return 735;
+    if (selection::ClassifySnapshotGap(false, true, false, true) !=
+        selection::ClipboardSnapshotGap::ContentDropped) return 736;
+
+    // Toast placement: the informational toast must never cover the result
+    // window it was raised next to.
+    const RECT work = {0, 0, 1000, 800};
+    const POINT cursor = {300, 300};
+    const POINT anchored =
+        selection::ChooseToastPosition(work, 300, 100, cursor, 14, 20, nullptr);
+    if (anchored.x != 314 || anchored.y != 320) return 737;
+    const RECT tallWindow = {100, 200, 700, 700};
+    const POINT beside =
+        selection::ChooseToastPosition(work, 200, 100, cursor, 14, 20, &tallWindow);
+    if (beside.x != 714 || beside.y != 300) return 738;
+    const RECT wideWindow = {100, 0, 900, 700};
+    const POINT corner =
+        selection::ChooseToastPosition(work, 200, 100, cursor, 14, 20, &wideWindow);
+    if (corner.x != 786 || corner.y != 680) return 739;
+    // The work-area corner anchor keeps working: anchor at the corner, flipped
+    // back inside the work area.
+    const POINT cornerAnchor =
+        selection::ChooseToastPosition(
+            work, 200, 100, POINT{999, 799}, 14, 20, nullptr);
+    if (cornerAnchor.x != 785 || cornerAnchor.y != 679) return 740;
+
     return 0;
 }
 

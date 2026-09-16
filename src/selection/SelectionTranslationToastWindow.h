@@ -22,10 +22,15 @@ public:
     SelectionTranslationToastWindow(const SelectionTranslationToastWindow&) = delete;
     SelectionTranslationToastWindow& operator=(const SelectionTranslationToastWindow&) = delete;
 
+    // `avoidRect` (optional, screen coordinates) is a window the toast must not
+    // cover -- the freshly opened result window. The toast then moves to one of
+    // its sides and falls back to the work-area corner, so an informational
+    // message can never hide the content it belongs to.
     void Show(std::wstring message, POINT anchor,
               SelectionToastKind kind = SelectionToastKind::Warning,
               bool workAreaCorner = false,
-              UINT visibleMilliseconds = 0);
+              UINT visibleMilliseconds = 0,
+              const RECT* avoidRect = nullptr);
     void Hide();
 
 private:
@@ -37,6 +42,8 @@ private:
     POINT anchor_ = {};
     SelectionToastKind kind_ = SelectionToastKind::Warning;
     bool workAreaCorner_ = false;
+    RECT avoidRect_ = {};
+    bool hasAvoidRect_ = false;
 
     static const wchar_t* ClassName();
     static void RegisterWindowClass();
