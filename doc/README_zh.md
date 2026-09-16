@@ -1,8 +1,14 @@
-# ZenCrop v2.9.27
+# ZenCrop v2.9.28
 
 [English](../README.md)
 
 ZenCrop 是对 [PowerToys Crop And Lock](https://github.com/microsoft/PowerToys/tree/main/src/modules/CropAndLock/) 的独立、**增强型**重构实现，并融合了丰富的截图标注、长截图、多引擎 OCR 和 OCR 工作台。
+
+## v2.9.28 更新重点
+
+- **关掉再打开「原文」后，卡片回到正确高度**: 之前这样一切换，原文卡片会比内容矮，预览里出现滚动条、文字被切在底边——但窗口总高其实没变。原因是自动高度用**原生编辑器的文本度量**（字体与折行规则都与预览的 Markdown 排版不同）算的，而不是用真实渲染出来的预览；而唯一能纠正它的回调又被一个"切换时从未重置"的标志挡住了。现在重新显示原文卡会重新渲染预览并重置该度量，高度按你实际看到的内容重算。
+
+完整变更请参阅 [CHANGELOG](CHANGELOG.md)。
 
 ## v2.9.27 更新重点
 

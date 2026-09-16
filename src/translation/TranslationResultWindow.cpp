@@ -497,6 +497,14 @@ POINT CalculateWindowPositionNearSource(const RECT& sourceRect, int windowWidth,
 LRESULT CALLBACK TranslationChildKeyboardProc(HWND hwnd, UINT message,
                                               WPARAM wParam, LPARAM lParam,
                                               UINT_PTR, DWORD_PTR) {
+    // Every subclassed child paints its own background: the owner-draw buttons
+    // fill their whole rectangle in WM_DRAWITEM and the edits fill theirs from
+    // WM_CTLCOLOREDIT. The erase the system performs first would paint the class
+    // brush instead -- pure white for the Button class on a light system theme --
+    // over the dark card, which reached the screen as a white flash whenever a
+    // control was invalidated for erase (the Source/Preview button switches its
+    // text on every toggle) or re-shown.
+    if (message == WM_ERASEBKGND) return 1;
     if (message == WM_MOUSEWHEEL &&
         (GET_KEYSTATE_WPARAM(wParam) & MK_CONTROL) != 0) {
         HWND parent = GetParent(hwnd);
@@ -1994,10 +2002,34 @@ void TranslationResultWindow::SetShowSourceText(bool show) {
         SetFocus(showSourceToggle_);
     }
     showSourceText_ = show;
-    // The hidden preview has no usable layout bounds.  Do not let a height
-    // measured for that state drive the first visible layout.
-    sourcePreviewMetricsValid_ = false;
-    sourcePreviewContentHeight_ = 0;
+    // RenderMarkdown clears any active document editor, so never re-render while
+    // the user is mid-edit: the draft lives inside the preview only and hiding
+    // the card is not a commit.  An active editor also means the preview kept
+    // usable bounds, so its last metric is still the right one to reuse.
+    const bool preservingEditor = sourcePreview_ && sourcePreview_->HasActiveEditor();
+    if (show) {
+        // Re-showing the preview must re-render it, not only re-layout it.  The
+        // height measured while the card was hidden comes from the native Source
+        // editor's font and wrapping, which disagrees with the preview's own
+        // Markdown layout; the WebView2 ResizeObserver also only reports metrics
+        // for a viewport that is still hidden, so that stale height would
+        // otherwise survive the toggle.  Drop the stale metric and re-arm the
+        // render gate so the next onContentMetrics pass publishes the real
+        // preview height and drives one more automatic resize.
+        if (!preservingEditor) {
+            sourcePreviewMetricsValid_ = false;
+            sourcePreviewContentHeight_ = 0;
+            sourcePreviewRenderReady_ = false;
+            if (sourceDisplayMode_ == SourceDisplayMode::Preview) {
+                sourcePreview_->RenderMarkdown(-1, sourceMarkdownText_, true);
+            }
+        }
+    } else {
+        // The hidden preview has no usable layout bounds.  Do not let a height
+        // measured for that state drive the first visible layout.
+        sourcePreviewMetricsValid_ = false;
+        sourcePreviewContentHeight_ = 0;
+    }
     SetControlVisible(copySourceButton_, show);
     SetControlVisible(sourceCountLabel_, show);
     UpdateSourceEditorFooterActions();

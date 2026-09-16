@@ -1,8 +1,14 @@
-# ZenCrop v2.9.27
+# ZenCrop v2.9.28
 
 [中文文档](doc/README_zh.md)
 
 An independent, **enhanced** reimplementation of [PowerToys Crop And Lock](https://github.com/microsoft/PowerToys/tree/main/src/modules/CropAndLock/), with rich screenshot annotation, long screenshot, multi-engine OCR, and OCR Dashboard.
+
+## What's new in v2.9.28
+
+- **The source card comes back the right size after hiding and re-showing it**: toggling `Source` off and on left the card shorter than its content, so the preview scrolled and text was clipped at the bottom edge — even though the window itself never changed height. The automatic height was being computed from the native editor's text metrics (different font and wrapping than the preview's Markdown layout) instead of from the rendered preview, and the callback that would have corrected it was gated behind a flag that was never reset by the toggle. Re-showing the card now re-renders the preview and re-arms that measurement, so the height is recomputed from what you actually see.
+
+See [CHANGELOG](doc/CHANGELOG.md) for the complete release notes.
 
 ## What's new in v2.9.27
 
@@ -11,7 +17,8 @@ An independent, **enhanced** reimplementation of [PowerToys Crop And Lock](https
 - **The OCR route menu matches Settings**: same wording and order as Settings ▸ OCR "Mode" (`Current settings` / `Local (Windows OCR)` / `PaddleOCR Cloud` / `PaddleOCR-VL 1.6 Local` / `PP-OCRv6 Local`). The local entry is the document-parsing (Layout + VLM) route — there is no separate image entry.
 - **Smaller, tidier labels**: `Show source` → `Source`, the route button/badge drop the ` Local` suffix (menus keep the full name), engine names follow the Settings wording, and the built-in `Google Translate Community` profile is now `Google Translate` (existing configs follow the preset automatically).
 
-See [CHANGELOG](doc/CHANGELOG.md) for the complete release notes.
+See [CHANGELOG](doc/CHANGELOG.md) for the complete release notes (v2.9.27 and earlier).
+
 
 ---
 ## 🔥 V2.2.0 & V2.2.1 Massive Update: The Ultimate Thumbnail Mode

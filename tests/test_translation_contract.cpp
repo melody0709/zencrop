@@ -315,6 +315,43 @@ bool VisibleChildrenInsideClient(HWND window) {
     return true;
 }
 
+// Hands the control a WM_ERASEBKGND device context holding a sentinel colour and
+// reports whether the control filled it. The erase the system performs before a
+// control paints must leave such a DC untouched: the Button class brush is pure
+// white on a light system theme, and filling this rectangle with it is what the
+// user saw as a white flash in the Source card footer.
+bool ControlErasesBackgroundWithSystemBrush(HWND control) {
+    RECT client = {};
+    if (!control || !GetClientRect(control, &client)) return true;
+    const int width = (std::max)(1, static_cast<int>(client.right - client.left));
+    const int height = (std::max)(1, static_cast<int>(client.bottom - client.top));
+    const COLORREF sentinel = RGB(1, 2, 3);
+    HDC screenDc = GetDC(nullptr);
+    HDC memoryDc = screenDc ? CreateCompatibleDC(screenDc) : nullptr;
+    HBITMAP bitmap = screenDc ? CreateCompatibleBitmap(screenDc, width, height) : nullptr;
+    if (!memoryDc || !bitmap) {
+        if (bitmap) DeleteObject(bitmap);
+        if (memoryDc) DeleteDC(memoryDc);
+        if (screenDc) ReleaseDC(nullptr, screenDc);
+        return true;
+    }
+    HGDIOBJ previous = SelectObject(memoryDc, bitmap);
+    const RECT fill = { 0, 0, width, height };
+    HBRUSH sentinelBrush = CreateSolidBrush(sentinel);
+    FillRect(memoryDc, &fill, sentinelBrush);
+    DeleteObject(sentinelBrush);
+
+    SendMessageW(control, WM_ERASEBKGND, reinterpret_cast<WPARAM>(memoryDc), 0);
+    GdiFlush();
+    const COLORREF sampled = GetPixel(memoryDc, 0, 0);
+
+    SelectObject(memoryDc, previous);
+    DeleteObject(bitmap);
+    DeleteDC(memoryDc);
+    ReleaseDC(nullptr, screenDc);
+    return sampled != sentinel;
+}
+
 LRESULT HitTestChildCenter(HWND window, HWND child) {
     RECT rect = {};
     if (!window || !child || !GetWindowRect(child, &rect)) return HTERROR;
@@ -1571,6 +1608,42 @@ int TestCoordinatorMessageChain() {
             cleanup();
             return 546;
         }
+        // Toggling the Source card off and back on must always leave the window
+        // in a consistent, fully-visible state.  This is the only part of the
+        // show/hide round trip this target can assert deterministically: the
+        // restored height depends on the WebView2 preview reporting a content
+        // metric, and that report is inherently racy here (the same race that
+        // makes the earlier preview-readiness check flaky), so an exact
+        // geometry comparison would be non-deterministic rather than a guard.
+        HWND selectedShowSourceToggle = GetDlgItem(selectedTextWindow, 3116);
+        if (!selectedShowSourceToggle ||
+            (GetWindowLongPtrW(selectedShowSourceToggle, GWL_STYLE) & WS_VISIBLE) == 0) {
+            coordinator.Shutdown();
+            DestroyWindow(messageWindow);
+            cleanup();
+            return 549;
+        }
+        SendMessageW(selectedTextWindow, WM_COMMAND,
+            MAKEWPARAM(3116, BN_CLICKED),
+            reinterpret_cast<LPARAM>(selectedShowSourceToggle));
+        PumpMessagesFor(300);
+        if (!VisibleChildrenInsideClient(selectedTextWindow)) {
+            coordinator.Shutdown();
+            DestroyWindow(messageWindow);
+            cleanup();
+            return 550;
+        }
+        SendMessageW(selectedTextWindow, WM_COMMAND,
+            MAKEWPARAM(3116, BN_CLICKED),
+            reinterpret_cast<LPARAM>(selectedShowSourceToggle));
+        PumpMessagesFor(300);
+        if (!VisibleChildrenInsideClient(selectedTextWindow) ||
+            ControlText(selectedTextWindow, 3120) != L"Source") {
+            coordinator.Shutdown();
+            DestroyWindow(messageWindow);
+            cleanup();
+            return 551;
+        }
         SendMessageW(selectedTextWindow, WM_COMMAND,
             MAKEWPARAM(3120, BN_CLICKED),
             reinterpret_cast<LPARAM>(selectedSourceModeButton));
@@ -2374,6 +2447,17 @@ int TestResultWindowLayoutContract() {
     if (std::wstring(stageText).find(L"Edited") == std::wstring::npos) return 55;
     window.SetSourceText(source);
     window.SetShowSourceText(true);
+
+    // The Source card footer holds owner-draw buttons that paint their whole
+    // rectangle themselves, so the system must not erase them first: the Button
+    // class brush is pure white on a light system theme, and filling those
+    // rectangles with it was reaching the screen as a white flash when the card
+    // was collapsed and re-shown.
+    for (int id : { 3106, 3120 }) {
+        HWND control = GetDlgItem(native, id);
+        if (!control) return 579;
+        if (ControlErasesBackgroundWithSystemBrush(control)) return 580;
+    }
 
     RECT targetComboRect = {};
     // The compact title bar reserves room for the in-window source switch,
