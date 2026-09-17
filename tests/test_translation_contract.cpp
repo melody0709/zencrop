@@ -2964,6 +2964,49 @@ int TestResultWindowLayoutContract() {
         PumpMessagesFor(50);
     }
 
+    // A link draws only its label, so its target must not count toward the window
+    // width: a captured hyperlinked title (a YouTube video title, say) used to
+    // push the measured requirement past the ceiling and pin the window at its
+    // widest while the rendered line used a fraction of it. Both directions are
+    // asserted, because the stripping is gated on the preview owning the card:
+    // with the preview up the target is invisible and must be ignored, and with
+    // the native editor up the raw target really is on screen and must count.
+    {
+        std::wstring linkLabel;
+        for (int index = 0; index < 35; ++index) {
+            linkLabel += L"\u6587";
+        }
+        translation::TranslationResultWindow linkWindow(
+            request, launchContext,
+            [](translation::TranslationResultWindow::Command) {});
+        if (!linkWindow.IsValid()) return 515;
+        linkWindow.Show(nullptr);
+        linkWindow.SetShowWindowBorder(false);
+        // A short translation keeps the source text the text that drives the
+        // width, so the two measurements below can differ at all.
+        linkWindow.SetTranslationText(L"link width");
+        // SetSourceText selects Preview when the preview is available.
+        linkWindow.SetSourceText(L"[" + linkLabel + L"](https://example.com/p)");
+        PumpMessagesFor(500);
+        RECT linkShortRect = {};
+        if (!GetWindowRect(linkWindow.WindowHandle(), &linkShortRect)) return 516;
+        linkWindow.SetSourceText(L"[" + linkLabel + L"](https://example.com/" +
+            std::wstring(240, L'x') + L")");
+        PumpMessagesFor(500);
+        RECT linkLongRect = {};
+        if (!GetWindowRect(linkWindow.WindowHandle(), &linkLongRect)) return 517;
+        const LONG linkShortWidth = linkShortRect.right - linkShortRect.left;
+        const LONG linkLongWidth = linkLongRect.right - linkLongRect.left;
+        const bool previewDraws = ControlText(linkWindow.WindowHandle(), 3120) == L"Source";
+        std::cout << "link target contract: preview=" << (previewDraws ? 1 : 0)
+                  << " width=" << linkShortWidth << " -> " << linkLongWidth << "\n";
+        const bool linkContractPassed =
+            previewDraws ? linkLongWidth == linkShortWidth : linkLongWidth > linkShortWidth;
+        if (!linkContractPassed) return 519;
+        SendMessageW(linkWindow.WindowHandle(), WM_CLOSE, 0, 0);
+        PumpMessagesFor(50);
+    }
+
     return 0;
 }
 

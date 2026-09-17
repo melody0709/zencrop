@@ -61,7 +61,7 @@ constexpr int kTranslationPreviewMetricSafety = 6;
 // at exactly half, a window aligned with the selection fits on only one side of
 // it, which pushed the placement to the other side far more often than the free
 // space justified.
-constexpr int kTranslationWidthCeilingPercent = 48;
+constexpr int kTranslationWidthCeilingPercent = 45;
 constexpr ULONGLONG kTranslationResizeAnimationDurationMs = 120;
 constexpr UINT kTranslationResizeAnimationFrameMs = 15;
 
@@ -280,6 +280,40 @@ int MeasureUsefulTextWidth(HDC hdc, HFONT font, const std::wstring& text, int ma
     }
     SelectObject(hdc, previousFont);
     return (std::min)(longest, maxWidth);
+}
+
+// The size a card asks for must come from the text it renders, but the stored
+// text is Markdown. A link draws only its label and keeps the target invisible,
+// so measuring the raw text counted the whole URL: a captured hyperlinked title
+// (a YouTube video title, say) was enough to push the width requirement past the
+// ceiling and pin the window at its widest, far past the longest rendered line.
+// Only the link and image targets are dropped here -- emphasis markers and list
+// prefixes stay, because "*", "_" and "-" also occur as ordinary characters and
+// under-measuring them would be worse than the few pixels they add.
+std::wstring MarkdownDisplayText(const std::wstring& text) {
+    std::wstring display;
+    display.reserve(text.size());
+    for (size_t index = 0; index < text.size();) {
+        // "![alt](target)" and "[label](target)" both render as their text.
+        const bool image = text[index] == L'!' && index + 1 < text.size() &&
+            text[index + 1] == L'[';
+        if (text[index] == L'[' || image) {
+            const size_t labelStart = index + (image ? 2 : 1);
+            const size_t labelEnd = text.find(L']', labelStart);
+            if (labelEnd != std::wstring::npos && labelEnd + 1 < text.size() &&
+                text[labelEnd + 1] == L'(') {
+                const size_t targetEnd = text.find(L')', labelEnd + 2);
+                if (targetEnd != std::wstring::npos) {
+                    display.append(text, labelStart, labelEnd - labelStart);
+                    index = targetEnd + 1;
+                    continue;
+                }
+            }
+        }
+        display.push_back(text[index]);
+        ++index;
+    }
+    return display;
 }
 
 // The height a card needs comes from the renderer that is actually showing it.
@@ -1492,11 +1526,21 @@ SIZE TranslationResultWindow::CalculateAutomaticWindowSize() const {
     // one. The preview's own scrollWidth cannot be used here -- it is a scroll
     // container metric that equals clientWidth, so it would feed the card width
     // back into the window width.
+    //
+    // Both the zoom and the link-target stripping apply exactly when the preview
+    // draws the card, because that is when the target is invisible; the native
+    // editor shows the raw text, so its URL is really on screen and must count.
+    const bool sourceRendersMarkdown = sourceDisplayMode_ == SourceDisplayMode::Preview &&
+        !sourcePreviewFailed_;
+    const bool translationRendersMarkdown = !translationPreviewFailed_;
     const double sourceContentScale =
-        sourceDisplayMode_ == SourceDisplayMode::Preview && !sourcePreviewFailed_
-            ? sourcePreviewZoomFactor_ : 1.0;
+        sourceRendersMarkdown ? sourcePreviewZoomFactor_ : 1.0;
     const double translationContentScale =
-        translationPreviewFailed_ ? 1.0 : translationPreviewZoomFactor_;
+        translationRendersMarkdown ? translationPreviewZoomFactor_ : 1.0;
+    const std::wstring sourceWidthText = sourceRendersMarkdown
+        ? MarkdownDisplayText(SourceText()) : SourceText();
+    const std::wstring translationWidthText = translationRendersMarkdown
+        ? MarkdownDisplayText(translationMarkdownText_) : translationMarkdownText_;
     // The width ceiling is a fraction of the monitor this window opens on, taken
     // from the physical pixels of rcMonitor so it follows the panel instead of a
     // design-unit constant. The work area stays the outer bound (minus a small
@@ -1552,10 +1596,10 @@ SIZE TranslationResultWindow::CalculateAutomaticWindowSize() const {
 
     HDC measureDc = GetDC(window_);
     const int sourceTextWidth = scaleMeasuredWidth(MeasureUsefulTextWidth(
-        measureDc, sourceTextFont_, SourceText(), maxMeasuredTextWidth),
+        measureDc, sourceTextFont_, sourceWidthText, maxMeasuredTextWidth),
         sourceContentScale);
     const int translationTextWidth = scaleMeasuredWidth(MeasureUsefulTextWidth(
-        measureDc, textFont_, translationMarkdownText_, maxMeasuredTextWidth),
+        measureDc, textFont_, translationWidthText, maxMeasuredTextWidth),
         translationContentScale);
     const int preferredTextWidth = (std::max)(sourceTextWidth, translationTextWidth);
     if (measureDc) ReleaseDC(window_, measureDc);
