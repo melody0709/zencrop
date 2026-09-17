@@ -29,3 +29,6 @@ proto/visual_proto/test/uied/ref_output
 tmp/
 tmp_*.py
 .workbuddy/
+
+# 规划文档已纳入追踪，仅历史归档保留在本地
+/.plan/Archive/
