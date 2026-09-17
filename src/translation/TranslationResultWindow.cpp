@@ -57,6 +57,11 @@ constexpr int kTranslationCompactOcrMinimumWidth = 940;
 constexpr int kTranslationCompactComboMinWidth = 150;
 constexpr int kTranslationCompactComboMaxWidth = 200;
 constexpr int kTranslationPreviewMetricSafety = 6;
+// Share of the monitor width the window may take. Deliberately just under half:
+// at exactly half, a window aligned with the selection fits on only one side of
+// it, which pushed the placement to the other side far more often than the free
+// space justified.
+constexpr int kTranslationWidthCeilingPercent = 48;
 constexpr ULONGLONG kTranslationResizeAnimationDurationMs = 120;
 constexpr UINT kTranslationResizeAnimationFrameMs = 15;
 
@@ -141,45 +146,25 @@ UINT MonitorDpi(HMONITOR monitor) {
     return kTranslationDesignDpi;
 }
 
-SIZE CalculateInitialTranslationWindowSize(
-    const RECT& sourceRect, UINT dpi, int minWidth) {
-    HMONITOR monitor = MonitorFromRect(&sourceRect, MONITOR_DEFAULTTONEAREST);
-    MONITORINFO monitorInfo = { sizeof(monitorInfo) };
-    if (!monitor || !GetMonitorInfoW(monitor, &monitorInfo)) {
-        return { minWidth, ScaleForDpi(680, dpi) };
-    }
-
-    const int minHeight = ScaleForDpi(420, dpi);
-    const int maxWidth = (std::max)(minWidth,
-        (std::min)(static_cast<int>(monitorInfo.rcWork.right - monitorInfo.rcWork.left) -
-                       ScaleForDpi(40, dpi),
-                   ScaleForDpi(1100, dpi)));
-    const int maxHeight = (std::max)(minHeight,
-        static_cast<int>((monitorInfo.rcWork.bottom - monitorInfo.rcWork.top) * 3 / 4));
-    const int cropWidth = (std::max)(0, static_cast<int>(sourceRect.right - sourceRect.left));
-    const int cropHeight = (std::max)(0, static_cast<int>(sourceRect.bottom - sourceRect.top));
-    const int cropWidthHint = (std::min)(
-        MulDiv(cropWidth, 8, 10), ScaleForDpi(720, dpi));
-    const int cropHeightHint = (std::min)(
-        MulDiv(cropHeight, 8, 10), ScaleForDpi(520, dpi));
-    // Compact headers keep every selector on the title bar row, so the chrome
-    // holds exactly one control row regardless of the translation source mode.
-    const int compactChromeHeight = ScaleForDpi(
-        30 + 3 + kTranslationControlRowGap + 4, dpi);
-    const int minimumBodyHeight = (std::max)(0, minHeight - compactChromeHeight);
-    const int bodyHeight = (std::max)(minimumBodyHeight, cropHeightHint);
-    const int width = (std::clamp)((std::max)(minWidth, cropWidthHint),
-        minWidth, maxWidth);
-    const int height = (std::clamp)(bodyHeight + compactChromeHeight,
-        minHeight, maxHeight);
-    return { width, height };
-}
-
 int ClampWindowCoordinate(int coordinate, int extent, int workStart, int workEnd, int gap) {
     const int minimum = workStart + gap;
     const int maximum = workEnd - extent - gap;
     if (maximum < minimum) return workStart;
     return (std::max)(minimum, (std::min)(coordinate, maximum));
+}
+
+// Keeps an anchored top-left inside the work area without shifting a window that
+// already fits. The nudge is a last resort so a grown window cannot leave the
+// screen, and gap 0 means a window sitting flush against an edge stays there.
+POINT ClampAnchoredPosition(POINT position, const SIZE& size) {
+    const HMONITOR monitor = MonitorFromPoint(position, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO monitorInfo = { sizeof(monitorInfo) };
+    if (!monitor || !GetMonitorInfoW(monitor, &monitorInfo)) return position;
+    position.x = ClampWindowCoordinate(
+        position.x, size.cx, monitorInfo.rcWork.left, monitorInfo.rcWork.right, 0);
+    position.y = ClampWindowCoordinate(
+        position.y, size.cy, monitorInfo.rcWork.top, monitorInfo.rcWork.bottom, 0);
+    return position;
 }
 
 HFONT DefaultFont(UINT dpi) {
@@ -295,6 +280,18 @@ int MeasureUsefulTextWidth(HDC hdc, HFONT font, const std::wstring& text, int ma
     }
     SelectObject(hdc, previousFont);
     return (std::min)(longest, maxWidth);
+}
+
+// The height a card needs comes from the renderer that is actually showing it.
+// A native estimate must never outrank a live preview measurement: it is taken
+// with a different font and does not scale with the preview's zoom, so taking
+// the max() of the two would keep the window from shrinking when the user zooms
+// out (the estimate stays at its zoom-1.0 size while the preview shrinks).
+int ResolveCardContentHeight(
+    int nativeTextHeight, int nativeAllowance,
+    bool previewShown, bool previewMetricsValid, int previewHeight) {
+    if (previewShown && previewMetricsValid && previewHeight > 0) return previewHeight;
+    return nativeTextHeight + nativeAllowance;
 }
 
 std::wstring CharacterCountText(const std::wstring& text) {
@@ -473,18 +470,31 @@ POINT CalculateWindowPositionNearSource(const RECT& sourceRect, int windowWidth,
     const bool belowFits = sourceRect.bottom + gap + windowHeight <= monitorInfo.rcWork.bottom;
     const bool aboveFits = sourceRect.top - gap - windowHeight >= monitorInfo.rcWork.top;
     POINT position = {};
-    if (!belowFits && !aboveFits) {
-        position.x = sourceRect.right + gap;
-        position.y = sourceRect.top;
-        if (position.x + windowWidth > monitorInfo.rcWork.right) {
-            position.x = sourceRect.left - windowWidth - gap;
-        }
-    } else if (belowFits) {
+    if (belowFits) {
+        // Above and below the text come first, below as the preferred one.
         position.x = sourceRect.left;
         position.y = sourceRect.bottom + gap;
-    } else {
+    } else if (aboveFits) {
         position.x = sourceRect.left;
         position.y = sourceRect.top - windowHeight - gap;
+    } else {
+        // Neither side above nor below the text can hold the window, so it has
+        // to sit beside it, and which side is a measured choice. A hardcoded
+        // preference (right first, left only as a fallback when the right could
+        // not fit at all) ignored a visibly emptier left side; the width ceiling
+        // being a fraction of the monitor makes "the right side just fits" the
+        // common case, so that preference fired far more often than the free
+        // space justified. Ties keep the left side: the fallback rule is gone
+        // rather than merely reordered.
+        const int leftSpace = (sourceRect.left - gap) - monitorInfo.rcWork.left;
+        const int rightSpace = monitorInfo.rcWork.right - (sourceRect.right + gap);
+        const bool leftHolds = leftSpace >= windowWidth;
+        const bool rightHolds = rightSpace >= windowWidth;
+        const bool useLeft =
+            leftHolds != rightHolds ? leftHolds : leftSpace >= rightSpace;
+        position.x = useLeft ? sourceRect.left - windowWidth - gap
+                             : sourceRect.right + gap;
+        position.y = sourceRect.top;
     }
 
     position.x = ClampWindowCoordinate(position.x, windowWidth,
@@ -587,10 +597,12 @@ TranslationResultWindow::TranslationResultWindow(
     sourceFontSize_ = (std::clamp)(initialSettings.sourceFontSize,
         kTranslationSourceFontSizeMin, kTranslationSourceFontSizeMax);
     sourceEditFontSize_ = sourceFontSize_;
-    const UINT initialDpi = MonitorDpi(
-        MonitorFromRect(&sourceRect_, MONITOR_DEFAULTTONEAREST));
-    const SIZE initialSize = CalculateInitialTranslationWindowSize(
-        sourceRect_, initialDpi, MinimumWindowWidth(initialDpi));
+    // The window opens on the monitor that hosts the source rect, so the layout
+    // DPI must be known before the one automatic-size model can be asked for a
+    // size; content-driven metrics only arrive after the previews exist.
+    SetLayoutDpi(MonitorDpi(
+        MonitorFromRect(&sourceRect_, MONITOR_DEFAULTTONEAREST)));
+    const SIZE initialSize = CalculateAutomaticWindowSize();
     window_ = CreateWindowExW(
         // Keep the result window in the taskbar even after Show() assigns the
         // durable application window as its owner.
@@ -643,8 +655,13 @@ TranslationResultWindow::TranslationResultWindow(
             OcrMarkdownPreviewHost::Callbacks sourcePreviewCallbacks;
             sourcePreviewCallbacks.onAcceleratorKey = handlePreviewAccelerator;
             sourcePreviewCallbacks.onZoomFactorChanged =
-                [persistPreviewZoomFactor](double zoomFactor) {
+                [persistPreviewZoomFactor, this](double zoomFactor) {
                     persistPreviewZoomFactor(true, zoomFactor);
+                    // Zoom changes what the preview needs, so it has to move the
+                    // window the same way the Source editor's Ctrl+wheel does
+                    // after switching its font. The preview re-measures itself
+                    // at the new scale and reports the new content height.
+                    ResizeToAutomaticWindowSize();
                 };
             sourcePreviewCallbacks.onPreviewEditorState = [this](
                 const OcrMarkdownPreviewHost::PreviewEditorState& state) {
@@ -674,8 +691,11 @@ TranslationResultWindow::TranslationResultWindow(
                     sourcePreviewRenderReady_ = true;
                     UpdateSourcePreviewVisibility();
                     StartPendingTextEntry();
-                    if (!sourceMarkdownText_.empty()) ResizeToAutomaticWindowSize();
                 }
+                // Every metrics pass is a content change (a re-render, a zoom
+                // step, a resize); the automatic model itself decides whether
+                // the requested size actually moved, so this cannot loop.
+                if (!sourceMarkdownText_.empty()) ResizeToAutomaticWindowSize();
             };
             sourcePreviewCallbacks.onUnavailable = [this](const std::wstring&) {
                 sourcePreviewFailed_ = true;
@@ -808,8 +828,9 @@ TranslationResultWindow::TranslationResultWindow(
         OcrMarkdownPreviewHost::Callbacks previewCallbacks;
         previewCallbacks.onAcceleratorKey = handlePreviewAccelerator;
         previewCallbacks.onZoomFactorChanged =
-            [persistPreviewZoomFactor](double zoomFactor) {
+            [persistPreviewZoomFactor, this](double zoomFactor) {
                 persistPreviewZoomFactor(false, zoomFactor);
+                ResizeToAutomaticWindowSize();
             };
         previewCallbacks.onReady = [this]() {
             translationPreviewFailed_ = false;
@@ -826,8 +847,8 @@ TranslationResultWindow::TranslationResultWindow(
             if (!translationPreviewRenderReady_) {
                 translationPreviewRenderReady_ = true;
                 UpdateTranslationPreviewVisibility();
-                if (!translationMarkdownText_.empty()) ResizeToAutomaticWindowSize();
             }
+            if (!translationMarkdownText_.empty()) ResizeToAutomaticWindowSize();
         };
         previewCallbacks.onUnavailable = [this](const std::wstring&) {
             translationPreviewFailed_ = true;
@@ -870,11 +891,14 @@ TranslationResultWindow::TranslationResultWindow(
             translationPreview_.reset();
         } else {
             translationPreview_->SetZoomFactor(translationPreviewZoomFactor_);
+            // The translation preview renders at the same font the native
+            // fallback edit measures with, otherwise the automatic height mixes
+            // two different typographies (the source preview has always done
+            // this; the translation side was left at the host default).
+            translationPreview_->SetTextFontSize(textFontSize_);
             translationPreview_->Show(false);
         }
-        const UINT dpi = LayoutDpi();
-        const SIZE layoutSize = CalculateInitialTranslationWindowSize(
-            sourceRect_, dpi, MinimumWindowWidth(dpi));
+        const SIZE layoutSize = CalculateAutomaticWindowSize();
         RECT currentRect = {};
         if (GetWindowRect(window_, &currentRect) &&
             (currentRect.right - currentRect.left != layoutSize.cx ||
@@ -882,6 +906,8 @@ TranslationResultWindow::TranslationResultWindow(
             SetWindowPos(window_, nullptr, 0, 0, layoutSize.cx, layoutSize.cy,
                 SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
         }
+        requestedWindowSize_ = layoutSize;
+        requestedWindowSizeValid_ = true;
     }
 }
 
@@ -1336,6 +1362,7 @@ void TranslationResultWindow::Show(
         SetWindowPos(window_, nullptr,
             retainedPosition->x, retainedPosition->y, 0, 0,
             SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+        positionAnchored_ = true;
     } else {
         PositionNearSourceRect();
     }
@@ -1361,6 +1388,10 @@ void TranslationResultWindow::PrepareForReuse(const RECT& sourceRect) {
     StopAutomaticResizeAnimation(false);
     CancelPendingStructuredSelection(L"superseded");
     sourceRect_ = sourceRect;
+    // A new source anchor re-opens the placement decision; the next Show() either
+    // keeps the caller's retained position or resolves it again from the source.
+    positionAnchored_ = false;
+    sourcePlacement_ = SourcePlacement::None;
 }
 
 void TranslationResultWindow::PositionNearSourceRect() {
@@ -1376,6 +1407,23 @@ void TranslationResultWindow::PositionNearSourceRect() {
         sourceRect_, windowRect.right - windowRect.left, windowRect.bottom - windowRect.top);
     SetWindowPos(window_, nullptr, position.x, position.y, 0, 0,
         SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+    const int width = windowRect.right - windowRect.left;
+    const int height = windowRect.bottom - windowRect.top;
+    sourcePlacement_ = ClassifySourcePlacement(
+        RECT{ position.x, position.y, position.x + width, position.y + height });
+    positionAnchored_ = true;
+}
+
+TranslationResultWindow::SourcePlacement TranslationResultWindow::ClassifySourcePlacement(
+    const RECT& windowRect) const {
+    if (sourceRect_.right <= sourceRect_.left || sourceRect_.bottom <= sourceRect_.top) {
+        return SourcePlacement::None;
+    }
+    if (windowRect.top >= sourceRect_.bottom) return SourcePlacement::Below;
+    if (windowRect.bottom <= sourceRect_.top) return SourcePlacement::Above;
+    if (windowRect.left >= sourceRect_.right) return SourcePlacement::Right;
+    if (windowRect.right <= sourceRect_.left) return SourcePlacement::Left;
+    return SourcePlacement::None;
 }
 
 void TranslationResultWindow::FitToMonitorWorkArea(HMONITOR monitor, UINT targetDpi) {
@@ -1432,18 +1480,43 @@ SIZE TranslationResultWindow::CalculateAutomaticWindowSize() const {
     HMONITOR monitor = MonitorFromRect(&sourceRect_, MONITOR_DEFAULTTONEAREST);
     MONITORINFO monitorInfo = { sizeof(monitorInfo) };
     if (!monitor || !GetMonitorInfoW(monitor, &monitorInfo)) {
-        return CalculateInitialTranslationWindowSize(
-            sourceRect_, dpi, MinimumWindowWidth(dpi));
+        return { MinimumWindowWidth(dpi), ScaleForDpi(680, dpi) };
     }
 
     const int minWidth = MinimumWindowWidth(dpi, monitor);
     const int minHeight = ScaleForDpi(420, dpi);
+    // A preview renders at its own zoom factor while the proxy measurements run
+    // on the native font, so the zoom belongs in the width requirement too:
+    // otherwise the one control the preview mode offers would move the height
+    // but not the width. At zoom 1.0 every width below is exactly the previous
+    // one. The preview's own scrollWidth cannot be used here -- it is a scroll
+    // container metric that equals clientWidth, so it would feed the card width
+    // back into the window width.
+    const double sourceContentScale =
+        sourceDisplayMode_ == SourceDisplayMode::Preview && !sourcePreviewFailed_
+            ? sourcePreviewZoomFactor_ : 1.0;
+    const double translationContentScale =
+        translationPreviewFailed_ ? 1.0 : translationPreviewZoomFactor_;
+    // The width ceiling is a fraction of the monitor this window opens on, taken
+    // from the physical pixels of rcMonitor so it follows the panel instead of a
+    // design-unit constant. The work area stays the outer bound (minus a small
+    // margin) and the shared minimum stays the floor. The zoom deliberately does
+    // not raise this ceiling: zooming in must stop there, not fill the screen --
+    // past the ceiling the card scrolls instead.
+    const int monitorWidth = static_cast<int>(
+        monitorInfo.rcMonitor.right - monitorInfo.rcMonitor.left);
+    const int workWidth = static_cast<int>(
+        monitorInfo.rcWork.right - monitorInfo.rcWork.left);
     const int maxWidth = (std::max)(minWidth,
-        (std::min)(static_cast<int>(monitorInfo.rcWork.right - monitorInfo.rcWork.left) -
-                       ScaleForDpi(40, dpi),
-                   ScaleForDpi(1100, dpi)));
-    const int maxHeight = (std::max)(minHeight,
-        static_cast<int>((monitorInfo.rcWork.bottom - monitorInfo.rcWork.top) * 3 / 4));
+        (std::min)(workWidth - ScaleForDpi(40, dpi),
+            MulDiv(monitorWidth, kTranslationWidthCeilingPercent, 100)));
+    // The height ceiling is the whole work area (the monitor minus the taskbar):
+    // with the width capped at half the screen the window reads as a half-screen
+    // column and may use that column's full height. It is still only a ceiling
+    // -- the content requirement decides the actual height, so a short result
+    // stays short.
+    int maxHeight = (std::max)(minHeight,
+        static_cast<int>(monitorInfo.rcWork.bottom - monitorInfo.rcWork.top));
     const int margin = ScaleForDpi(4, dpi);
     const int cardPadding = ScaleForDpi(8, dpi);
     const int textInset = ScaleForDpi(kTranslationTextEditMargin, dpi);
@@ -1470,14 +1543,26 @@ SIZE TranslationResultWindow::CalculateAutomaticWindowSize() const {
     const int maxMeasuredTextWidth = (std::max)(ScaleForDpi(48, dpi),
         maxWidth - ScaleForDpi(56, dpi));
 
+    const auto scaleMeasuredWidth = [](int measuredWidth, double scale) {
+        if (measuredWidth <= 0 || !std::isfinite(scale) || scale <= 0.0) {
+            return measuredWidth;
+        }
+        return static_cast<int>(std::lround(measuredWidth * scale));
+    };
+
     HDC measureDc = GetDC(window_);
-    const int sourceTextWidth = MeasureUsefulTextWidth(
-        measureDc, sourceTextFont_, SourceText(), maxMeasuredTextWidth);
-    const int translationTextWidth = MeasureUsefulTextWidth(
-        measureDc, textFont_, translationMarkdownText_, maxMeasuredTextWidth);
+    const int sourceTextWidth = scaleMeasuredWidth(MeasureUsefulTextWidth(
+        measureDc, sourceTextFont_, SourceText(), maxMeasuredTextWidth),
+        sourceContentScale);
+    const int translationTextWidth = scaleMeasuredWidth(MeasureUsefulTextWidth(
+        measureDc, textFont_, translationMarkdownText_, maxMeasuredTextWidth),
+        translationContentScale);
     const int preferredTextWidth = (std::max)(sourceTextWidth, translationTextWidth);
     if (measureDc) ReleaseDC(window_, measureDc);
 
+    // The crop/selection width hint is dominated by the minimum width by
+    // construction (its 720 cap sits below the shared 800/940 minimum), so the
+    // width is driven by the measured text and the minimum, never by the crop.
     const int preferredWidth = (std::max)({ minWidth, cropWidthHint,
         preferredTextWidth + ScaleForDpi(56, dpi) });
     const int width = (std::clamp)(preferredWidth, minWidth, maxWidth);
@@ -1492,15 +1577,14 @@ SIZE TranslationResultWindow::CalculateAutomaticWindowSize() const {
 
     const int previewAllowance = ScaleForDpi(16, dpi);
     const int previewMetricSafety = ScaleForDpi(kTranslationPreviewMetricSafety, dpi);
-    const int sourcePreviewHeight = sourcePreviewMetricsValid_ &&
-        sourceDisplayMode_ == SourceDisplayMode::Preview
-        ? sourcePreviewContentHeight_ + previewMetricSafety : 0;
-    const int translationPreviewHeight = translationPreviewMetricsValid_
-        ? translationPreviewContentHeight_ + previewMetricSafety : 0;
-    const int sourceContentHeight = (std::max)(sourceTextHeight + previewAllowance,
-        sourcePreviewHeight);
-    const int translationContentHeight = (std::max)(translationTextHeight + previewAllowance,
-        translationPreviewHeight);
+    const int sourceContentHeight = ResolveCardContentHeight(
+        sourceTextHeight, previewAllowance,
+        sourceDisplayMode_ == SourceDisplayMode::Preview, sourcePreviewMetricsValid_,
+        sourcePreviewContentHeight_ + previewMetricSafety);
+    const int translationContentHeight = ResolveCardContentHeight(
+        translationTextHeight, previewAllowance,
+        !translationPreviewFailed_, translationPreviewMetricsValid_,
+        translationPreviewContentHeight_ + previewMetricSafety);
     const int sourceDesiredHeight = cardPadding + sourceContentHeight + cardFooterGap +
         cardFooterHeight;
     const int translationDesiredHeight = cardPadding + translationContentHeight +
@@ -1532,8 +1616,22 @@ void TranslationResultWindow::ResizeToAutomaticWindowSize() {
         return;
     }
     const SIZE desired = CalculateAutomaticWindowSize();
+    // Loop breaker. Preview metrics arrive through SetBounds -> ResizeObserver,
+    // so any metrics pass must not be able to request the size it was already
+    // granted. The comparison is against the last *requested* target, not the
+    // live rect: while the resize animation runs the two deliberately differ,
+    // and comparing against the live rect would restart the animation on every
+    // pass that lands mid-flight.
+    if (requestedWindowSizeValid_ &&
+        requestedWindowSize_.cx == desired.cx &&
+        requestedWindowSize_.cy == desired.cy) {
+        LayoutControls();
+        return;
+    }
     RECT current = {};
     if (!GetWindowRect(window_, &current)) return;
+    requestedWindowSize_ = desired;
+    requestedWindowSizeValid_ = true;
     if (current.right - current.left == desired.cx &&
         current.bottom - current.top == desired.cy) {
         LayoutControls();
@@ -1543,7 +1641,7 @@ void TranslationResultWindow::ResizeToAutomaticWindowSize() {
         windowSizeMoveActive_) {
         SetWindowPos(window_, nullptr, 0, 0, desired.cx, desired.cy,
             SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
-        if (autoPositionNearSource_) PositionNearSourceRect();
+        if (autoPositionNearSource_ && !positionAnchored_) PositionNearSourceRect();
         return;
     }
     BeginAutomaticResizeAnimation(desired);
@@ -1556,10 +1654,76 @@ void TranslationResultWindow::BeginAutomaticResizeAnimation(const SIZE& desired)
         resizeAnimationStartRect_.left,
         resizeAnimationStartRect_.top,
     };
-    if (autoPositionNearSource_ && sourceRect_.right > sourceRect_.left &&
-        sourceRect_.bottom > sourceRect_.top) {
+    const int sourceGap = ScaleForDpi(10, LayoutDpi());
+    const bool hasSource = sourceRect_.right > sourceRect_.left &&
+        sourceRect_.bottom > sourceRect_.top;
+    const auto windowRectAt = [&desired](const POINT& position) {
+        return RECT{ position.x, position.y,
+            position.x + desired.cx, position.y + desired.cy };
+    };
+    const auto coversSource = [this, sourceGap](const RECT& windowRect) {
+        if (sourceRect_.right <= sourceRect_.left ||
+            sourceRect_.bottom <= sourceRect_.top) {
+            return false;
+        }
+        RECT clearance = sourceRect_;
+        InflateRect(&clearance, sourceGap, sourceGap);
+        RECT overlap = {};
+        return IntersectRect(&overlap, &windowRect, &clearance) != FALSE;
+    };
+    const auto insideWorkArea = [](const RECT& windowRect) {
+        const HMONITOR monitor = MonitorFromRect(&windowRect, MONITOR_DEFAULTTONEAREST);
+        MONITORINFO monitorInfo = { sizeof(monitorInfo) };
+        if (!monitor || !GetMonitorInfoW(monitor, &monitorInfo)) return true;
+        return windowRect.left >= monitorInfo.rcWork.left &&
+            windowRect.top >= monitorInfo.rcWork.top &&
+            windowRect.right <= monitorInfo.rcWork.right &&
+            windowRect.bottom <= monitorInfo.rcWork.bottom;
+    };
+
+    if (!autoPositionNearSource_ || !hasSource) {
+        // The user placed this window (or there is no anchor): only keep it on
+        // screen, never move it on principle.
+        targetPosition = ClampAnchoredPosition(targetPosition, desired);
+    } else if (!positionAnchored_) {
         targetPosition = CalculateWindowPositionNearSource(
             sourceRect_, desired.cx, desired.cy);
+    } else {
+        // Hold the edge facing the source and let the window grow away from the
+        // text it translates: a top-left pin made a shrinking window wander away
+        // from the selection and a growing one swallow it.
+        switch (sourcePlacement_) {
+        case SourcePlacement::Below:
+            targetPosition.y = sourceRect_.bottom + sourceGap;
+            break;
+        case SourcePlacement::Above:
+            targetPosition.y = sourceRect_.top - sourceGap - desired.cy;
+            break;
+        case SourcePlacement::Right:
+            targetPosition.x = sourceRect_.right + sourceGap;
+            break;
+        case SourcePlacement::Left:
+            targetPosition.x = sourceRect_.left - sourceGap - desired.cx;
+            break;
+        case SourcePlacement::None:
+            break;
+        }
+        const RECT pinned = windowRectAt(targetPosition);
+        if (coversSource(pinned) || !insideWorkArea(pinned)) {
+            // That side no longer fits at this size: re-place once, and keep the
+            // anchor if even the replacement cannot clear the source.
+            const POINT replacement = CalculateWindowPositionNearSource(
+                sourceRect_, desired.cx, desired.cy);
+            const RECT replaced = windowRectAt(replacement);
+            if (!coversSource(replaced) && insideWorkArea(replaced)) {
+                targetPosition = replacement;
+            } else {
+                targetPosition = ClampAnchoredPosition(targetPosition, desired);
+            }
+        }
+    }
+    if (autoPositionNearSource_ && hasSource) {
+        sourcePlacement_ = ClassifySourcePlacement(windowRectAt(targetPosition));
     }
     resizeAnimationTargetRect_ = {
         targetPosition.x,
@@ -2716,18 +2880,26 @@ void TranslationResultWindow::LayoutControls(bool redraw) {
         HDC measureDc = GetDC(window_);
         const int sourceTextHeight = MeasureWrappedTextHeight(
             measureDc, sourceTextFont_, sourceText, measureWidth);
+        const int translationTextHeight = MeasureWrappedTextHeight(
+            measureDc, textFont_, translationMarkdownText_, measureWidth);
         if (measureDc) ReleaseDC(window_, measureDc);
         // Preview has its own vertical content padding and Markdown block
         // margins. Reserve a small allowance so switching modes does not
         // immediately introduce a scrollbar for otherwise fitting text.
         const int previewVerticalAllowance = ScaleForDpi(16, dpi);
         const int previewMetricSafety = ScaleForDpi(kTranslationPreviewMetricSafety, dpi);
-        const int sourcePreviewHeight = sourcePreviewMetricsValid_ &&
-            sourceDisplayMode_ == SourceDisplayMode::Preview
-            ? sourcePreviewContentHeight_ + previewMetricSafety : 0;
-        const int sourceContentHeight = (std::max)(
-            sourceTextHeight + previewVerticalAllowance, sourcePreviewHeight);
+        const int sourceContentHeight = ResolveCardContentHeight(
+            sourceTextHeight, previewVerticalAllowance,
+            sourceDisplayMode_ == SourceDisplayMode::Preview, sourcePreviewMetricsValid_,
+            sourcePreviewContentHeight_ + previewMetricSafety);
+        const int translationContentHeight = ResolveCardContentHeight(
+            translationTextHeight, previewVerticalAllowance,
+            !translationPreviewFailed_, translationPreviewMetricsValid_,
+            translationPreviewContentHeight_ + previewMetricSafety);
         const int desiredSourceHeight = cardPadding + sourceContentHeight +
+            ScaleForDpi(kTranslationCardFooterGap, dpi) +
+            cardFooterHeight;
+        const int desiredTranslationHeight = cardPadding + translationContentHeight +
             ScaleForDpi(kTranslationCardFooterGap, dpi) +
             cardFooterHeight;
         const int manualSourceMaxHeight = (std::max)(minSourceHeight,
@@ -2738,9 +2910,20 @@ void TranslationResultWindow::LayoutControls(bool redraw) {
             sourceHeight = (std::clamp)(sourceHeight,
                 minSourceHeight, manualSourceMaxHeight);
         } else {
+            // The automatic window size is the sum of both card requirements, so
+            // while that sum still fits the space each card must keep its own
+            // requirement: the 36%/50% shares exist to settle a conflict (a
+            // manually resized window, or the height ceiling), and letting them
+            // bind here clipped the source card whenever it was the taller one
+            // -- zooming the translation preview out shrank the sum and made
+            // that clipping worse.
+            const bool requirementsFit =
+                desiredSourceHeight + desiredTranslationHeight <= cardSpace;
             const int automaticSourceMaxHeight = (std::max)(minSourceHeight,
                 (std::min)(manualSourceMaxHeight,
-                    cardSpace * kTranslationSourceMaxPercent / 100));
+                    requirementsFit
+                        ? cardSpace - desiredTranslationHeight
+                        : cardSpace * kTranslationSourceMaxPercent / 100));
             const int automaticSourceBaselineHeight = (std::min)(
                 automaticSourceMaxHeight,
                 sourceText.empty()

@@ -120,6 +120,9 @@ void OcrResultWindow::RegisterWindowClass() {
 }
 
 POINT OcrResultWindow::CalcWindowPosition(RECT cropRect, int winW, int winH) {
+    // Raw pixels, like every other constant in this window: its geometry is
+    // authored at 96 DPI, not in the translation window's 144 DPI design units,
+    // so the offset is deliberately not scaled here.
     const int gap = 10;
     POINT pos;
 
@@ -132,23 +135,28 @@ POINT OcrResultWindow::CalcWindowPosition(RECT cropRect, int winW, int winH) {
     // Check if above is enough space
     bool aboveFits = (cropRect.top - gap - winH >= mi.rcWork.top);
 
-    if (!belowFits && !aboveFits) {
-        // Both top and bottom do not have enough space. Place side-by-side on the right!
-        pos.x = cropRect.right + gap;
-        pos.y = cropRect.top;
-
-        // If right side does not have enough space, try left side
-        if (pos.x + winW > mi.rcWork.right) {
-            pos.x = cropRect.left - winW - gap;
-        }
-    } else if (belowFits) {
-        // Place below
+    if (belowFits) {
+        // Place below: above and below come first, below as the preferred one.
         pos.x = cropRect.left;
         pos.y = cropRect.bottom + gap;
-    } else {
+    } else if (aboveFits) {
         // Place above
         pos.x = cropRect.left;
         pos.y = cropRect.top - winH - gap;
+    } else {
+        // Neither side above nor below the crop can hold the window, so it has to
+        // sit beside it, and which side is a measured choice -- the same rule the
+        // translation window uses. Trying the right side first and keeping the
+        // left one only as a fallback ignored a visibly emptier left side; ties
+        // keep the left side, so no fallback ordering survives.
+        const int leftSpace = (cropRect.left - gap) - mi.rcWork.left;
+        const int rightSpace = mi.rcWork.right - (cropRect.right + gap);
+        const bool leftHolds = leftSpace >= winW;
+        const bool rightHolds = rightSpace >= winW;
+        const bool useLeft =
+            leftHolds != rightHolds ? leftHolds : leftSpace >= rightSpace;
+        pos.x = useLeft ? cropRect.left - winW - gap : cropRect.right + gap;
+        pos.y = cropRect.top;
     }
 
     // Clamp coordinates to remain within rcWork

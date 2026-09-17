@@ -467,18 +467,24 @@ POINT ExpectedOcrResultPosition(const RECT& cropRect, int windowWidth, int windo
     const bool belowFits = cropRect.bottom + gap + windowHeight <= info.rcWork.bottom;
     const bool aboveFits = cropRect.top - gap - windowHeight >= info.rcWork.top;
     POINT position = {};
-    if (!belowFits && !aboveFits) {
-        position.x = cropRect.right + gap;
-        position.y = cropRect.top;
-        if (position.x + windowWidth > info.rcWork.right) {
-            position.x = cropRect.left - windowWidth - gap;
-        }
-    } else if (belowFits) {
+    if (belowFits) {
         position.x = cropRect.left;
         position.y = cropRect.bottom + gap;
-    } else {
+    } else if (aboveFits) {
         position.x = cropRect.left;
         position.y = cropRect.top - windowHeight - gap;
+    } else {
+        // Beside the text, on the side with more free room. Both sides are
+        // measured; a right-first fallback ignored an emptier left side.
+        const int leftSpace = (cropRect.left - gap) - info.rcWork.left;
+        const int rightSpace = info.rcWork.right - (cropRect.right + gap);
+        const bool leftHolds = leftSpace >= windowWidth;
+        const bool rightHolds = rightSpace >= windowWidth;
+        const bool useLeft =
+            leftHolds != rightHolds ? leftHolds : leftSpace >= rightSpace;
+        position.x = useLeft ? cropRect.left - windowWidth - gap
+                             : cropRect.right + gap;
+        position.y = cropRect.top;
     }
 
     const int minimumX = info.rcWork.left + gap;
@@ -1173,6 +1179,93 @@ int TestCoordinatorMessageChain() {
         }
     }
 
+    // The automatic size must follow the Source editor's Ctrl+wheel zoom, not
+    // only its font: the source card is measured with that font, so a larger
+    // font has to buy a taller window. This runs outside the block above
+    // because the result window may open straight into Source mode (the preview
+    // was not ready yet), which skips that whole preview-dependent section.
+    {
+        HWND zoomEdit = GetDlgItem(resultWindow, 3101);
+        HWND zoomModeButton = GetDlgItem(resultWindow, 3120);
+        if (!zoomEdit || !zoomModeButton) {
+            coordinator.Shutdown();
+            DestroyWindow(messageWindow);
+            cleanup();
+            return 583;
+        }
+        if (ControlText(resultWindow, 3120) == L"Source") {
+            if (!IsWindowEnabled(zoomModeButton)) {
+                coordinator.Shutdown();
+                DestroyWindow(messageWindow);
+                cleanup();
+                return 584;
+            }
+            SendMessageW(resultWindow, WM_COMMAND,
+                MAKEWPARAM(3120, BN_CLICKED),
+                reinterpret_cast<LPARAM>(zoomModeButton));
+            PumpTranslationMessages(200);
+        }
+        if (ControlText(resultWindow, 3120) != L"Preview") {
+            coordinator.Shutdown();
+            DestroyWindow(messageWindow);
+            cleanup();
+            return 585;
+        }
+
+        // A long source keeps the card requirement above the minimum body
+        // height; with a short one a font step would not move the window at all.
+        std::wstring zoomSourceText;
+        for (int line = 0; line < 14; ++line) {
+            zoomSourceText += L"Source line that must grow with the zoomed font";
+            zoomSourceText += line == 13 ? L"" : L"\r\n";
+        }
+        SetWindowTextW(zoomEdit, zoomSourceText.c_str());
+        SendMessageW(resultWindow, WM_COMMAND,
+            MAKEWPARAM(3101, EN_CHANGE), reinterpret_cast<LPARAM>(zoomEdit));
+        // Settle every pending automatic resize first (the preview reports its
+        // metrics asynchronously), so the font step is the only variable left
+        // between the two measurements.
+        RECT beforeZoom = {};
+        if (!GetWindowRect(resultWindow, &beforeZoom)) {
+            coordinator.Shutdown();
+            DestroyWindow(messageWindow);
+            cleanup();
+            return 586;
+        }
+        for (int attempt = 0; attempt < 10; ++attempt) {
+            PumpTranslationMessages(200);
+            RECT current = {};
+            if (!GetWindowRect(resultWindow, &current)) break;
+            if (current.right - current.left == beforeZoom.right - beforeZoom.left &&
+                current.bottom - current.top == beforeZoom.bottom - beforeZoom.top) {
+                break;
+            }
+            beforeZoom = current;
+        }
+        const auto sendZoomKey = [zoomEdit](WPARAM key) {
+            BYTE keyboardState[256] = {};
+            GetKeyboardState(keyboardState);
+            const BYTE savedControl = keyboardState[VK_CONTROL];
+            keyboardState[VK_CONTROL] |= 0x80;
+            SetKeyboardState(keyboardState);
+            SendMessageW(zoomEdit, WM_KEYDOWN, key, 0);
+            keyboardState[VK_CONTROL] = savedControl;
+            SetKeyboardState(keyboardState);
+        };
+        for (int step = 0; step < 3; ++step) sendZoomKey(VK_OEM_PLUS);
+        PumpTranslationMessages(400);
+        RECT afterZoom = {};
+        if (!GetWindowRect(resultWindow, &afterZoom) ||
+            afterZoom.bottom - afterZoom.top <= beforeZoom.bottom - beforeZoom.top) {
+            coordinator.Shutdown();
+            DestroyWindow(messageWindow);
+            cleanup();
+            return 587;
+        }
+        for (int step = 0; step < 3; ++step) sendZoomKey(VK_OEM_MINUS);
+        PumpTranslationMessages(400);
+    }
+
     // A composition-root shutdown can clear the main HWND while a provider
     // callback is still unwinding. The coordinator must use the result-window
     // fallback without posting a heap payload to the worker's null-HWND queue.
@@ -1560,6 +1653,25 @@ int TestCoordinatorMessageChain() {
     const auto repeatedSelectedTextStart = coordinator.StartText(
         nullptr, selectedTextContext, L"Replacement selected text");
     PumpTranslationMessages(500);
+    // Reusing the window for a new selection re-renders the source preview
+    // asynchronously: the window enters Preview mode before the new render
+    // reports its first metrics, and until then the native editor stays visible
+    // by design. Sampling at one fixed delay raced that render -- the active
+    // translation can finish first -- so wait for the state to settle instead.
+    // The assertions below are unchanged, and a state that never settles still
+    // fails them.
+    const auto sourcePreviewSettled = [](HWND window) {
+        const HWND modeButton = GetDlgItem(window, 3120);
+        const HWND sourceEdit = GetDlgItem(window, 3101);
+        if (!modeButton || !sourceEdit) return true;
+        const bool available = IsWindowEnabled(modeButton) != FALSE;
+        const bool previewMode = ControlText(window, 3120) == L"Source";
+        return available == previewMode && (!available || !IsWindowVisible(sourceEdit));
+    };
+    for (int step = 0; step < 16 && !sourcePreviewSettled(selectedTextWindow); ++step) {
+        PumpTranslationMessages(250);
+    }
+
     HWND repeatedSelectedTextWindow = FindWindowW(
         L"ZenCrop.TranslationResultWindow", nullptr);
     RECT repeatedSelectedRect = {};
@@ -1940,6 +2052,51 @@ int TestCoordinatorMessageChain() {
         return 108;
     }
     PumpTranslationMessages(500);
+    {
+        const auto narrow = [](const std::wstring& value) {
+            std::string out;
+            for (wchar_t ch : value) out.push_back(ch < 128 ? static_cast<char>(ch) : '?');
+            return out;
+        };
+        std::cerr << "diag109 selectedTextWindow="
+                  << reinterpret_cast<uintptr_t>(selectedTextWindow)
+                  << " resultWindow=" << reinterpret_cast<uintptr_t>(resultWindow)
+                  << "\n";
+        {
+            HWND scan = nullptr;
+            int count = 0;
+            while ((scan = FindWindowExW(nullptr, scan,
+                L"ZenCrop.TranslationResultWindow", nullptr)) != nullptr) {
+                RECT scanRect = {};
+                GetWindowRect(scan, &scanRect);
+                std::cerr << "diag109 window[" << count++ << "] hwnd="
+                          << reinterpret_cast<uintptr_t>(scan)
+                          << " rect=" << scanRect.left << "," << scanRect.top << ","
+                          << scanRect.right << "," << scanRect.bottom
+                          << " visible=" << IsWindowVisible(scan)
+                          << " iconic=" << IsIconic(scan) << "\n";
+            }
+        }
+        HWND leftover = FindWindowW(L"ZenCrop.TranslationResultWindow", nullptr);
+        std::cerr << "diag109 leftover=" << leftover
+                  << " started=" << embeddedSink.started
+                  << " failed=" << embeddedSink.failed
+                  << " completed=" << embeddedSink.completed
+                  << " size=" << embeddedSink.translations.size() << "\n";
+        if (leftover) {
+            RECT leftoverRect = {};
+            GetWindowRect(leftover, &leftoverRect);
+            std::cerr << "diag109 leftover rect=" << leftoverRect.left << ","
+                      << leftoverRect.top << " visible=" << IsWindowVisible(leftover)
+                      << "\n";
+        }
+        for (size_t index = 0; index < embeddedSink.translations.size() && index < 4;
+             ++index) {
+            std::cerr << "diag109[" << index << "] id="
+                      << narrow(embeddedSink.translations[index].id) << " text="
+                      << narrow(embeddedSink.translations[index].text) << "\n";
+        }
+    }
     if (FindWindowW(L"ZenCrop.TranslationResultWindow", nullptr) ||
         embeddedSink.started != 1 || embeddedSink.failed != 0 ||
         embeddedSink.completed != 1 || embeddedSink.translations.size() != 2 ||
@@ -2322,6 +2479,34 @@ int TestResultWindowLayoutContract() {
         return 169;
     }
 
+    // The automatic window size is the sum of both card requirements, so a
+    // source card that needs more room than the translation has to keep that
+    // room: the 36%/50% shares may only settle a conflict. Letting them bind
+    // clipped the source card whenever it was the taller one, and changing the
+    // translation (zoom) moved the sum, which made the clipping worse.
+    {
+        std::wstring tallSource;
+        for (int line = 0; line < 20; ++line) {
+            tallSource += L"Source line that needs more room than the translation";
+            tallSource += line == 19 ? L"" : L"\r\n";
+        }
+        window.SetSourceText(tallSource);
+        window.SetTranslationText(L"short translation");
+        PumpMessagesFor(300);
+        RECT tallSourceRect = {};
+        RECT shortTranslationRect = {};
+        if (!GetWindowRect(sourceControl, &tallSourceRect) ||
+            !GetWindowRect(translationControl, &shortTranslationRect)) {
+            return 588;
+        }
+        const int tallSourceHeight = tallSourceRect.bottom - tallSourceRect.top;
+        const int shortTranslationHeight =
+            shortTranslationRect.bottom - shortTranslationRect.top;
+        if (tallSourceHeight <= shortTranslationHeight + scaleForInitialDpi(40)) {
+            return 589;
+        }
+    }
+
     const int currentWindowWidth =
         windowAfterLongTranslation.right - windowAfterLongTranslation.left;
     const int currentWindowHeight =
@@ -2650,6 +2835,135 @@ int TestResultWindowLayoutContract() {
     }
     PumpMessagesFor(20);
     if (selectedCloseCallbacks != 1 || selectedWindow.IsValid()) return 577;
+
+    // The placement is decided once, but it must still keep the translated text
+    // visible: an automatic resize (content growth, and therefore preview zoom)
+    // may only move the window when the new rectangle would cover the source. A
+    // source rect near the bottom of the work area makes the window open *above*
+    // it, which is the geometry where a grown window otherwise swallowed the
+    // text it was translating.
+    {
+        const RECT bottomSourceRect = {
+            monitorInfo.rcWork.left + 40, monitorInfo.rcWork.bottom - 240,
+            monitorInfo.rcWork.left + 240, monitorInfo.rcWork.bottom - 180,
+        };
+        const translation::TranslationLaunchContext bottomContext{
+            translation::TranslationSourceMode::OcrImage, bottomSourceRect};
+        translation::TranslationResultWindow anchoredWindow(
+            request, bottomContext,
+            [](translation::TranslationResultWindow::Command) {});
+        if (!anchoredWindow.IsValid()) return 590;
+        anchoredWindow.Show(nullptr);
+        anchoredWindow.SetShowWindowBorder(false);
+        PumpMessagesFor(250);
+        RECT anchoredBefore = {};
+        if (!GetWindowRect(anchoredWindow.WindowHandle(), &anchoredBefore)) return 591;
+        std::wstring anchoredSource;
+        for (int line = 0; line < 10; ++line) {
+            anchoredSource += L"Anchored source line that grows the automatic window";
+            anchoredSource += line == 9 ? L"" : L"\r\n";
+        }
+        anchoredWindow.SetSourceText(anchoredSource);
+        anchoredWindow.SetTranslationText(L"Anchored translation.");
+        PumpMessagesFor(400);
+        RECT anchoredAfter = {};
+        if (!GetWindowRect(anchoredWindow.WindowHandle(), &anchoredAfter)) return 592;
+        if (anchoredAfter.bottom - anchoredAfter.top <=
+            anchoredBefore.bottom - anchoredBefore.top) {
+            return 593;
+        }
+        const int sourceGap = scaleForInitialDpi(10);
+        const int sourceGapTolerance = scaleForInitialDpi(2);
+        // The window sits above the source, so its bottom edge is the facing one:
+        // it must stay glued to the text it translates.
+        const auto facingDistance = [&bottomSourceRect](const RECT& windowRect) {
+            return bottomSourceRect.top - windowRect.bottom;
+        };
+        if (facingDistance(anchoredAfter) < sourceGap - sourceGapTolerance ||
+            facingDistance(anchoredAfter) > sourceGap + sourceGapTolerance) {
+            return 595;
+        }
+        // Shrinking must move the far edge, not the facing one: a top-left pin
+        // left the window floating away from the selection once the content got
+        // shorter again.
+        anchoredWindow.SetSourceText(L"short anchored source");
+        anchoredWindow.SetTranslationText(L"Anchored translation.");
+        PumpMessagesFor(400);
+        RECT anchoredShrunk = {};
+        if (!GetWindowRect(anchoredWindow.WindowHandle(), &anchoredShrunk)) return 596;
+        if (facingDistance(anchoredShrunk) < sourceGap - sourceGapTolerance ||
+            facingDistance(anchoredShrunk) > sourceGap + sourceGapTolerance) {
+            return 597;
+        }
+        RECT forbidden = bottomSourceRect;
+        InflateRect(&forbidden, sourceGap, sourceGap);
+        RECT overlap = {};
+        if (IntersectRect(&overlap, &anchoredAfter, &forbidden)) return 594;
+    }
+
+    // With neither side above nor below the selection able to hold the window,
+    // the side it lands on must be the one with more free room. The old rule
+    // tried the right side first and fell back to the left one only when the
+    // right could not fit at all, which ignored a visibly emptier left side --
+    // and since the width ceiling is a fraction of the monitor, "the right side
+    // just fits" was the common case rather than the exception.
+    //
+    // Geometry: a selection spanning three quarters of the work area leaves less
+    // room above and below than any allowed window height (the minimum is 420
+    // design units, more than the eighth of the work area left over per side), so
+    // the side branch is the only one that can apply. It sits in the right half
+    // with strictly more room on its left than on its right, and enough on both
+    // sides for the window, so the old rule would keep the right side and fail.
+    {
+        const int sideWorkWidth = monitorInfo.rcWork.right - monitorInfo.rcWork.left;
+        const int sideWorkHeight = monitorInfo.rcWork.bottom - monitorInfo.rcWork.top;
+        const int sideGap = scaleForInitialDpi(10);
+        const int sideSelectionWidth = sideWorkWidth / 16;
+        const int sideSelectionHeight = sideWorkHeight * 3 / 4;
+        const int sideLeftSpace = sideWorkWidth * 9 / 16 - sideGap;
+        const int sideSelectionTop =
+            monitorInfo.rcWork.top + (sideWorkHeight - sideSelectionHeight) / 2;
+        const RECT sideSourceRect = {
+            monitorInfo.rcWork.left + sideGap + sideLeftSpace,
+            sideSelectionTop,
+            monitorInfo.rcWork.left + sideGap + sideLeftSpace + sideSelectionWidth,
+            sideSelectionTop + sideSelectionHeight,
+        };
+        const int sideRightSpace =
+            sideWorkWidth - sideLeftSpace - sideSelectionWidth - 2 * sideGap;
+        const translation::TranslationLaunchContext sideContext{
+            translation::TranslationSourceMode::OcrImage, sideSourceRect};
+        translation::TranslationResultWindow sideWindow(
+            request, sideContext,
+            [](translation::TranslationResultWindow::Command) {});
+        if (!sideWindow.IsValid()) return 598;
+        sideWindow.Show(nullptr);
+        PumpMessagesFor(250);
+        RECT sideRect = {};
+        if (!GetWindowRect(sideWindow.WindowHandle(), &sideRect)) return 599;
+        const int sideWindowWidth = sideRect.right - sideRect.left;
+        // The comparison only means something when both sides can hold the
+        // window. The compact header alone is 940 design units wide, so a narrow
+        // work area cannot express this geometry; say so instead of passing
+        // silently, then let the run continue.
+        if (sideLeftSpace >= sideWindowWidth + sideGap &&
+            sideRightSpace >= sideWindowWidth + sideGap &&
+            sideLeftSpace > sideRightSpace) {
+            if (sideRect.right > sideSourceRect.left) return 600;
+            RECT sideOverlap = {};
+            if (IntersectRect(&sideOverlap, &sideRect, &sideSourceRect)) return 601;
+        } else {
+            std::cerr << "diag600 side rule not exercised: workWidth=" << sideWorkWidth
+                      << " workHeight=" << sideWorkHeight
+                      << " windowWidth=" << sideWindowWidth
+                      << " windowHeight=" << sideRect.bottom - sideRect.top
+                      << " leftSpace=" << sideLeftSpace
+                      << " rightSpace=" << sideRightSpace << "\n";
+        }
+        SendMessageW(sideWindow.WindowHandle(), WM_CLOSE, 0, 0);
+        PumpMessagesFor(50);
+    }
+
     return 0;
 }
 
@@ -6437,8 +6751,34 @@ int TestTranslationAutomaticRetryContract() {
         PumpTranslationMessages(800);
         return start.started;
     };
-    const auto resultWindow = [&]() {
-        return FindWindowW(L"ZenCrop.TranslationResultWindow", nullptr);
+    // The result window can only be found by class name, and a ZenCrop instance
+    // the user happens to be running exposes the same class. Asserting against
+    // that window reports a false failure, so snapshot the class first and only
+    // accept a window this contract created itself.
+    const auto snapshotResultWindows = []() {
+        std::vector<HWND> windows;
+        HWND current = nullptr;
+        while ((current = FindWindowExW(nullptr, current,
+            L"ZenCrop.TranslationResultWindow", nullptr)) != nullptr) {
+            windows.push_back(current);
+        }
+        return windows;
+    };
+    const std::vector<HWND> preexistingResultWindows = snapshotResultWindows();
+    const auto resultWindow = [&preexistingResultWindows]() {
+        HWND current = nullptr;
+        while ((current = FindWindowExW(nullptr, current,
+            L"ZenCrop.TranslationResultWindow", nullptr)) != nullptr) {
+            bool preexisting = false;
+            for (HWND candidate : preexistingResultWindows) {
+                if (candidate == current) {
+                    preexisting = true;
+                    break;
+                }
+            }
+            if (!preexisting) return current;
+        }
+        return static_cast<HWND>(nullptr);
     };
 
     // 3: one transient transport failure recovers without user action.
@@ -6741,7 +7081,7 @@ int TestUntranslatableSegmentContract() {
             finish();
             return 805;
         }
-        PumpTranslationMessages(800);
+        PumpTranslationMessages(1600);
         HWND native = resultWindow();
         if (!native) {
             finish();

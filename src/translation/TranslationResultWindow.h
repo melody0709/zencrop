@@ -114,6 +114,18 @@ private:
         Source,
     };
 
+    // Which side of the source rect the window sits on. The facing edge is the
+    // one kept pinned while the window resizes, so it grows away from the text
+    // it translates instead of drifting sideways, drifting with its top-left or
+    // swallowing the text.
+    enum class SourcePlacement {
+        None,
+        Below,
+        Above,
+        Right,
+        Left,
+    };
+
     struct LanguageOption {
         std::wstring label;
         std::wstring value;
@@ -217,7 +229,20 @@ private:
     int sourceSplitPermille_ = -1;
     bool windowSizeMoveActive_ = false;
     bool windowSizeManuallyAdjusted_ = false;
+    // The last size the automatic model asked for. Kept apart from the live
+    // window rect on purpose: a running resize animation makes the two differ,
+    // and comparing against the requested target (not the current rect) is what
+    // turns a repeated preview metrics pass into a layout-only no-op instead of
+    // another animation restart.
+    SIZE requestedWindowSize_ = {};
+    bool requestedWindowSizeValid_ = false;
     bool autoPositionNearSource_ = true;
+    // Set once the window has been placed. Later automatic resizes only change
+    // the size: re-deriving "near the source" from the new rectangle made the
+    // window drift on every zoom step, so the anchored top-left is kept and only
+    // nudged back when a grown window would leave the work area.
+    bool positionAnchored_ = false;
+    SourcePlacement sourcePlacement_ = SourcePlacement::None;
     bool resizeAnimationActive_ = false;
     RECT windowSizeMoveStartRect_ = {};
     RECT resizeAnimationStartRect_ = {};
@@ -314,6 +339,7 @@ private:
     void DrawOwnerDrawControl(const DRAWITEMSTRUCT& draw);
     void ApplyDarkWindowChrome();
     void PositionNearSourceRect();
+    SourcePlacement ClassifySourcePlacement(const RECT& windowRect) const;
     void FitToMonitorWorkArea(HMONITOR monitor, UINT targetDpi);
     void ClampToCurrentMonitorWorkArea();
     SIZE CalculateAutomaticWindowSize() const;
