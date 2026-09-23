@@ -1,15 +1,16 @@
-# ZenCrop v2.9.30
+# ZenCrop v3.0.0
 
 [English](../README.md)
 
 ZenCrop 是对 [PowerToys Crop And Lock](https://github.com/microsoft/PowerToys/tree/main/src/modules/CropAndLock/) 的独立、**增强型**重构实现，并融合了丰富的截图标注、长截图、多引擎 OCR 和 OCR 工作台。
 
-## v2.9.30 更新重点
+## v3.0.0 更新重点
 
-- **设置面板高度紧凑化与布局整合**: 属性页对话框总高度从 370 dlu 深度精简至 250 dlu（节省约 180 物理像素）。翻译标签页（Translate）高度从 370 缩减至 240 dlu：移除无冗余的「启用 OCR 来源翻译」复选框（翻译默认始终启用，由 Provider 单独开关）；精简剪贴板复制提示为单行；将提示词标签统一为「Prompt:」避免非 LLM 模式下发生截断；结果窗口 4 项复选框整合为双行紧凑布局。OCR 标签页高度从 304 缩减至 230 dlu：合并本地 Paddle 端口、闲置退出和测试服务器按钮为单行，合并文档解析开关与 Options 按钮为单行，紧凑化备用模型行。
-- **新增小米 Xiaomi MiMo 官方翻译预设**: 新增 Xiaomi MiMo 官方翻译预设（`api.xiaomimimo.com`，内置 `mimo-v2.6-flash`, `mimo-v2.6-pro`, `mimo-v2.5`, `mimo-v2.5-pro` 模型支持），默认关闭 thinking/reasoning，并采用 0.1 稳定温度与结构化 JSON 提示词翻译。
-- **修复 Win32 弹窗菜单点击外部不自动关闭**: 修复翻译结果窗口中 Provider、语言及 OCR 路由下拉菜单在点击窗口外部时不自动消失的问题。
-- **全套版本统一升级**: 应用、MSI 安装包、便携包及相关文档统一升级至 `v2.9.30`。
+- **C++23 现代架构全面落地**: 统一采用 C++23 语言标准（`/std:c++latest`），重构为 7 个清晰分层的静态库与独立冒烟测试目标，根除历史遗留循环依赖与倒置包含。
+- **高性能构建与预编译头 (PCH)**: 拆分膨胀工具头为专用领域头，引入 PCH 深度缩短构建时间，hub 引用数从 107 降为 0。
+- **现代化 C++23 语法收敛**: 引入 `std::span`、`std::string_view`、`ComPtr` 与 RAII 管理，提升核心图像与编解码内存安全性。
+- **严格架构门禁守卫**: 全自动化 15 项物理架构规则守护门禁，全套 71 项密封单元与集成测试 100% 通过，保证 0 功能丢失。
+- **版本全面升级**: 应用、安装包与文档统一升级至 `v3.0.0`。
 
 完整变更请参阅 [CHANGELOG](CHANGELOG.md)。
 

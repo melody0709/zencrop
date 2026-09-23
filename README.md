@@ -1,15 +1,16 @@
-# ZenCrop v2.9.30
+# ZenCrop v3.0.0
 
 [中文文档](doc/README_zh.md)
 
 An independent, **enhanced** reimplementation of [PowerToys Crop And Lock](https://github.com/microsoft/PowerToys/tree/main/src/modules/CropAndLock/), with rich screenshot annotation, long screenshot, multi-engine OCR, and OCR Dashboard.
 
-## What's new in v2.9.30
+## What's new in v3.0.0
 
-- **Compacted Settings Dialog Layout**: Reduced the overall Settings dialog height from 370 down to 250 dlu (~180 physical pixels saved). The Translate page height dropped from 370 to 240 dlu by removing the redundant enable toggle (always active), simplifying copy hints to a single line, shortening the Prompt label to prevent clipping, and grouping result window options into two compact rows. The OCR page height dropped from 304 to 230 dlu by merging local server port, idle timeout, and test server buttons into a single row, combining document parsing options, and tightening Alt model rows.
-- **Xiaomi MiMo Translation Preset**: Added official OpenAI-compatible preset for Xiaomi MiMo (`api.xiaomimimo.com`) with `mimo-v2.6-flash`, `mimo-v2.6-pro`, `mimo-v2.5`, and `mimo-v2.5-pro` models. Configured with thinking/reasoning disabled and a stable 0.1 temperature for structured JSON translation.
-- **Fixed Win32 Popup Menu Outside-Click Dismissal**: Corrected popup menus (language, provider, OCR route) in the translation result window so they dismiss reliably when clicking outside the window.
-- **Version Bump**: Unified product version bump to `v2.9.30` across binaries, MSI installer, portable package, and documentation.
+- **C++23 Modern Architecture**: Unified C++23 language standard (`/std:c++latest`) with 7 clearly layered static library modules and dedicated smoke link targets, eliminating all cyclic dependencies and inversion edges.
+- **Fast Build & Precompiled Headers (PCH)**: Split the monolithic `WideStringUtils.h` into domain-specific headers, introduced PCH across the core library, reducing hub includers from 107 to 0 and substantially speeding up builds.
+- **Modernized C++23 Idioms**: Transitioned raw buffers and lifetimes to `std::span`, `std::string_view`, and RAII wrappers (`ComPtr`, `unique_ptr`).
+- **Strict Architecture Guard**: Continuous architecture verification through `check_architecture.ps1` with 15 active physical rules; 100% pass across all 71 hermetic unit and integration tests.
+- **Unified Version Bump**: Product version elevated to `v3.0.0` across binaries, installers, portable packages, and documentation.
 
 See [CHANGELOG](doc/CHANGELOG.md) for the complete release notes.
 

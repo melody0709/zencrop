@@ -1,5 +1,15 @@
 # Changelog
 
+## V3.0.0 (2026-09-23)
+
+### 重大重构与架构升级 (Major Architecture Refactoring)
+
+- **C++23 全面升级**: 统一采用 C++23 语言标准（`/std:c++latest`），引入 `std::span`、`std::string_view`、`std::format`、现代 RAII 管理（如 `ComPtr` 与 `unique_ptr`）及现代化代码惯用法。
+- **清晰分层与静态库化**: 将原单一大体量项目拆解重构为 7 个明确职责的静态模块库（`zencrop_thirdparty`、`zencrop_core`、`zencrop_platform`、`zencrop_ocr`、`zencrop_shot`、`zencrop_translate`、`zencrop_ui`），消除所有模块倒置依赖与循环依赖。
+- **工具头精细化拆分与预编译头 (PCH)**: 拆分膨胀的 `WideStringUtils.h` 为各专用子域头（`WideTextOps.h`、`WidePathUtils.h`、`WideColorUtils.h`、`WideFormatUtils.h`、`WideJsonUtils.h`、`WideMarkdownUtils.h`），同时为核心库建立 PCH 加速编译。
+- **架构门禁与密封测试保证**: 全面建立 CI/本地构建强制执行的架构门禁守护脚本（`check_architecture.ps1`，15 项物理规则全命中门禁），全部 71 个密封测试 100% 保持通过，确保 0 功能缺失、0 性能回退。
+- **版本号升级**: 全面升级至 `v3.0.0`。
+
 ## V2.9.30 (2026-09-23)
 
 ### 新增 (New Features)
