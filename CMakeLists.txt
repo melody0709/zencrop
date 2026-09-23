@@ -240,6 +240,7 @@ add_library(zencrop_ocr STATIC
     src/ocr/model_download/OcrModelDownloadService.h src/ocr/model_download/OcrModelDownloadService.cpp
 )
 add_dependencies(zencrop_ocr zencrop_web_assets_manifest)
+target_compile_definitions(zencrop_ocr PRIVATE ZENCROP_PREVIEW_HOST_TESTS=1)
 target_include_directories(zencrop_ocr PUBLIC
     ${ZENCROP_GENERATED_INCLUDE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/src/ocr

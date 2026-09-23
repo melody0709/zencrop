@@ -16,30 +16,6 @@
 #include <windows.h>
 #include <wincodec.h>
 
-// Stub only what LongShotImage/Stitcher need from ScreenshotUtils.
-namespace Screenshot {
-BitmapSize GetBitmapSize(HBITMAP hBitmap) {
-    BitmapSize size;
-    if (!hBitmap) return size;
-    BITMAP bm = {};
-    if (GetObjectW(hBitmap, sizeof(bm), &bm)) {
-        size.width = bm.bmWidth;
-        size.height = std::abs(bm.bmHeight);
-    }
-    return size;
-}
-
-bool SaveBitmapToFile(
-    HBITMAP,
-    const std::wstring&,
-    ScreenshotFormat,
-    int,
-    std::wstring*,
-    bool) {
-    // WebP/AVIF fallback is not exercised in this contract target.
-    return false;
-}
-} // namespace Screenshot
 
 static int g_failures = 0;
 

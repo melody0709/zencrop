@@ -238,8 +238,13 @@ void TestProtectedMatrixAndDegradedMode() {
     Expect(degraded.size() == 2, "V3 missing masks conservatively keeps general overlap");
     Expect(stats.v3PolygonDegraded && stats.polygonFallbacks == 2,
         "V3 missing masks reports explicit degraded mode");
+#if defined(ZENCROP_WITH_OPENCV_LAYOUT) || defined(ZENCROP_WITH_OPENCV_DBPOST)
+    Expect(stats.polygonRuntimeAvailable,
+        "OpenCV-enabled target reports polygon runtime available");
+#else
     Expect(!stats.polygonRuntimeAvailable,
         "OpenCV-disabled target reports polygon runtime unavailable");
+#endif
 }
 
 void TestPolygonGeometryAndOffsets() {
