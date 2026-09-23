@@ -25,7 +25,6 @@
 #include "selection/SelectionTranslationController.h"
 #include "core/WideJsonUtils.h"
 #include "core/WideFormatUtils.h"
-#include "core/WideJsonUtils.h"
 #include "core/NarrowStringUtils.h"
 #include "core/OcrModelRegistry.h"
 #include <shellapi.h>

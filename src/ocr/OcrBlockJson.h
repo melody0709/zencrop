@@ -3,7 +3,6 @@
 #include "OcrBlock.h"
 #include "JsonUtils.h"
 #include "core/WideJsonUtils.h"
-#include "core/WideJsonUtils.h"
 
 #include <cerrno>
 #include <cmath>

@@ -11,6 +11,7 @@ junction to a separate private repository), and .bak/ itself.
 """
 import os
 import shutil
+import stat
 import subprocess
 import sys
 
@@ -23,8 +24,6 @@ if not os.path.basename(DEST) == '.bak':
     raise SystemExit('refusing to run: destination must end with .bak')
 if not os.path.isdir(REPO):
     raise SystemExit('repository root is missing: ' + REPO)
-
-import stat
 
 def _remove_readonly(func, path, excinfo):
     try:

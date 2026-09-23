@@ -22,7 +22,6 @@
 #include "Strings.h"
 #include "AppMessages.h"
 #include "core/WideFormatUtils.h"
-#include "core/WideFormatUtils.h"
 #include "ocr/document/PaddleCloudDocumentProtocol.h"
 #include "ocr/document/PaddleCloudDocumentTransport.h"
 #include "ocr/batch/PaddleCloudDocumentMaterializer.h"

@@ -1,7 +1,6 @@
 #include "HttpTransport.h"
 #include "core/NarrowStringUtils.h"
 #include "core/WideFormatUtils.h"
-#include "core/WideFormatUtils.h"
 #include <winhttp.h>
 #include <algorithm>
 #include <limits>

@@ -1244,7 +1244,6 @@ void OverlayWindow::FreeBitmap() {
 
 // S-H-CLOSE-9: OverlayWindowScreenshot.inl umbrella deleted.
 // Screenshot-mode ctor + ColorPicker free helpers are real TUs under src/screenshot/.
-#include "core/WideFormatUtils.h"
 
 void OverlayWindow::UpdateOverlay() {
     if (ScreenshotEditorIsScreenshotMode(m_editorState)) {

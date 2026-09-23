@@ -4,7 +4,6 @@
 #include "OcrBlockJson.h"
 #include "core/WideJsonUtils.h"
 #include "core/WideFormatUtils.h"
-#include "core/WideJsonUtils.h"
 
 #include <algorithm>
 #include <cmath>

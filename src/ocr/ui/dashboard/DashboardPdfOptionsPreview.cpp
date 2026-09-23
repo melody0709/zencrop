@@ -2,7 +2,6 @@
 #include "DashboardFileTypes.h"
 #include "ocr/ui/dashboard/DashboardDialogLayout.h"
 #include "core/WideFormatUtils.h"
-#include "core/WideFormatUtils.h"
 #include "PageRange.h"
 #include "PdfPageRenderer.h"
 #include "PdfRenderOptions.h"

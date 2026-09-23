@@ -16,7 +16,6 @@
 #include "Settings.h"
 #include "Strings.h"
 #include "core/WideFormatUtils.h"
-#include "core/WideFormatUtils.h"
 
 #include <gdiplus.h>
 #include <shellapi.h>

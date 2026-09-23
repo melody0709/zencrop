@@ -2,7 +2,6 @@
 #include "JsonUtils.h"
 #include "core/WideFormatUtils.h"
 #include "core/WideMarkdownUtils.h"
-#include "core/WideFormatUtils.h"
 #include "core/NarrowStringUtils.h"
 #include "core/AppDataPaths.h"
 #include "AppMessages.h"

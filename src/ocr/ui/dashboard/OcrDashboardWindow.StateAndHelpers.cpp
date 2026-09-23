@@ -15,7 +15,6 @@
 #include "Settings.h"
 #include "OcrUtils.h"
 #include "core/WideFormatUtils.h"
-#include "core/WideFormatUtils.h"
 #include "AppMessages.h"
 
 #include <atomic>

@@ -3,7 +3,6 @@
 #include "image/BitmapCodec.h"
 #include "PageRange.h"
 #include "core/WideFormatUtils.h"
-#include "core/WideFormatUtils.h"
 
 #include <windows.h>
 #include <shlobj.h>
@@ -27,7 +26,6 @@
 #include <winrt/Windows.Graphics.Imaging.h>
 #include <winrt/Windows.Storage.h>
 #include <winrt/Windows.Storage.Streams.h>
-#include "core/WideFormatUtils.h"
 
 using namespace winrt;
 using namespace Windows::Data::Pdf;

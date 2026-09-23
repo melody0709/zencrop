@@ -12,7 +12,6 @@
 #include "ocr/OcrUtils.h"
 #include "ocr/batch/BatchOcrTypes.h"
 #include "core/WideFormatUtils.h"
-#include "core/WideFormatUtils.h"
 
 enum class DashboardSourceKind {
     Capture,

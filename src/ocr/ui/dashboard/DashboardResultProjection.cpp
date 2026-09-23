@@ -3,7 +3,6 @@
 #include "ocr/OcrBlockJson.h"
 #include "core/WideFormatUtils.h"
 #include "core/WideMarkdownUtils.h"
-#include "core/WideFormatUtils.h"
 #include "core/WideJsonUtils.h"
 
 #include <cwctype>
