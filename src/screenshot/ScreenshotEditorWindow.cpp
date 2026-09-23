@@ -2,7 +2,7 @@
 #include "ScreenshotUtils.h"
 #include "Settings.h"
 #include "ocr/LocalRaster.h"
-#include "core/WideStringUtils.h"
+#include "core/WideFormatUtils.h"
 #include <commdlg.h>
 #include <shlwapi.h>
 #include <windowsx.h>

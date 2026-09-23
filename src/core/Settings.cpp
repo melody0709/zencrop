@@ -3,7 +3,7 @@
 #include "Strings.h"
 #include "JsonUtils.h"
 #include "WideJsonUtils.h"
-#include "WideStringUtils.h"
+#include "WideFormatUtils.h"
 #include <shlwapi.h>
 #include <shlobj.h>
 #include <commdlg.h>

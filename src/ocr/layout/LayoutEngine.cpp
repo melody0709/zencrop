@@ -4,7 +4,7 @@
 #include "PaddleDocLayoutPostprocess.h"
 #include "Settings.h"
 #include "core/Sha256.h"
-#include "core/WideStringUtils.h"
+#include "core/WideFormatUtils.h"
 #include "core/NarrowStringUtils.h"
 #include <algorithm>
 #include <cstring>

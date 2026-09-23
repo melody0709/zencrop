@@ -4,7 +4,7 @@
 #include "StartupRegistration.h"
 #include "AlwaysOnTop.h"
 #include "JsonUtils.h"       // TrimString
-#include "WideStringUtils.h" // WideBuildBearerAuthorizationHeader
+#include "core/WideFormatUtils.h" // WideBuildBearerAuthorizationHeader
 #include "HotkeyEdit.h"      // CreateHotkeyEdit, GetHotkeyFromEdit, ClearHotkeyEdit, HasHotkeyConflict
 #include "Strings.h"         // S::xxx localization
 #include "OcrEngine_PaddleOCR_Local.h"

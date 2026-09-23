@@ -1,6 +1,6 @@
 #pragma once
 
-#include "core/WideStringUtils.h"
+#include "core/WideFormatUtils.h"
 #include <windows.h>
 
 // Result Inspector mode. Preferred is what the user/OCR/ini want; effective is

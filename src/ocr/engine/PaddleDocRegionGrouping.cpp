@@ -1,5 +1,5 @@
 #include "PaddleDocRegionGrouping.h"
-#include "core/WideStringUtils.h"
+#include "core/WideFormatUtils.h"
 
 #include <algorithm>
 #include <climits>

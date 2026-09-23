@@ -1,6 +1,6 @@
 #include "SmartDetector.h"
 #include "Utils.h"
-#include "core/WideStringUtils.h"
+#include "core/WideFormatUtils.h"
 #include <dwmapi.h>
 #include <oleauto.h>
 #include <psapi.h>

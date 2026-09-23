@@ -7,7 +7,7 @@
 #include "ocr/ui/dashboard/DashboardPdfPasswordDialog.h"
 #include "ocr/ui/OcrDashboardWindow.h"
 #include "ocr/ui/DashboardModels.h"
-#include "core/WideStringUtils.h"
+#include "core/WideFormatUtils.h"
 #include "BatchOcrWriter.h"
 #include "PageRange.h"
 #include "PdfPageRenderer.h"

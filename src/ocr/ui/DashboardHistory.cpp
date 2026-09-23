@@ -14,7 +14,7 @@
 #include "ocr/ui/dashboard/DashboardSelectionState.h"
 #include "ocr/DashboardPreviewSecurity.h"
 #include "DashboardFileTypes.h"
-#include "core/WideStringUtils.h"
+#include "core/WideFormatUtils.h"
 #include "core/WideMarkdownUtils.h"
 #include "translation/TranslationCoordinator.h"
 #include "ocr/OcrDocumentAlignment.h"

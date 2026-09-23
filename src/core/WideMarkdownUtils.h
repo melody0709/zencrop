@@ -1,5 +1,5 @@
 #pragma once
-#include "core/WideStringUtils.h"
+#include "core/WideTextOps.h"
 // Markdown image scan and committed-text projection; base text stays in WideStringUtils.
 inline bool WideFindNextMarkdownImage(
     const std::wstring& markdown,

@@ -1,6 +1,6 @@
 #include "ScreenshotUtils.h"
 #include "core/ClipboardUtils.h"
-#include "core/WideStringUtils.h"
+#include "core/WideFormatUtils.h"
 #include "core/Utils.h"
 #include "image/BitmapCodec.h"
 #include "AppMessages.h"

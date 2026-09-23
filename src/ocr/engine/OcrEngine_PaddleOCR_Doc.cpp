@@ -13,7 +13,8 @@
 #include <shlwapi.h>
 #include <mutex>
 #include "core/WideFormatUtils.h"
-#include "core/WideStringUtils.h"
+#include "core/WideFormatUtils.h"
+#include "core/WideJsonUtils.h"
 #include "core/NarrowStringUtils.h"
 
 #pragma comment(lib, "shlwapi.lib")

@@ -11,7 +11,7 @@
 #include "dashboard/DashboardSelectionState.h"
 #include "Strings.h"
 #include "core/WideFormatUtils.h"
-#include "core/WideStringUtils.h"
+#include "core/WideFormatUtils.h"
 
 #include <algorithm>
 #include <commctrl.h>

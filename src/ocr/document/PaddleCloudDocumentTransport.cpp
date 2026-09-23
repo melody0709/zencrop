@@ -12,7 +12,7 @@
 #include <cstring>
 #include <cwctype>
 #include <limits>
-#include "core/WideStringUtils.h"
+#include "core/WideFormatUtils.h"
 
 namespace {
 

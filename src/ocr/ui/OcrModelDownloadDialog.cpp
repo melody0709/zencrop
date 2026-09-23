@@ -1,7 +1,7 @@
 #include "OcrModelDownloadDialog.h"
 
 #include "core/Settings.h"
-#include "core/WideStringUtils.h"
+#include "core/WideFormatUtils.h"
 #include "ocr/model_download/OcrModelDownloadCatalog.h"
 #include "ocr/model_download/OcrModelDownloadService.h"
 #include "ocr/model_download/OcrModelInstaller.h"

@@ -2,7 +2,7 @@
 #include "screenshot/OverlayWindow.h"
 
 #include "core/Settings.h"
-#include "core/WideStringUtils.h"
+#include "core/WideFormatUtils.h"
 #include "screenshot/CropAdjustMath.h"
 #include "screenshot/ScreenshotAnnotationGeometry.h"
 #include "screenshot/ScreenshotAnnotationHelpers.h"

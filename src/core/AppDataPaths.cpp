@@ -1,7 +1,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include "AppDataPaths.h"
 
-#include "WideStringUtils.h"
+#include "WidePathUtils.h"
 
 #include <windows.h>
 #include <shlobj.h>

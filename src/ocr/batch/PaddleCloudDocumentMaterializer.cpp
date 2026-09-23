@@ -4,7 +4,7 @@
 #include "ocr/OcrDocumentAlignment.h"
 #include "core/JsonUtils.h"
 #include "core/Sha256.h"
-#include "core/WideStringUtils.h"
+#include "core/WideFormatUtils.h"
 #include "image/BitmapCodec.h"
 #include "BatchOcrWriter.h"
 #include "BatchOcrImageLinks.h"

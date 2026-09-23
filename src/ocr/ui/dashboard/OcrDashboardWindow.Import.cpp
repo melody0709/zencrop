@@ -13,7 +13,7 @@
 #include "Settings.h"
 #include "Strings.h"
 #include "OcrUtils.h"
-#include "core/WideStringUtils.h"
+#include "core/WideFormatUtils.h"
 
 #include <commdlg.h>
 #include <objbase.h>

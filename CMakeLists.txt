@@ -132,7 +132,18 @@ add_library(zencrop_core STATIC
     src/core/ClipboardUtils.h src/core/ClipboardUtils.cpp
     src/core/HttpTransport.h
     src/core/AppMessages.h
+    src/core/WideTextOps.h
+    src/core/WidePathUtils.h
+    src/core/WideColorUtils.h
+    src/core/WideFormatUtils.h
+    src/core/WideJsonUtils.h
+    src/core/WideMarkdownUtils.h
+    src/core/WideStringUtils.h
     src/image/BitmapCodec.h src/image/BitmapCodec.cpp
+)
+target_precompile_headers(zencrop_core PUBLIC
+    <string> <string_view> <vector> <memory> <optional> <expected> <format>
+    <span> <ranges> <chrono> <thread> <winsock2.h> <windows.h>
 )
 target_include_directories(zencrop_core PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src

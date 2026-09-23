@@ -4,7 +4,7 @@
 // No ONNX Runtime, UI, file I/O, or model dependencies. Safe for hermetic tests.
 
 #include "OcrBlock.h"
-#include "core/WideStringUtils.h"
+#include "core/WideFormatUtils.h"
 
 #include <cmath>
 #include <cstddef>

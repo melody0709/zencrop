@@ -2,7 +2,7 @@
 #include "OcrDashboardWindow.h"
 #include "dashboard/DashboardTheme.h"
 #include "Strings.h"
-#include "core/WideStringUtils.h"
+#include "core/WideFormatUtils.h"
 
 #include <gdiplus.h>
 #include <windows.h>

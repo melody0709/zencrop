@@ -3,7 +3,7 @@
 #include "core/ClipboardUtils.h"
 #include "core/Settings.h"
 #include "core/Strings.h"
-#include "core/WideStringUtils.h"
+#include "core/WideFormatUtils.h"
 #include "ocr/OcrMarkdownPreviewHost.h"
 #include "selection/SelectionTypes.h"
 #include "window/AlwaysOnTop.h"

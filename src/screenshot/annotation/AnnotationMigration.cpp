@@ -1,7 +1,7 @@
 #include "screenshot/annotation/AnnotationMigration.h"
 #include "screenshot/ScreenshotAnnotationLegacy.h"
 #include "screenshot/ScreenshotTypes.h"
-#include "core/WideStringUtils.h"
+#include "core/WideFormatUtils.h"
 
 static std::wstring SerializeAnnotationPoints(const std::vector<POINT>& points) {
     std::wstring result;

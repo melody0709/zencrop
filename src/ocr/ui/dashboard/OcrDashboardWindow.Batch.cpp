@@ -21,7 +21,7 @@
 #include "Settings.h"
 #include "Strings.h"
 #include "AppMessages.h"
-#include "core/WideStringUtils.h"
+#include "core/WideFormatUtils.h"
 #include "core/WideFormatUtils.h"
 #include "ocr/document/PaddleCloudDocumentProtocol.h"
 #include "ocr/document/PaddleCloudDocumentTransport.h"

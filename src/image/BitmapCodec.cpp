@@ -1,5 +1,5 @@
 #include "BitmapCodec.h"
-#include "core/WideStringUtils.h"
+#include "core/WideFormatUtils.h"
 
 #include <objbase.h>
 #include <shlobj.h>

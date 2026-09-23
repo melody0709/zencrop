@@ -14,7 +14,7 @@
 #include "ocr/engine/OcrEngine.h"
 #include "ocr/OcrUtils.h"
 #include "core/Utils.h"
-#include "core/WideStringUtils.h"
+#include "core/WideFormatUtils.h"
 #include "selection/SelectionTypes.h"
 
 #include <algorithm>

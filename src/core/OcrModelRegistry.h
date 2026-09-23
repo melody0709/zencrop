@@ -1,7 +1,8 @@
 #pragma once
 
 #include "Settings.h"
-#include "WideStringUtils.h"
+#include "WidePathUtils.h"
+#include "WideJsonUtils.h"
 
 #include <windows.h>
 

@@ -4,7 +4,7 @@
 #include "OcrBlockJson.h"
 #include "OcrPaddleVlJson.h"
 #include "Sha256.h"
-#include "core/WideStringUtils.h"
+#include "core/WideFormatUtils.h"
 #include "DashboardFileTypes.h"
 
 #include <algorithm>

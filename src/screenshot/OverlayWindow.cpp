@@ -2,7 +2,7 @@
 #include "SmartDetector.h"
 #include "SmartDetectorThread.h"
 #include "Strings.h"
-#include "core/WideStringUtils.h"
+#include "core/WideFormatUtils.h"
 #include "screenshot/annotation/AnnotationLegacyDocument.h"
 #include "screenshot/annotation/AnnotationMigration.h"
 #include "screenshot/CropAdjustMath.h"
@@ -1244,7 +1244,7 @@ void OverlayWindow::FreeBitmap() {
 
 // S-H-CLOSE-9: OverlayWindowScreenshot.inl umbrella deleted.
 // Screenshot-mode ctor + ColorPicker free helpers are real TUs under src/screenshot/.
-#include "core/WideStringUtils.h"
+#include "core/WideFormatUtils.h"
 
 void OverlayWindow::UpdateOverlay() {
     if (ScreenshotEditorIsScreenshotMode(m_editorState)) {

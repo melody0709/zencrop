@@ -2,7 +2,7 @@
 #include "Settings.h"
 #include "TcpHelper.h"
 // Stage3 3-A: net→ocr_engine cycle edge deleted. Layout cleanup via SetShutdownHook.
-#include "core/WideStringUtils.h"
+#include "core/WideFormatUtils.h"
 #include "core/NarrowStringUtils.h"
 #include "core/OcrModelRegistry.h"
 #include "AppMessages.h"

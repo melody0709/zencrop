@@ -11,7 +11,7 @@
 #include "Strings.h"
 #include "OcrBlockJson.h"
 #include "core/WideFormatUtils.h"
-#include "core/WideStringUtils.h"
+#include "core/WideFormatUtils.h"
 #include "core/JsonUtils.h"
 
 #include <algorithm>

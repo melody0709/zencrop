@@ -21,7 +21,7 @@
 #include "Strings.h"
 #include "AppMessages.h"
 #include "AlwaysOnTop.h"
-#include "core/WideStringUtils.h"
+#include "core/WideFormatUtils.h"
 #include "image/BitmapCodec.h"
 // Stage3 3-A-3: dead ScreenshotUtils include deleted (ocr_ui↛screenshot reverse).
 

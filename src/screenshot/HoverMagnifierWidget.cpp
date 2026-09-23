@@ -5,7 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
-#include "core/WideStringUtils.h"
+#include "core/WideFormatUtils.h"
 
 namespace {
 const wchar_t* kHoverMagnifierWindowClass = L"ZenCrop.HoverMagnifierWindow";

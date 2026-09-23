@@ -1,6 +1,7 @@
 #include "OcrMarkdownPreviewProtocol.h"
 
-#include "core/WideStringUtils.h"
+#include "core/WideFormatUtils.h"
+#include "core/WideJsonUtils.h"
 
 #include <algorithm>
 

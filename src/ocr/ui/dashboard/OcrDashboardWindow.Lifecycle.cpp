@@ -9,7 +9,7 @@
 #include "AppMessages.h"
 #include "Settings.h"
 #include "Strings.h"
-#include "core/WideStringUtils.h"
+#include "core/WideFormatUtils.h"
 
 #include <dwmapi.h>
 #include <shellapi.h>

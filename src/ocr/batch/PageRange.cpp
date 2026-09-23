@@ -1,6 +1,6 @@
 #include "PageRange.h"
 
-#include "core/WideStringUtils.h"
+#include "core/WideFormatUtils.h"
 
 namespace {
 

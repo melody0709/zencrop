@@ -1,5 +1,5 @@
 #include "DashboardFileTypes.h"
-#include "core/WideStringUtils.h"
+#include "core/WideFormatUtils.h"
 #include "core/WideMarkdownUtils.h"
 #include <cstdio>
 

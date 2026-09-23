@@ -1,6 +1,6 @@
 #pragma once
 
-#include "core/WideStringUtils.h"
+#include "core/WideFormatUtils.h"
 #include <windows.h>
 #include <algorithm>
 #include <cmath>

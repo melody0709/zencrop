@@ -1,7 +1,7 @@
 #include "OcrProgressWindow.h"
 #include "Strings.h"
 #include "AppMessages.h"
-#include "core/WideStringUtils.h"
+#include "core/WideFormatUtils.h"
 #include <gdiplus.h>
 #include <dwmapi.h>
 #include <stdio.h>

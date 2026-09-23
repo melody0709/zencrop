@@ -11,7 +11,7 @@
 #include "dashboard/DashboardHistoryStore.h"
 #include "dashboard/DashboardController.h"
 #include "core/AppDataPaths.h"
-#include "core/WideStringUtils.h"
+#include "core/WideFormatUtils.h"
 #include "AlwaysOnTop.h"
 #include "Settings.h"
 #include "Strings.h"

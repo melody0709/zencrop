@@ -3,7 +3,7 @@
 #include <algorithm>
 #include <dwmapi.h>
 #include <gdiplus.h>
-#include "core/WideStringUtils.h"
+#include "core/WideFormatUtils.h"
 
 #pragma comment(lib, "gdiplus.lib")
 

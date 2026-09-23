@@ -3,7 +3,7 @@
 #include "OcrUtils.h"
 #include "image/BitmapCodec.h"
 #include "DashboardFileTypes.h"
-#include "core/WideStringUtils.h"
+#include "core/WideFormatUtils.h"
 
 #include <windows.h>
 #include <shlobj.h>

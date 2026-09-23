@@ -9,7 +9,7 @@
 #include "PdfRenderOptions.h"
 #include "OcrBlock.h"
 #include "ocr/OcrDocumentTypes.h"
-#include "core/WideStringUtils.h"
+#include "core/WideFormatUtils.h"
 
 enum class BatchOcrTaskStatus {
     Pending,

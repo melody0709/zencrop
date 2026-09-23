@@ -1,6 +1,6 @@
 #include "ScreenshotColorFormat.h"
 #include "ScreenshotImageUtils.h"
-#include "core/WideStringUtils.h"
+#include "core/WideFormatUtils.h"
 #include <cstdio>
 #include <cctype>
 #include <algorithm>

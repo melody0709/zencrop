@@ -3,7 +3,8 @@
 #include "JsonUtils.h"
 #include "OcrBlockJson.h"
 #include "core/WideJsonUtils.h"
-#include "core/WideStringUtils.h"
+#include "core/WideFormatUtils.h"
+#include "core/WideJsonUtils.h"
 
 #include <algorithm>
 #include <cmath>

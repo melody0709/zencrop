@@ -7,7 +7,7 @@
 #include <cwctype>
 #include <limits>
 #include <string>
-#include "core/WideStringUtils.h"
+#include "core/WideFormatUtils.h"
 
 enum class LayoutModelFamily {
     Auto,

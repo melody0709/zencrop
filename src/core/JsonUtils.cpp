@@ -1,5 +1,6 @@
 #include "JsonUtils.h"
-#include "WideStringUtils.h"
+#include "WidePathUtils.h"
+#include "WideJsonUtils.h"
 
 const wchar_t* kPaddleOcrJobsUrl = L"https://paddleocr.aistudio-app.com/api/v2/ocr/jobs";
 

@@ -5,7 +5,7 @@
 #include "JsonUtils.h"
 #include "OcrBlockJson.h"
 #include "core/Sha256.h"
-#include "core/WideStringUtils.h"
+#include "core/WideFormatUtils.h"
 #include "DashboardFileTypes.h"
 
 #include <windows.h>

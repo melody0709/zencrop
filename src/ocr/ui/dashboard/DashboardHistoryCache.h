@@ -2,7 +2,7 @@
 
 #include "ocr/ui/DashboardModels.h"
 #include "ocr/ui/dashboard/DashboardHistoryModel.h"
-#include "core/WideStringUtils.h"
+#include "core/WideFormatUtils.h"
 
 #include <set>
 #include <string>

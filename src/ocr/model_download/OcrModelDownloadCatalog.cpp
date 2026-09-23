@@ -1,7 +1,7 @@
 #include "OcrModelDownloadCatalog.h"
 
 #include "core/Sha256.h"
-#include "core/WideStringUtils.h"
+#include "core/WideFormatUtils.h"
 
 #include <cwctype>
 #include <set>

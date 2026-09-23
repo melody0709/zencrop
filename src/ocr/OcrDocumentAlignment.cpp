@@ -1,7 +1,7 @@
 #include "OcrDocumentAlignment.h"
 
 #include "Sha256.h"
-#include "core/WideStringUtils.h"
+#include "core/WideFormatUtils.h"
 
 #include <algorithm>
 #include <cmath>

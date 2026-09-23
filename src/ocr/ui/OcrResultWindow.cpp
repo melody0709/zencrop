@@ -4,7 +4,7 @@
 #include "OcrUtils.h"
 #include "core/ClipboardUtils.h"
 #include "core/Utils.h"
-#include "core/WideStringUtils.h"
+#include "core/WideFormatUtils.h"
 #include <windowsx.h>
 #include <dwmapi.h>
 #include <cwctype>
