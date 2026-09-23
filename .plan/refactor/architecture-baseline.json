@@ -1,48 +1,48 @@
 {
   "recordedAt": "2026-09-23",
-  "version": "2.9.30",
   "schemaVersion": "1.0.0",
-  "metrics": {
-    "moduleMutualPairs": 10,
-    "productTargetSourceCount": 174,
-    "inlFileCount": 0,
-    "guardWiringProblems": 0,
-    "stdCxx23Occurrences": 0,
-    "externDeclarations": 4,
-    "staticLibsWithSmokeTarget": 0,
-    "cmakeGlobProductSources": 0,
-    "productStaticLibraryCount": 0,
-    "includeCycles": 0,
-    "cxxStandardDeclared": 23,
-    "testsCompilingProductCpp": 92,
-    "hubHeaderDirectIncluders": 107,
-    "forbiddenEdges": 0,
-    "moduleInversionEdges": 0,
-    "targetsMissingUtf8": 0,
-    "undeclaredSourceDirs": 0
-  },
   "stages": {
-    "P1": {
-      "moduleInversionEdges": 0,
-      "moduleMutualPairs": 10
+    "P3": {
+      "testsCompilingProductCpp": 0
     },
+    "P1": {
+      "moduleMutualPairs": 10,
+      "moduleInversionEdges": 0
+    },
+    "P5": {},
+    "P6": {},
     "P2": {
       "productStaticLibraryCount": 6,
       "staticLibsWithSmokeTarget": 6
     },
-    "P5": {},
     "P0": {
       "cxxStandardDeclared": 23,
-      "staticLibsWithSmokeTarget": 0,
       "productStaticLibraryCount": 0,
-      "testsCompilingProductCpp": 92
+      "testsCompilingProductCpp": 92,
+      "staticLibsWithSmokeTarget": 0
     },
     "P4": {
       "hubHeaderDirectIncluders": 40
-    },
-    "P3": {
-      "testsCompilingProductCpp": 0
-    },
-    "P6": {}
-  }
+    }
+  },
+  "metrics": {
+    "productTargetSourceCount": 1,
+    "guardWiringProblems": 0,
+    "undeclaredSourceDirs": 0,
+    "stdCxx23Occurrences": 0,
+    "includeCycles": 0,
+    "externDeclarations": 4,
+    "moduleInversionEdges": 0,
+    "moduleMutualPairs": 10,
+    "cxxStandardDeclared": 23,
+    "testsCompilingProductCpp": 92,
+    "staticLibsWithSmokeTarget": 7,
+    "cmakeGlobProductSources": 0,
+    "productStaticLibraryCount": 7,
+    "inlFileCount": 0,
+    "hubHeaderDirectIncluders": 107,
+    "targetsMissingUtf8": 0,
+    "forbiddenEdges": 0
+  },
+  "version": "2.9.30"
 }
