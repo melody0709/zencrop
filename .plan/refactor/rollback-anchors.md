@@ -17,7 +17,7 @@
 | P3 完成 | 2026-09-23 03:00 | `3d12a35368a73562a129d2b865582f3c30a846c2` | 测试全面切向链接分层静态库，testsCompilingProductCpp 降为 0，71 个全套密封测试 100% 通过 |
 | P4 完成 | 2026-09-23 03:16 | `c464ab3f2780e90c8a514d8058dd53a3f552f4eb` | 拆 WideStringUtils 为聚焦域头，引入 PCH，hubHeaderDirectIncluders 降为 0，全量构建与 71 个测试通过 |
 | P5 完成 | 2026-09-23 03:25 | `1ba100e932b6e8a05c3fcda1ef0fa3b3fe5848bb` | 引入 C++23 std::span、std::wstring_view、ComPtr RAII，71 个全套密封测试 100% 通过 |
-| P6 完成 | 2026-09-23 03:26 | `HEAD` | 版本号全面升级至 v3.0.0，文档同步，P0–P6 全部 7 个阶段闸门全绿 |
+| P6 完成 | 2026-09-23 03:26 | `500f711e967406e9ec1914ebfdab0f274cb7ebae` | 版本号全面升级至 v3.0.0，文档同步，P0–P6 全部 7 个阶段闸门全绿 |
 
 ## 重要：当前缺少可用的回滚锚点
 
