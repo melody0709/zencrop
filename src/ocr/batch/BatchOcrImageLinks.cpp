@@ -2,7 +2,7 @@
 
 #include "OcrUtils.h"
 #include "image/BitmapCodec.h"
-#include "dashboard/DashboardFileTypes.h"
+#include "DashboardFileTypes.h"
 #include "core/WideStringUtils.h"
 
 #include <windows.h>

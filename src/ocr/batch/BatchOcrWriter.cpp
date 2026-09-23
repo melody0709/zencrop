@@ -6,7 +6,7 @@
 #include "OcrBlockJson.h"
 #include "core/Sha256.h"
 #include "core/WideStringUtils.h"
-#include "dashboard/DashboardFileTypes.h"
+#include "DashboardFileTypes.h"
 
 #include <windows.h>
 #include <shlobj.h>

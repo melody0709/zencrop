@@ -1,7 +1,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include "OcrDashboardWindow.h"
 
-#include "ocr/ui/OcrMarkdownPreviewHost.h"
+#include "ocr/OcrMarkdownPreviewHost.h"
 #include "selection/SelectionStructuredContent.h"
 
 #include <utility>

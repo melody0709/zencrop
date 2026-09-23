@@ -5,7 +5,7 @@
 #include "OcrPaddleVlJson.h"
 #include "Sha256.h"
 #include "core/WideStringUtils.h"
-#include "dashboard/DashboardFileTypes.h"
+#include "DashboardFileTypes.h"
 
 #include <algorithm>
 #include <climits>

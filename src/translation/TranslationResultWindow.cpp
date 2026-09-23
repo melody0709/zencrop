@@ -4,7 +4,7 @@
 #include "core/Settings.h"
 #include "core/Strings.h"
 #include "core/WideStringUtils.h"
-#include "ocr/ui/OcrMarkdownPreviewHost.h"
+#include "ocr/OcrMarkdownPreviewHost.h"
 #include "selection/SelectionTypes.h"
 #include "window/AlwaysOnTop.h"
 

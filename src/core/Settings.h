@@ -1,5 +1,6 @@
 #pragma once
 #include <windows.h>
+#include <mutex>
 // Stage3 3-B: Settings repository must not include ocr/batch.
 #include "core/RasterBoundOptions.h"
 #include <optional>
@@ -770,6 +771,14 @@ inline void NormalizeLoadedPPOcrV6Preset(
     settings.ppocrv6Preset = PPOcrV6PresetIdName(ParsePPOcrV6PresetId(persistedName));
     DowngradePPOcrV6PresetIfDiverged(settings);
 }
+
+std::wstring GetSettingsFilePath();
+std::mutex& SettingsWriteMutex();
+std::wstring ReadFileToString(const std::wstring& path);
+bool WriteStringToFile(
+    const std::wstring& path,
+    const std::wstring& content,
+    std::wstring* error = nullptr);
 
 GeneralSettings LoadGeneralSettings();
 void SaveGeneralSettings(const GeneralSettings& settings);

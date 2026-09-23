@@ -13,7 +13,7 @@
 #include "ocr/LocalRaster.h"
 #include "ocr/engine/OcrEngine.h"
 #include "ocr/OcrUtils.h"
-#include "screenshot/ScreenshotUtils.h"
+#include "core/Utils.h"
 #include "core/WideStringUtils.h"
 #include "selection/SelectionTypes.h"
 
@@ -379,7 +379,7 @@ bool TranslationCoordinator::Start(HWND owner, RECT sourceRect, HBITMAP hBitmap)
         return false;
     }
 
-    ocrSourceBitmap_ = Screenshot::DuplicateBitmap(hBitmap);
+    ocrSourceBitmap_ = DuplicateHBitmap(hBitmap);
     if (!ocrSourceBitmap_) {
         ShowError(StageText(L"无法准备截图供 OCR 使用。", L"Failed to prepare the screenshot for OCR."));
         return false;
@@ -1034,7 +1034,7 @@ bool TranslationCoordinator::StartOcrRecognition(uint64_t generation) {
         ocrInFlight_ = false;
         return false;
     }
-    HBITMAP copy = Screenshot::DuplicateBitmap(ocrSourceBitmap_);
+    HBITMAP copy = DuplicateHBitmap(ocrSourceBitmap_);
     if (!copy) {
         ocrInFlight_ = false;
         if (resultWindow_ && resultWindow_->IsValid()) {

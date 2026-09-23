@@ -47,11 +47,7 @@ std::wstring UrlEncode(const std::wstring& s) {
 }
 
 std::wstring GetOcrImageDir() {
-    const std::wstring dataPath = ZenCropAppDataFilePath(L"ocr_images");
-    if (dataPath.empty()) return L"";
-    std::wstring dir = WideEnsureTrailingBackslash(dataPath);
-    CreateDirectoryW(dir.c_str(), nullptr);
-    return dir;
+    return ZenCropGetOcrImageDir();
 }
 
 std::wstring GetOcrImageDateDir(const SYSTEMTIME& st) {

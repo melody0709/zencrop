@@ -1,7 +1,7 @@
 #include "Settings.h"
 #include "Strings.h"
 #include "OcrEngine.h"
-#include "ocr/ui/OcrMarkdownPreviewHost.h"
+#include "ocr/OcrMarkdownPreviewHost.h"
 #include "window/AlwaysOnTop.h"
 #include "screenshot/ScreenshotUtils.h"
 #include "MiniHttpServer.h"

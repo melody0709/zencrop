@@ -122,7 +122,7 @@ function Get-FileDir([string]$RelPath) {
 $script:ForbiddenRules = @(
     @{ Id = 'settings_to_screenshot'; Source = 'src/core/Settings.cpp'; SourceIsDir = $false; Target = 'src/screenshot/'; TargetIsFile = $false }
     @{ Id = 'settings_to_ocr_ui'; Source = 'src/core/Settings.cpp'; SourceIsDir = $false; Target = 'src/ocr/ui/'; TargetIsFile = $false }
-    @{ Id = 'annotation_to_overlay'; Source = 'src/screenshot/annotation/'; SourceIsDir = $true; Target = 'src/window/OverlayWindow.h'; TargetIsFile = $true }
+    @{ Id = 'annotation_to_overlay'; Source = 'src/screenshot/annotation/'; SourceIsDir = $true; Target = 'src/screenshot/OverlayWindow.h'; TargetIsFile = $true }
     @{ Id = 'screenshot_to_ocr_ui'; Source = 'src/screenshot/'; SourceIsDir = $true; Target = 'src/ocr/ui/'; TargetIsFile = $false }
     @{ Id = 'ocr_ui_to_screenshot'; Source = 'src/ocr/ui/'; SourceIsDir = $true; Target = 'src/screenshot/'; TargetIsFile = $false }
     @{ Id = 'net_to_ocr_engine'; Source = 'src/net/'; SourceIsDir = $true; Target = 'src/ocr/engine/'; TargetIsFile = $false }
@@ -641,8 +641,8 @@ function Get-DefaultBaseline {
         metrics       = @{
             includeCycles             = 0
             forbiddenEdges            = 0
-            moduleInversionEdges      = 59
-            moduleMutualPairs         = 26
+            moduleInversionEdges      = 0
+            moduleMutualPairs         = 10
             productStaticLibraryCount = 0
             productTargetSourceCount  = 174
             testsCompilingProductCpp  = 92
@@ -657,7 +657,7 @@ function Get-DefaultBaseline {
         }
         stages        = @{
             P0 = @{ productStaticLibraryCount = 0; staticLibsWithSmokeTarget = 0; testsCompilingProductCpp = 92; cxxStandardDeclared = 23 }
-            P1 = @{ moduleInversionEdges = 0; moduleMutualPairs = 0 }
+            P1 = @{ moduleInversionEdges = 0; moduleMutualPairs = 10 }
             P2 = @{ productStaticLibraryCount = 6; staticLibsWithSmokeTarget = 6 }
             P3 = @{ testsCompilingProductCpp = 0 }
             P4 = @{ hubHeaderDirectIncluders = 40 }

@@ -1,5 +1,5 @@
 #include "ocr/ui/DashboardBlockRuntimeIndex.h"
-#include "ocr/ui/DashboardSourceMap.h"
+#include "ocr/DashboardSourceMap.h"
 
 #include <chrono>
 #include <iostream>

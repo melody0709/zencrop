@@ -4,7 +4,7 @@
 #include "core/WideStringUtils.h"
 #include "OcrBlockJson.h"
 #include "PageRange.h"
-#include "dashboard/DashboardFileTypes.h"
+#include "DashboardFileTypes.h"
 
 #include <windows.h>
 #include <shlwapi.h>

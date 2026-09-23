@@ -5,7 +5,7 @@
 #include "OcrBlockPresentation.h"
 #include "OcrUtils.h"
 #include "core/WideStringUtils.h"
-#include "dashboard/DashboardFileTypes.h"
+#include "DashboardFileTypes.h"
 #include "image/BitmapCodec.h"
 #include "ocr/OcrDocumentAlignment.h"
 

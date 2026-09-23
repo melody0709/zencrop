@@ -4,7 +4,7 @@
 
 #include "ocr/OcrUtils.h"
 #include "ocr/ui/dashboard/DashboardDialogLayout.h"
-#include "ocr/ui/dashboard/DashboardFileTypes.h"
+#include "DashboardFileTypes.h"
 #include "core/WideStringUtils.h"
 #include "image/BitmapCodec.h"
 

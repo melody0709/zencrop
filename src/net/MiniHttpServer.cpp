@@ -3,7 +3,7 @@
 #include <ws2tcpip.h>
 #include <windows.h>
 #include "MiniHttpServer.h"
-#include "OcrUtils.h"
+#include "core/AppDataPaths.h"
 #include "core/WideStringUtils.h"
 #include "core/NarrowStringUtils.h"
 #include <shlwapi.h>
@@ -293,7 +293,7 @@ unsigned long WINAPI MiniHttpServer::ServerThread(void* param) {
         }
         const wchar_t* canonicalPath = canonicalPathString.c_str();
 
-        std::wstring ocrDir = GetOcrImageDir();
+        std::wstring ocrDir = ZenCropGetOcrImageDir();
         std::wstring canonicalOcrDir;
         bool allowed = CanonicalizeHttpPath(ocrDir, canonicalOcrDir) &&
             IsPathUnderHttpRoot(canonicalPathString, canonicalOcrDir);

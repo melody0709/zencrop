@@ -4,7 +4,6 @@
 #include "core/HotkeyEdit.h"
 #include "core/Settings.h"
 #include "core/Strings.h"
-#include "ocr/ui/OcrDashboardWindow.h"
 #include "translation/TranslationLaunchContext.h"
 #include "translation/TranslationPreflight.h"
 
@@ -38,9 +37,11 @@ POINT CurrentCursor() {
 } // namespace
 
 SelectionTranslationController::SelectionTranslationController(
-    HWND deliveryWindow)
+    HWND deliveryWindow,
+    DashboardPreviewSelectionFn dashboardPreviewSelection)
     : deliveryWindow_(deliveryWindow),
-      acquirer_(std::make_unique<SelectionTextAcquirer>(deliveryWindow)) {}
+      acquirer_(std::make_unique<SelectionTextAcquirer>(deliveryWindow)),
+      dashboardPreviewSelection_(std::move(dashboardPreviewSelection)) {}
 
 SelectionTranslationController::~SelectionTranslationController() {
     Shutdown();
@@ -140,9 +141,10 @@ void SelectionTranslationController::Start(
     if (translation_.RequestPreviewSelection(
             snapshot.topLevelWindow, snapshot.generation,
             handlePreviewSelection) ||
-        OcrDashboardWindow::RequestPreviewSelection(
+        (dashboardPreviewSelection_ &&
+         dashboardPreviewSelection_(
             snapshot.topLevelWindow, snapshot.generation,
-            std::move(handlePreviewSelection))) {
+            std::move(handlePreviewSelection)))) {
         return;
     }
     if (!acquirer_->Start(snapshot)) {

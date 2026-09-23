@@ -1,6 +1,6 @@
 #include "BatchOcrController.h"
 #include "BatchOcrWriter.h"
-#include "dashboard/DashboardFileTypes.h"
+#include "DashboardFileTypes.h"
 #include "core/WideStringUtils.h"
 
 #include <windows.h>

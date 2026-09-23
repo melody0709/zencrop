@@ -1,6 +1,6 @@
 #include "ocr/ui/dashboard/DashboardFolderImportOptionsDialog.h"
 #include "ocr/ui/dashboard/DashboardDialogLayout.h"
-#include "ocr/ui/dashboard/DashboardFileTypes.h"
+#include "DashboardFileTypes.h"
 #include "core/WideStringUtils.h"
 #include "BatchOcrWriter.h"
 #include "Strings.h"

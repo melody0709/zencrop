@@ -234,9 +234,9 @@ zencrop_add_simple_hermetic(test_paddle_doc_layout_postprocess
 zencrop_add_annotation_test(test_property_sync)
 
 zencrop_add_simple_hermetic(test_dashboard_file_types
-    SOURCES ${CMAKE_SOURCE_DIR}/src/ocr/ui/dashboard/DashboardFileTypes.cpp
+    SOURCES ${CMAKE_SOURCE_DIR}/src/ocr/DashboardFileTypes.cpp
     # OWN-74: FileTypes thin-wraps core/WideStringUtils.h
-    INCLUDES ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/src/ocr/ui ${CMAKE_SOURCE_DIR}/src/core
+    INCLUDES ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/src/ocr ${CMAKE_SOURCE_DIR}/src/core
 )
 
 # OWN-74: pure WideStringUtils contract (header-only).
@@ -247,7 +247,7 @@ zencrop_add_simple_hermetic(test_wide_string_utils_contract
 zencrop_add_simple_hermetic(test_translation_contract
     SOURCES
         ${CMAKE_SOURCE_DIR}/src/core/Settings.cpp
-        ${CMAKE_SOURCE_DIR}/src/core/TranslationSettingsCodec.cpp
+        ${CMAKE_SOURCE_DIR}/src/translation/TranslationSettingsCodec.cpp
         ${CMAKE_SOURCE_DIR}/src/core/HotkeyEdit.cpp
         ${CMAKE_SOURCE_DIR}/src/core/AppDataPaths.cpp
         ${CMAKE_SOURCE_DIR}/src/core/Strings.cpp
@@ -273,10 +273,10 @@ zencrop_add_simple_hermetic(test_translation_contract
         ${CMAKE_SOURCE_DIR}/src/translation/TranslationCoordinator.StructuredSelection.cpp
         ${CMAKE_SOURCE_DIR}/src/translation/TranslationUntranslatable.cpp
         ${CMAKE_SOURCE_DIR}/src/translation/TranslationDiagnostics.cpp
-        ${CMAKE_SOURCE_DIR}/src/ocr/ui/OcrMarkdownPreviewHost.cpp
-        ${CMAKE_SOURCE_DIR}/src/ocr/ui/OcrMarkdownPreviewProtocol.cpp
+        ${CMAKE_SOURCE_DIR}/src/ocr/OcrMarkdownPreviewHost.cpp
+        ${CMAKE_SOURCE_DIR}/src/ocr/OcrMarkdownPreviewProtocol.cpp
         ${CMAKE_SOURCE_DIR}/src/ocr/ui/dashboard/DashboardTranslationCache.cpp
-        ${CMAKE_SOURCE_DIR}/src/ocr/ui/WebAssetGuard.cpp
+        ${CMAKE_SOURCE_DIR}/src/ocr/WebAssetGuard.cpp
         ${CMAKE_SOURCE_DIR}/src/core/Sha256.cpp
         ${CMAKE_SOURCE_DIR}/src/window/AlwaysOnTop.cpp
         ${CMAKE_SOURCE_DIR}/src/selection/SelectionTypes.cpp
@@ -535,7 +535,7 @@ zencrop_add_simple_hermetic(test_cloud_native_pdf_contract
         ${CMAKE_SOURCE_DIR}/src/ocr/document/PaddleCloudDocumentTransport.cpp
         ${CMAKE_SOURCE_DIR}/src/net/Network.cpp
         # OWN-73/74: Normalizer/Protocol thin-wrap pure DashboardFileTypes + WideStringUtils.
-        ${CMAKE_SOURCE_DIR}/src/ocr/ui/dashboard/DashboardFileTypes.cpp
+        ${CMAKE_SOURCE_DIR}/src/ocr/DashboardFileTypes.cpp
     INCLUDES
         ${CMAKE_SOURCE_DIR}/src
         ${CMAKE_SOURCE_DIR}/src/core
@@ -577,7 +577,6 @@ endfunction()
 
 zencrop_add_runtime_test(test_ppocrv6_writer_contract
     SOURCES
-        ${CMAKE_SOURCE_DIR}/src/image/BitmapCodec.cpp
         ${CMAKE_SOURCE_DIR}/src/ocr/batch/BatchOcrController.cpp
         ${CMAKE_SOURCE_DIR}/src/ocr/batch/BatchOcrWriter.cpp
         ${CMAKE_SOURCE_DIR}/src/ocr/batch/BatchOcrOutputArtifacts.cpp
@@ -589,7 +588,7 @@ zencrop_add_runtime_test(test_ppocrv6_writer_contract
         ${CMAKE_SOURCE_DIR}/src/core/JsonUtils.cpp
         ${CMAKE_SOURCE_DIR}/src/core/Sha256.cpp
         # OWN-72/74: BatchOcrController thin-wraps pure DashboardFileTypes + WideStringUtils.
-        ${CMAKE_SOURCE_DIR}/src/ocr/ui/dashboard/DashboardFileTypes.cpp
+        ${CMAKE_SOURCE_DIR}/src/ocr/DashboardFileTypes.cpp
     INCLUDES
         ${CMAKE_SOURCE_DIR}/src
         ${CMAKE_SOURCE_DIR}/src/core
@@ -607,10 +606,10 @@ zencrop_add_runtime_test(test_ppocrv6_writer_contract
 zencrop_add_runtime_test(test_webview2_preview_contract
     SOURCES
         ${CMAKE_SOURCE_DIR}/src/core/JsonUtils.cpp
-        ${CMAKE_SOURCE_DIR}/src/ocr/ui/OcrMarkdownPreviewProtocol.cpp
-        ${CMAKE_SOURCE_DIR}/src/ocr/ui/WebAssetGuard.cpp
-        ${CMAKE_SOURCE_DIR}/src/ocr/ui/OcrMarkdownPreviewHost.cpp
-        ${CMAKE_SOURCE_DIR}/src/ocr/ui/dashboard/DashboardFileTypes.cpp
+        ${CMAKE_SOURCE_DIR}/src/ocr/OcrMarkdownPreviewProtocol.cpp
+        ${CMAKE_SOURCE_DIR}/src/ocr/WebAssetGuard.cpp
+        ${CMAKE_SOURCE_DIR}/src/ocr/OcrMarkdownPreviewHost.cpp
+        ${CMAKE_SOURCE_DIR}/src/ocr/DashboardFileTypes.cpp
     INCLUDES
         ${CMAKE_BINARY_DIR}/generated
         ${CMAKE_SOURCE_DIR}/src/core
@@ -767,7 +766,7 @@ zencrop_add_simple_hermetic(test_dashboard_batch_coordinator_contract
 zencrop_add_simple_hermetic(test_dashboard_source_rail_model_contract
     SOURCES
         ${CMAKE_SOURCE_DIR}/src/ocr/ui/dashboard/DashboardSourceRailModel.cpp
-        ${CMAKE_SOURCE_DIR}/src/ocr/ui/dashboard/DashboardFileTypes.cpp
+        ${CMAKE_SOURCE_DIR}/src/ocr/DashboardFileTypes.cpp
     INCLUDES
         ${CMAKE_SOURCE_DIR}/src/core
         ${CMAKE_SOURCE_DIR}/src/ocr
@@ -825,7 +824,7 @@ zencrop_add_simple_hermetic(test_dashboard_result_projection_contract
 zencrop_add_simple_hermetic(test_dashboard_pdf_options_contract
     SOURCES
         ${CMAKE_SOURCE_DIR}/src/ocr/ui/dashboard/DashboardPdfOptionsPreflight.cpp
-        ${CMAKE_SOURCE_DIR}/src/ocr/ui/dashboard/DashboardFileTypes.cpp
+        ${CMAKE_SOURCE_DIR}/src/ocr/DashboardFileTypes.cpp
         ${CMAKE_SOURCE_DIR}/src/ocr/batch/PageRange.cpp
         ${CMAKE_SOURCE_DIR}/tests/support/dashboard_pdf_options_hermetic_stubs.cpp
     INCLUDES

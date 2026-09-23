@@ -6,8 +6,8 @@
 
 #include "JsonUtils.h"
 #include "OcrUtils.h"
-#include "ocr/ui/dashboard/DashboardPreviewSecurity.h"
-#include "dashboard/DashboardFileTypes.h"
+#include "ocr/DashboardPreviewSecurity.h"
+#include "DashboardFileTypes.h"
 #include "core/Base64.h"
 #include "core/WideStringUtils.h"
 #include "AppMessages.h"

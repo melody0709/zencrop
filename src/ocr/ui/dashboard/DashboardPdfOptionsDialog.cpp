@@ -3,7 +3,7 @@
 #include "ocr/ui/dashboard/DashboardDialogLayout.h"
 #include "ocr/ui/dashboard/DashboardFolderImportOptionsDialog.h"
 #include "ocr/ui/dashboard/DashboardOutputArtifactOptionsDialog.h"
-#include "ocr/ui/dashboard/DashboardFileTypes.h"
+#include "DashboardFileTypes.h"
 #include "ocr/ui/dashboard/DashboardPdfPasswordDialog.h"
 #include "ocr/ui/OcrDashboardWindow.h"
 #include "ocr/ui/DashboardModels.h"

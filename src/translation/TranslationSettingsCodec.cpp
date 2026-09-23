@@ -1,4 +1,5 @@
 #include "TranslationSettingsCodec.h"
+#include "core/WideJsonUtils.h"
 #include "translation/TranslationProviderCatalog.h"
 #include "translation/TranslationTypes.h"
 
@@ -856,4 +857,60 @@ bool NormalizeTranslationSettingsForPersistence(
         }
     }
     return true;
+}
+
+TranslationSettings LoadTranslationSettings() {
+    TranslationSettings settings;
+    const std::wstring json = ReadFileToString(GetSettingsFilePath());
+    if (json.empty()) {
+        settings.enabled = true;
+        return settings;
+    }
+
+    const std::wstring section = WideJsonFindTopLevelValue(json, L"translation");
+    if (section.empty()) {
+        settings.enabled = true;
+        return settings;
+    }
+    std::wstring parseError;
+    if (!ParseTranslationSection(section, settings, &parseError)) return TranslationSettings{};
+    return settings;
+}
+
+bool SaveTranslationSettings(
+    const TranslationSettings& settings,
+    std::wstring* error) {
+    std::lock_guard<std::mutex> settingsLock(SettingsWriteMutex());
+    const std::wstring path = GetSettingsFilePath();
+    const std::wstring json = ReadFileToString(path);
+    if (!settings.schemaSupported ||
+        settings.schemaVersion > kTranslationSettingsSchemaVersion) {
+        // A newer installation owns this section. Do not overwrite unknown
+        // data with a partial old-schema representation.
+        if (error) *error = L"The translation settings use a newer unsupported schema.";
+        return false;
+    }
+
+    TranslationSettings normalized = settings;
+    if (!NormalizeTranslationSettingsForPersistence(normalized, error)) {
+        return false;
+    }
+    const std::wstring translationJson =
+        L"  \"translation\": " + SerializeTranslationSection(normalized);
+
+    const std::wstring generalSection = WideJsonFindTopLevelValue(json, L"general");
+    const std::wstring aotSection = WideJsonFindTopLevelValue(json, L"alwaysOnTop");
+    const std::wstring overlaySection = WideJsonFindTopLevelValue(json, L"overlay");
+    const std::wstring screenshotSection = WideJsonFindTopLevelValue(json, L"screenshot");
+    const std::wstring ocrSection = WideJsonFindTopLevelValue(json, L"ocr");
+    const std::wstring hotkeySection = WideJsonFindTopLevelValue(json, L"hotkeys");
+    std::wstring fullJson = L"{\n";
+    if (!generalSection.empty()) fullJson += L"  \"general\": " + generalSection + L",\n";
+    if (!aotSection.empty()) fullJson += L"  \"alwaysOnTop\": " + aotSection + L",\n";
+    if (!overlaySection.empty()) fullJson += L"  \"overlay\": " + overlaySection + L",\n";
+    if (!screenshotSection.empty()) fullJson += L"  \"screenshot\": " + screenshotSection + L",\n";
+    if (!ocrSection.empty()) fullJson += L"  \"ocr\": " + ocrSection + L",\n";
+    if (!hotkeySection.empty()) fullJson += L"  \"hotkeys\": " + hotkeySection + L",\n";
+    fullJson += translationJson + L"\n}";
+    return WriteStringToFile(path, fullJson, error);
 }

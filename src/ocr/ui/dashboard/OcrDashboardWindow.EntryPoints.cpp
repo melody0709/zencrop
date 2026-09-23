@@ -2,7 +2,7 @@
 #include "OcrDashboardWindow.h"
 #include "dashboard/DashboardHostUtils.h"
 #include "dashboard/DashboardHostIds.h"
-#include "dashboard/DashboardFileTypes.h"
+#include "DashboardFileTypes.h"
 #include "dashboard/DashboardTheme.h"
 #include "AppMessages.h"
 #include "OcrUtils.h"

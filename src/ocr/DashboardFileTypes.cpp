@@ -1,4 +1,4 @@
-#include "dashboard/DashboardFileTypes.h"
+#include "DashboardFileTypes.h"
 #include "core/WideStringUtils.h"
 #include "core/WideMarkdownUtils.h"
 #include <cstdio>

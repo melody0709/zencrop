@@ -15,7 +15,7 @@
 #include "OcrProgressWindow.h"
 #include "OcrCopyToastWindow.h"
 #include "OcrDashboardWindow.h"
-#include "ocr/ui/dashboard/DashboardFileTypes.h"
+#include "DashboardFileTypes.h"
 #include "BatchOcrImageLinks.h"
 #include "MiniHttpServer.h"
 #include "ScreenshotSession.h"
@@ -536,7 +536,8 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         AddTrayIcon(hwnd);
 
         g_selectionTranslation =
-            std::make_unique<selection::SelectionTranslationController>(hwnd);
+            std::make_unique<selection::SelectionTranslationController>(
+                hwnd, &OcrDashboardWindow::RequestPreviewSelection);
         RegisterAppHotkeys(hwnd);
 
         return 0;

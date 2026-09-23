@@ -39,7 +39,7 @@ LAYER = {
 FORBIDDEN = [
     ('settings_to_screenshot', 'src/core/Settings.cpp', False, 'src/screenshot/', False),
     ('settings_to_ocr_ui', 'src/core/Settings.cpp', False, 'src/ocr/ui/', False),
-    ('annotation_to_overlay', 'src/screenshot/annotation/', True, 'src/window/OverlayWindow.h', True),
+    ('annotation_to_overlay', 'src/screenshot/annotation/', True, 'src/screenshot/OverlayWindow.h', True),
     ('screenshot_to_ocr_ui', 'src/screenshot/', True, 'src/ocr/ui/', False),
     ('ocr_ui_to_screenshot', 'src/ocr/ui/', True, 'src/screenshot/', False),
     ('net_to_ocr_engine', 'src/net/', True, 'src/ocr/engine/', False),

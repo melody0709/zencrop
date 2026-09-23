@@ -1,7 +1,7 @@
 #include "ocr/ui/dashboard/DashboardPdfOptionsDialog.h"
 #include "ocr/ui/dashboard/DashboardPdfOptionsDialogInternals.h"
 #include "ocr/ui/dashboard/DashboardPdfPasswordDialog.h"
-#include "ocr/ui/dashboard/DashboardFileTypes.h"
+#include "DashboardFileTypes.h"
 #include "ocr/ui/dashboard/DashboardDialogLayout.h"
 #include "core/WideStringUtils.h"
 #include "PageRange.h"

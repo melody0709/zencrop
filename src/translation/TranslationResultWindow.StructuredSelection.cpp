@@ -1,6 +1,6 @@
 #include "TranslationResultWindow.h"
 
-#include "ocr/ui/OcrMarkdownPreviewHost.h"
+#include "ocr/OcrMarkdownPreviewHost.h"
 #include "selection/SelectionStructuredContent.h"
 
 #include <utility>

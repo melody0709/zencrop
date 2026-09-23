@@ -8,7 +8,7 @@
 #include "image/BitmapCodec.h"
 #include "BatchOcrWriter.h"
 #include "BatchOcrImageLinks.h"
-#include "dashboard/DashboardFileTypes.h"
+#include "DashboardFileTypes.h"
 
 #include <windows.h>
 #include <gdiplus.h>

@@ -2,7 +2,7 @@
 
 #include "ocr/ui/DashboardTextMode.h"
 #include "ocr/ui/dashboard/DashboardCanvasModel.h"
-#include "ocr/ui/dashboard/DashboardPreviewSecurity.h"
+#include "ocr/DashboardPreviewSecurity.h"
 #include "ocr/ui/dashboard/DashboardState.h"
 
 #include <string>

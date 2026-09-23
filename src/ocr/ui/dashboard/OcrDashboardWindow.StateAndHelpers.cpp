@@ -6,7 +6,7 @@
 #include "dashboard/DashboardHostTypes.h"
 #include "dashboard/DashboardHostInternals.h"
 #include "dashboard/DashboardTheme.h"
-#include "dashboard/DashboardFileTypes.h"
+#include "DashboardFileTypes.h"
 #include "dashboard/DashboardSourceRailModel.h"
 #include "dashboard/DashboardDialogLayout.h"
 #include "dashboard/DashboardOutputArtifactOptionsDialog.h"

@@ -747,4 +747,6 @@ HBITMAP LoadHBitmapFromFile(const std::wstring& path, std::wstring* error) {
     return hBitmap;
 }
 
+
+
 } // namespace ImageCodec

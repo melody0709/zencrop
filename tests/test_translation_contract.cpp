@@ -16,7 +16,7 @@
 #include "translation/TranslationUntranslatable.h"
 #include "translation/MachineTranslationEngine.h"
 #include "ocr/ui/dashboard/DashboardTranslationCache.h"
-#include "core/TranslationSettingsCodec.h"
+#include "translation/TranslationSettingsCodec.h"
 #include "window/AlwaysOnTop.h"
 #include "ocr/LocalRaster.h"
 #include "ocr/engine/OcrEngine.h"

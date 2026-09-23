@@ -1,7 +1,7 @@
 #include "ocr/ui/dashboard/DashboardOutputArtifactOptionsDialog.h"
 #include "ocr/ui/dashboard/DashboardDialogLayout.h"
 #include "ocr/ui/dashboard/DashboardFolderImportOptionsDialog.h"
-#include "ocr/ui/dashboard/DashboardFileTypes.h"
+#include "DashboardFileTypes.h"
 #include "BatchOcrTypes.h"
 #include "PdfRenderOptions.h"
 #include "core/WideStringUtils.h"

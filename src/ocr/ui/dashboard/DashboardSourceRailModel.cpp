@@ -1,5 +1,5 @@
 #include "ocr/ui/dashboard/DashboardSourceRailModel.h"
-#include "ocr/ui/dashboard/DashboardFileTypes.h"
+#include "DashboardFileTypes.h"
 #include "core/WideFormatUtils.h"
 #include "core/WideStringUtils.h"
 

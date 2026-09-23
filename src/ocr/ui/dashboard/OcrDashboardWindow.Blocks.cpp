@@ -6,7 +6,7 @@
 #include "dashboard/DashboardCanvasModel.h"
 #include "dashboard/DashboardCanvasMath.h"
 #include "dashboard/DashboardTheme.h"
-#include "dashboard/DashboardFileTypes.h"
+#include "DashboardFileTypes.h"
 #include "core/ClipboardUtils.h"
 #include "Strings.h"
 #include "OcrBlockJson.h"

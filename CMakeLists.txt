@@ -105,12 +105,12 @@ add_executable(ZenCrop WIN32
     src/core/StartupRegistration.h src/core/StartupRegistration.cpp
     src/core/Settings.h src/core/Settings.cpp
     src/core/SettingsHotkeyDraft.h
-    src/core/TranslationSettingsCodec.h src/core/TranslationSettingsCodec.cpp
-    src/core/SettingsDialog.h src/core/SettingsDialog.cpp
+    src/translation/TranslationSettingsCodec.h src/translation/TranslationSettingsCodec.cpp
+    src/ocr/ui/SettingsDialog.h src/ocr/ui/SettingsDialog.cpp
     src/image/BitmapCodec.h src/image/BitmapCodec.cpp
     src/detect/SmartDetector.h src/detect/SmartDetector.cpp
     src/detect/SmartDetectorThread.h src/detect/SmartDetectorThread.cpp
-    src/window/OverlayWindow.h src/window/OverlayWindow.cpp
+    src/screenshot/OverlayWindow.h src/screenshot/OverlayWindow.cpp
     src/window/ReparentWindow.h src/window/ReparentWindow.cpp
     src/window/ThumbnailWindow.h src/window/ThumbnailWindow.cpp
     src/window/ViewportWindow.h src/window/ViewportWindow.cpp
@@ -186,7 +186,7 @@ add_executable(ZenCrop WIN32
     src/ocr/ui/dashboard/DashboardHostInternals.h
     src/ocr/ui/dashboard/DashboardHostUtils.h
     src/ocr/ui/dashboard/DashboardHostUtils.cpp
-    src/ocr/ui/dashboard/DashboardFileTypes.h src/ocr/ui/dashboard/DashboardFileTypes.cpp
+    src/ocr/DashboardFileTypes.h src/ocr/DashboardFileTypes.cpp
     src/ocr/ui/dashboard/DashboardOleDropTarget.h src/ocr/ui/dashboard/DashboardOleDropTarget.cpp
     src/ocr/ui/dashboard/DashboardDialogLayout.h
     src/ocr/ui/dashboard/DashboardPdfPasswordDialog.h src/ocr/ui/dashboard/DashboardPdfPasswordDialog.cpp
@@ -210,11 +210,12 @@ add_executable(ZenCrop WIN32
     src/ocr/ui/dashboard/DashboardCanvasModel.h
     src/ocr/ui/dashboard/DashboardCanvasMath.h
     src/ocr/ui/dashboard/DashboardPreviewCoordinator.h
-    src/ocr/ui/dashboard/DashboardPreviewSecurity.h
+    src/ocr/DashboardPreviewSecurity.h
+    src/ocr/DashboardSourceMap.h
     src/ocr/ui/DashboardHistory.cpp
-    src/ocr/ui/WebAssetGuard.h src/ocr/ui/WebAssetGuard.cpp
-    src/ocr/ui/OcrMarkdownPreviewHost.h src/ocr/ui/OcrMarkdownPreviewHost.cpp
-    src/ocr/ui/OcrMarkdownPreviewProtocol.h src/ocr/ui/OcrMarkdownPreviewProtocol.cpp
+    src/ocr/WebAssetGuard.h src/ocr/WebAssetGuard.cpp
+    src/ocr/OcrMarkdownPreviewHost.h src/ocr/OcrMarkdownPreviewHost.cpp
+    src/ocr/OcrMarkdownPreviewProtocol.h src/ocr/OcrMarkdownPreviewProtocol.cpp
     src/core/HttpTransport.h src/net/Network.cpp
     src/selection/SelectionTypes.h src/selection/SelectionTypes.cpp
     src/selection/SelectionStructuredContent.h src/selection/SelectionStructuredContent.cpp

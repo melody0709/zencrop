@@ -1,4 +1,4 @@
-#include "ocr/ui/dashboard/DashboardPreviewSecurity.h"
+#include "ocr/DashboardPreviewSecurity.h"
 
 #include <iostream>
 #include <string>

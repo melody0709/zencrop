@@ -1,4 +1,4 @@
-#include "ocr/ui/dashboard/DashboardFileTypes.h"
+#include "DashboardFileTypes.h"
 #include <iostream>
 
 static int g_fail = 0;

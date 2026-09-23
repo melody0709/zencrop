@@ -12,8 +12,8 @@
 #include <system_error>
 #include <vector>
 
-#include "ocr/ui/OcrMarkdownPreviewHost.h"
-#include "ocr/ui/WebAssetGuard.h"
+#include "ocr/OcrMarkdownPreviewHost.h"
+#include "ocr/WebAssetGuard.h"
 
 static std::wstring g_ocrImageDir;
 

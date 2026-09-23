@@ -7,4 +7,5 @@
 // beside ZenCrop.exe is the only opt-in portable behavior.
 const std::wstring& ZenCropAppDataDirectory();
 std::wstring ZenCropAppDataFilePath(const wchar_t* fileName);
+std::wstring ZenCropGetOcrImageDir();
 bool ZenCropIsPortableMode();

@@ -6,7 +6,7 @@
 #include "dashboard/DashboardHostTypes.h"
 #include "dashboard/DashboardHostInternals.h"
 #include "dashboard/DashboardTheme.h"
-#include "dashboard/DashboardFileTypes.h"
+#include "DashboardFileTypes.h"
 #include "dashboard/DashboardBatchCoordinator.h"
 #include "dashboard/DashboardController.h"
 #include "dashboard/DashboardSelectionState.h"

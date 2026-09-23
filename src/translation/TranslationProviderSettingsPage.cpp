@@ -6,7 +6,7 @@
 
 #include "core/Settings.h"
 #include "core/Strings.h"
-#include "core/TranslationSettingsCodec.h"
+#include "TranslationSettingsCodec.h"
 
 #include <commctrl.h>
 

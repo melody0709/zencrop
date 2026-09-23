@@ -11,7 +11,7 @@
 #include "dashboard/DashboardController.h"
 #include "dashboard/DashboardSelectionState.h"
 #include "dashboard/DashboardCanvasModel.h"
-#include "dashboard/DashboardFileTypes.h"
+#include "DashboardFileTypes.h"
 #include "dashboard/DashboardBatchCoordinator.h"
 #include "BatchOcrWriter.h"
 #include "BatchOcrImageLinks.h"

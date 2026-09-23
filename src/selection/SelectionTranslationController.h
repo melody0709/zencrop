@@ -7,6 +7,7 @@
 #include <windows.h>
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 
 namespace selection {
@@ -15,7 +16,12 @@ namespace selection {
 // only the global hotkey and the two heap-owned completion messages.
 class SelectionTranslationController {
 public:
-    explicit SelectionTranslationController(HWND deliveryWindow);
+    using DashboardPreviewSelectionFn =
+        std::function<bool(HWND, uint64_t, std::function<void(SelectionContent)>)>;
+
+    explicit SelectionTranslationController(
+        HWND deliveryWindow,
+        DashboardPreviewSelectionFn dashboardPreviewSelection = nullptr);
     ~SelectionTranslationController();
 
     SelectionTranslationController(const SelectionTranslationController&) = delete;
@@ -37,6 +43,7 @@ private:
     std::unique_ptr<SelectionTextAcquirer> acquirer_;
     translation::TranslationCoordinator translation_;
     SelectionTranslationToastWindow toast_;
+    DashboardPreviewSelectionFn dashboardPreviewSelection_;
 
     bool CaptureTarget(
         const HotkeyConfig& triggerHotkey,

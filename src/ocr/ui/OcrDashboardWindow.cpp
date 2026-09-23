@@ -1,7 +1,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include "OcrDashboardWindow.h"
 #include "OcrMarkdownPreviewHost.h"
-#include "dashboard/DashboardFileTypes.h"
+#include "DashboardFileTypes.h"
 #include "dashboard/DashboardOleDropTarget.h"
 #include "dashboard/DashboardPdfPasswordDialog.h"
 #include "dashboard/DashboardDialogLayout.h"

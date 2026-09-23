@@ -1,7 +1,7 @@
 #include "TranslationResultWindow.h"
 
 #include "core/Strings.h"
-#include "ocr/ui/OcrMarkdownPreviewHost.h"
+#include "ocr/OcrMarkdownPreviewHost.h"
 #include "selection/SelectionTypes.h"
 
 namespace translation {

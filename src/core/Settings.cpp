@@ -4,7 +4,6 @@
 #include "JsonUtils.h"
 #include "WideJsonUtils.h"
 #include "WideStringUtils.h"
-#include "TranslationSettingsCodec.h"
 #include <shlwapi.h>
 #include <shlobj.h>
 #include <commdlg.h>
@@ -25,7 +24,7 @@
 #pragma comment(lib, "shlwapi.lib")
 #pragma comment(lib, "comctl32.lib")
 
-static std::wstring GetSettingsFilePath() {
+std::wstring GetSettingsFilePath() {
     return ZenCropAppDataFilePath(L"settings.json");
 }
 
@@ -215,7 +214,7 @@ static std::wstring ColorToHex(COLORREF c) {
     return WideColorToHex(static_cast<unsigned int>(c));
 }
 
-static std::wstring ReadFileToString(const std::wstring& path) {
+std::wstring ReadFileToString(const std::wstring& path) {
     std::ifstream file(path);
     if (!file.is_open()) return L"";
     std::string content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
@@ -227,7 +226,7 @@ static std::wstring ReadFileToString(const std::wstring& path) {
     return result;
 }
 
-static std::mutex& SettingsWriteMutex() {
+std::mutex& SettingsWriteMutex() {
     static std::mutex mutex;
     return mutex;
 }
@@ -243,10 +242,10 @@ static bool FailSettingsWrite(
     return false;
 }
 
-static bool WriteStringToFile(
+bool WriteStringToFile(
     const std::wstring& path,
     const std::wstring& content,
-    std::wstring* error = nullptr) {
+    std::wstring* error) {
     if (error) error->clear();
     if (path.empty()) {
         if (error) *error = L"The settings file path is empty.";
@@ -976,61 +975,6 @@ void SaveOcrSettings(const OcrSettings& settings) {
     WriteStringToFile(path, fullJson);
 }
 
-TranslationSettings LoadTranslationSettings() {
-    TranslationSettings settings;
-    const std::wstring json = ReadFileToString(GetSettingsFilePath());
-    if (json.empty()) {
-        settings.enabled = true;
-        return settings;
-    }
-
-    const std::wstring section = FindTopLevelJsonValue(json, L"translation");
-    if (section.empty()) {
-        settings.enabled = true;
-        return settings;
-    }
-    std::wstring parseError;
-    if (!ParseTranslationSection(section, settings, &parseError)) return TranslationSettings{};
-    return settings;
-}
-
-bool SaveTranslationSettings(
-    const TranslationSettings& settings,
-    std::wstring* error) {
-    std::lock_guard<std::mutex> settingsLock(SettingsWriteMutex());
-    const std::wstring path = GetSettingsFilePath();
-    const std::wstring json = ReadFileToString(path);
-    if (!settings.schemaSupported ||
-        settings.schemaVersion > kTranslationSettingsSchemaVersion) {
-        // A newer installation owns this section. Do not overwrite unknown
-        // data with a partial old-schema representation.
-        if (error) *error = L"The translation settings use a newer unsupported schema.";
-        return false;
-    }
-
-    TranslationSettings normalized = settings;
-    if (!NormalizeTranslationSettingsForPersistence(normalized, error)) {
-        return false;
-    }
-    const std::wstring translationJson =
-        L"  \"translation\": " + SerializeTranslationSection(normalized);
-
-    const std::wstring generalSection = FindTopLevelJsonValue(json, L"general");
-    const std::wstring aotSection = FindTopLevelJsonValue(json, L"alwaysOnTop");
-    const std::wstring overlaySection = FindTopLevelJsonValue(json, L"overlay");
-    const std::wstring screenshotSection = FindTopLevelJsonValue(json, L"screenshot");
-    const std::wstring ocrSection = FindTopLevelJsonValue(json, L"ocr");
-    const std::wstring hotkeySection = FindTopLevelJsonValue(json, L"hotkeys");
-    std::wstring fullJson = L"{\n";
-    if (!generalSection.empty()) fullJson += L"  \"general\": " + generalSection + L",\n";
-    if (!aotSection.empty()) fullJson += L"  \"alwaysOnTop\": " + aotSection + L",\n";
-    if (!overlaySection.empty()) fullJson += L"  \"overlay\": " + overlaySection + L",\n";
-    if (!screenshotSection.empty()) fullJson += L"  \"screenshot\": " + screenshotSection + L",\n";
-    if (!ocrSection.empty()) fullJson += L"  \"ocr\": " + ocrSection + L",\n";
-    if (!hotkeySection.empty()) fullJson += L"  \"hotkeys\": " + hotkeySection + L",\n";
-    fullJson += translationJson + L"\n}";
-    return WriteStringToFile(path, fullJson, error);
-}
 
 static const wchar_t* ScreenshotFormatToJsonValue(ScreenshotFormat format) {
     switch (format) {

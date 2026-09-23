@@ -1,5 +1,5 @@
 #define WIN32_LEAN_AND_MEAN
-#include "window/OverlayWindow.h"
+#include "screenshot/OverlayWindow.h"
 
 #include "core/Settings.h"
 #include "screenshot/ToolbarIconRenderer.h"

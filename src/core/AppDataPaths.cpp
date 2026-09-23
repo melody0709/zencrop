@@ -135,6 +135,14 @@ std::wstring ZenCropAppDataFilePath(const wchar_t* fileName) {
     return WideJoinPath(directory, fileName ? fileName : L"");
 }
 
+std::wstring ZenCropGetOcrImageDir() {
+    const std::wstring dataPath = ZenCropAppDataFilePath(L"ocr_images");
+    if (dataPath.empty()) return L"";
+    std::wstring dir = WideEnsureTrailingBackslash(dataPath);
+    CreateDirectoryW(dir.c_str(), nullptr);
+    return dir;
+}
+
 bool ZenCropIsPortableMode() {
     return PortableFlagPresent();
 }
