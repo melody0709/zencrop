@@ -637,7 +637,7 @@ function Get-DefaultBaseline {
     return @{
         schemaVersion = '1.0.0'
         recordedAt    = '2026-09-23'
-        version       = '2.9.30'
+        version       = '3.0.0'
         metrics       = @{
             includeCycles             = 0
             forbiddenEdges            = 0

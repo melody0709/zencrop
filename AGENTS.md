@@ -62,7 +62,7 @@ ZenCrop 的构建、架构、踩坑规则等开发文档已迁移至 `docs/01_ar
 
 | 层 | 目录 | 允许依赖 |
 |---|---|---|
-| L5 App | `src/`（`main.cpp`、`AppMessages.h`） | 全部 |
+| L5 App | `src/`（`main.cpp`） | 全部 |
 | L4 Feature UI | `src/ocr/ui/`、`src/ocr/ui/dashboard/` | L0–L2、同层 |
 | L3 Feature Domain | `src/screenshot/`（含 `overlay`/`render`/`editor`/`annotation`/`longshot`）、`src/translation/`、`src/selection/` | L0–L2 |
 | L2 OCR Domain | `src/ocr/`、`src/ocr/{engine,layout,batch,document,model_download}/` | L0–L1 |

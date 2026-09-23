@@ -24,9 +24,30 @@ if not os.path.basename(DEST) == '.bak':
 if not os.path.isdir(REPO):
     raise SystemExit('repository root is missing: ' + REPO)
 
+import stat
+
+def _remove_readonly(func, path, excinfo):
+    try:
+        os.chmod(path, stat.S_IWRITE)
+        func(path)
+    except Exception:
+        pass
+
 if os.path.isdir(DEST):
     print('removing previous mirror:', DEST)
-    shutil.rmtree(DEST, ignore_errors=False)
+    try:
+        if sys.version_info >= (3, 12):
+            def _onexc(func, path, exc):
+                try:
+                    os.chmod(path, stat.S_IWRITE)
+                    func(path)
+                except Exception:
+                    pass
+            shutil.rmtree(DEST, onexc=_onexc)
+        else:
+            shutil.rmtree(DEST, onerror=_remove_readonly)
+    except Exception as e:
+        print('warning: rmtree encountered error, relying on robocopy /MIR to synchronize:', e)
 os.makedirs(DEST, exist_ok=True)
 
 cmd = ['robocopy', REPO, DEST, '/E', '/MIR', '/XJ', '/R:1', '/W:1', '/MT:16',

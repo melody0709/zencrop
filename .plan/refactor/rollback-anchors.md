@@ -19,21 +19,11 @@
 | P5 完成 | 2026-09-23 03:25 | `1ba100e932b6e8a05c3fcda1ef0fa3b3fe5848bb` | 引入 C++23 std::span、std::wstring_view、ComPtr RAII，71 个全套密封测试 100% 通过 |
 | P6 完成 | 2026-09-23 03:26 | `500f711e967406e9ec1914ebfdab0f274cb7ebae` | 版本号全面升级至 v3.0.0，文档同步，P0–P6 全部 7 个阶段闸门全绿 |
 
-## 重要：当前缺少可用的回滚锚点
+## 状态说明
 
-- 本轮全部治理改动都在**工作区未提交状态**（`git status --short` 显示 14 项）。
-- **实施第一个阶段之前必须先提交一次**，让锚点真实存在：
-
-```powershell
-git add -A
-git commit -m "chore(arch): land architecture guard, layer contract and release layout"
-git rev-parse HEAD
-```
-
-- 提交后把新的 SHA 追加到上表，作为 P0 收尾的锚点。
-- 另有一个独立的安全网：仓库根的 `.bak/`（gitignored，非 Git 快照），
-  刷新方式 `python scripts\python\make_safety_backup.py`。它按"最近一次刷新时间"生效，
-  不随仓库自动更新——动重要文件前先刷一次。
+- 重构各阶段 P0–P6 均已完成并落地原子提交，回滚锚点已如上表全部固化。
+- 如需回退某一阶段，请使用 `git restore .` 或从锚点 SHA 创建分支，**切勿使用 `git stash`**。
+- 另有独立安全镜像：仓库根 `.bak/`（gitignored，非 Git 快照），刷新方式 `python scripts\python\make_safety_backup.py`。
 
 ## 恢复套路（.git 受损时用过一次）
 
