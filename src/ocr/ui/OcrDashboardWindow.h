@@ -10,6 +10,7 @@
 #include <set>
 #include <atomic>
 #include <functional>
+#include "core/Utils.h"
 #include "DashboardLayoutState.h"
 #include "DashboardModels.h"
 #include "DashboardTextMode.h"

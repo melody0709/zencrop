@@ -454,7 +454,7 @@ bool BatchOcrManifestStore::LoadImageJob(
     job.engineMode = JsonText(json, L"engineMode");
     job.outputArtifacts = ParseOutputArtifactOptions(json);
     job.status = status;
-    job.elapsedMs = (DWORD)max(0, WideParseJsonIntToken(ExtractJsonField(json, L"elapsedMs")));
+    job.elapsedMs = (DWORD)(std::max)(0, WideParseJsonIntToken(ExtractJsonField(json, L"elapsedMs")));
     job.error = JsonText(json, L"error");
 
     job.sourceImagePath = ResolveManifestPath(outputDir, JsonText(json, L"sourceImage"), L"source.png");
@@ -523,10 +523,10 @@ bool BatchOcrManifestStore::LoadPdfJob(
     job.updatedAt = JsonText(json, L"updatedAt");
     job.engineMode = JsonText(json, L"engineMode");
     job.status = status;
-    job.elapsedMs = (DWORD)max(0, JsonInt(json, L"elapsedMs"));
+    job.elapsedMs = (DWORD)(std::max)(0, JsonInt(json, L"elapsedMs"));
     job.requiresPassword = JsonBool(json, L"requiresPassword");
     job.pageRange = JsonText(json, L"pageRange");
-    job.sourcePageCount = max(0, JsonInt(json, L"sourcePageCount"));
+    job.sourcePageCount = (std::max)(0, JsonInt(json, L"sourcePageCount"));
     job.pdfRenderDpi = JsonInt(json, L"pdfRenderDpi", kDefaultPdfRenderDpi);
     if (job.pdfRenderDpi <= 0) job.pdfRenderDpi = kDefaultPdfRenderDpi;
     job.pdfMaxPixelEdge = ClampPdfRenderMaxPixelEdge(
@@ -681,9 +681,9 @@ bool BatchOcrManifestStore::LoadPdfJob(
             return false;
         }
         page.engineMode = JsonText(pageJson, L"engineMode");
-        page.elapsedMs = (DWORD)max(0, JsonInt(pageJson, L"elapsedMs"));
-        page.width = (uint32_t)max(0, JsonInt(pageJson, L"width"));
-        page.height = (uint32_t)max(0, JsonInt(pageJson, L"height"));
+        page.elapsedMs = (DWORD)(std::max)(0, JsonInt(pageJson, L"elapsedMs"));
+        page.width = (uint32_t)(std::max)(0, JsonInt(pageJson, L"width"));
+        page.height = (uint32_t)(std::max)(0, JsonInt(pageJson, L"height"));
         page.scaledDown = JsonBool(pageJson, L"scaledDown");
         page.skippedTooLarge = JsonBool(pageJson, L"skippedTooLarge");
         std::wstring imageFormatText = JsonText(pageJson, L"imageFormat");
@@ -692,7 +692,7 @@ bool BatchOcrManifestStore::LoadPdfJob(
             // OWN-95: pure extension extract (WideStringUtils).
             page.imageFormat = PdfRenderImageFormatFromString(WideExtensionFromPath(page.sourceImagePath));
         }
-        page.imageByteSize = (uint64_t)max(0, JsonInt(pageJson, L"imageByteSize"));
+        page.imageByteSize = (uint64_t)(std::max)(0, JsonInt(pageJson, L"imageByteSize"));
         page.assets = ExtractJsonStringArrayItems(ExtractJsonField(pageJson, L"assets"));
         page.blocks = ParseOcrLayoutBlocks(pageJson, page.pageIndex - 1);
         page.sourceRevisionSha256 = JsonText(pageJson, L"sourceRevisionSha256");

@@ -1,8 +1,27 @@
-cmake_minimum_required(VERSION 3.15)
+cmake_minimum_required(VERSION 3.20)
 project(ZenCrop VERSION 2.9.30)
 
-set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
+# Layer -1: Unified build flags (inherited by all targets)
+add_library(zencrop_build_flags INTERFACE)
+target_compile_options(zencrop_build_flags INTERFACE
+    /utf-8
+    /EHsc
+    /await
+    /Zc:__cplusplus
+    /Zc:preprocessor
+    $<$<CONFIG:Release>:/O2>
+    $<$<CONFIG:Debug>:/Od /Zi>
+)
+target_compile_definitions(zencrop_build_flags INTERFACE
+    UNICODE
+    _UNICODE
+    WINRT_LEAN_AND_MEAN
+    NOMINMAX
+)
 
 # ProductVersion has one authority: project(... VERSION ...). Generate the
 # language-specific forms once per configure for source, VERSIONINFO, runtime
@@ -335,6 +354,7 @@ set_target_properties(ZenCrop PROPERTIES
 )
 
 target_link_libraries(ZenCrop PRIVATE
+    zencrop_build_flags
     user32
     gdi32
     imm32

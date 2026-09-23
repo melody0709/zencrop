@@ -3,6 +3,7 @@
 #include "Settings.h"
 #include "OcrUtils.h"
 #include "core/ClipboardUtils.h"
+#include "core/Utils.h"
 #include "core/WideStringUtils.h"
 #include <windowsx.h>
 #include <dwmapi.h>

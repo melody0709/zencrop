@@ -7,9 +7,7 @@
 #include <string>
 #include <algorithm>
 
-#ifndef NOMINMAX
-// Windows headers may define min/max macros; prefer std::min/max where used.
-#endif
+#include "core/Utils.h"
 
 inline constexpr UINT kDashboardDialogDesignDpi = 144;
 

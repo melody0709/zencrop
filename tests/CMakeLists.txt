@@ -3,6 +3,7 @@
 # + preset packs that Stage 0-E already gates via build_and_run.bat.
 
 cmake_minimum_required(VERSION 3.20)
+add_compile_definitions(NOMINMAX)
 
 set(ZENCROP_ANNOTATION_SOURCES
     ${CMAKE_SOURCE_DIR}/src/screenshot/annotation/AnnotationTypes.cpp
