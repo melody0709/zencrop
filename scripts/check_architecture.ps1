@@ -661,8 +661,8 @@ function Get-DefaultBaseline {
             P2 = @{ productStaticLibraryCount = 6; staticLibsWithSmokeTarget = 6 }
             P3 = @{ testsCompilingProductCpp = 0 }
             P4 = @{ hubHeaderDirectIncluders = 40 }
-            P5 = @{ }
-            P6 = @{ }
+            P5 = @{ hubHeaderDirectIncluders = 0; testsCompilingProductCpp = 0; productTargetSourceCount = 1 }
+            P6 = @{ hubHeaderDirectIncluders = 0; testsCompilingProductCpp = 0; productTargetSourceCount = 1; moduleInversionEdges = 0; moduleMutualPairs = 10 }
         }
     }
 }

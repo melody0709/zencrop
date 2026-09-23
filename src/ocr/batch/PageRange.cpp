@@ -50,7 +50,7 @@ bool AddRange(
 } // namespace
 
 bool PageRange::Parse(
-    const std::wstring& rangeText,
+    std::wstring_view rangeText,
     int pageCount,
     std::vector<int>& pages,
     std::wstring& error)
@@ -63,7 +63,7 @@ bool PageRange::Parse(
         return false;
     }
 
-    std::wstring text = ToLower(Trim(rangeText));
+    std::wstring text = ToLower(Trim(std::wstring(rangeText)));
     if (text.empty() || text == L"all" || text == L"*") {
         pages.reserve((size_t)pageCount);
         for (int page = 1; page <= pageCount; page++) pages.push_back(page);

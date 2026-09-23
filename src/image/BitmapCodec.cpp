@@ -13,7 +13,9 @@
 #include <fstream>
 #include <limits>
 #include <memory>
+#include <span>
 #include <vector>
+#include <wrl/client.h>
 
 namespace ImageCodec {
 namespace {
@@ -71,7 +73,7 @@ bool ReadHBitmapPixelsTopDown(HBITMAP bitmap, BitmapSize size, std::vector<DWORD
     return lines == size.height;
 }
 
-void NormalizeAlpha(std::vector<DWORD>& pixels, bool forceOpaque) {
+void NormalizeAlpha(std::span<DWORD> pixels, bool forceOpaque) {
     bool anyAlpha = false;
     bool anyTransparent = false;
     for (DWORD pixel : pixels) {
@@ -88,7 +90,7 @@ void NormalizeAlpha(std::vector<DWORD>& pixels, bool forceOpaque) {
 }
 
 void ConvertPremultipliedToStraightAlpha(
-    std::vector<DWORD>& pixels,
+    std::span<DWORD> pixels,
     BitmapSize size)
 {
     if (size.width <= 0 || size.height <= 0 ||
@@ -164,7 +166,7 @@ bool GetEncoderClsid(const wchar_t* mimeType, CLSID& clsid) {
 }
 
 bool SavePixelsWithGdiplus(
-    const std::vector<DWORD>& pixelsTopDown,
+    std::span<const DWORD> pixelsTopDown,
     BitmapSize size,
     const std::wstring& path,
     ImageFileFormat format,
@@ -209,8 +211,8 @@ bool SavePixelsWithGdiplus(
     return true;
 }
 
-bool WriteBytesToFile(const std::wstring& path, const void* data, size_t size) {
-    if (!data || size == 0 || size > (std::numeric_limits<DWORD>::max)()) return false;
+bool WriteBytesToFile(const std::wstring& path, std::span<const uint8_t> bytes) {
+    if (bytes.empty() || bytes.size() > (std::numeric_limits<DWORD>::max)()) return false;
     HANDLE file = CreateFileW(
         path.c_str(),
         GENERIC_WRITE,
@@ -221,8 +223,8 @@ bool WriteBytesToFile(const std::wstring& path, const void* data, size_t size) {
         nullptr);
     if (file == INVALID_HANDLE_VALUE) return false;
 
-    const BYTE* cursor = static_cast<const BYTE*>(data);
-    size_t remaining = size;
+    const uint8_t* cursor = bytes.data();
+    size_t remaining = bytes.size();
     bool ok = true;
     while (remaining > 0) {
         DWORD chunk = (DWORD)(std::min<size_t>)(remaining, 1u << 20);
@@ -253,7 +255,7 @@ bool ReadFileBytes(const std::wstring& path, std::vector<uint8_t>& out) {
 }
 
 bool SaveWebP(
-    const std::vector<DWORD>& pixelsTopDown,
+    std::span<const DWORD> pixelsTopDown,
     BitmapSize size,
     const std::wstring& path,
     int quality,
@@ -291,7 +293,7 @@ bool SaveWebP(
             reinterpret_cast<const uint8_t*>(pixelsTopDown.data()),
             size.width * (int)sizeof(DWORD)) &&
         WebPEncode(&config, &picture)) {
-        ok = WriteBytesToFile(path, writer.mem, writer.size);
+        ok = WriteBytesToFile(path, std::span<const uint8_t>(writer.mem, writer.size));
     }
 
     WebPPictureFree(&picture);
@@ -447,7 +449,7 @@ std::wstring AbsolutePath(const std::wstring& path) {
 }
 
 bool SaveAvifViaTool(
-    const std::vector<DWORD>& pixelsTopDown,
+    std::span<const DWORD> pixelsTopDown,
     BitmapSize size,
     const std::wstring& path,
     const EncodeOptions& options,
@@ -540,22 +542,14 @@ struct ScopedComInit {
     bool ok() const { return SUCCEEDED(hr); }
 };
 
-template <typename T>
-void SafeRelease(T*& value) {
-    if (value) {
-        value->Release();
-        value = nullptr;
-    }
-}
-
 Gdiplus::Bitmap* LoadWithWic(const std::wstring& path) {
     ScopedComInit com;
     if (!com.ok()) return nullptr;
 
-    IWICImagingFactory* factory = nullptr;
-    IWICBitmapDecoder* decoder = nullptr;
-    IWICBitmapFrameDecode* frame = nullptr;
-    IWICFormatConverter* converter = nullptr;
+    Microsoft::WRL::ComPtr<IWICImagingFactory> factory;
+    Microsoft::WRL::ComPtr<IWICBitmapDecoder> decoder;
+    Microsoft::WRL::ComPtr<IWICBitmapFrameDecode> frame;
+    Microsoft::WRL::ComPtr<IWICFormatConverter> converter;
     Gdiplus::Bitmap* bitmap = nullptr;
 
     HRESULT hr = CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&factory));
@@ -566,7 +560,7 @@ Gdiplus::Bitmap* LoadWithWic(const std::wstring& path) {
     if (SUCCEEDED(hr)) hr = factory->CreateFormatConverter(&converter);
     if (SUCCEEDED(hr)) {
         hr = converter->Initialize(
-            frame,
+            frame.Get(),
             GUID_WICPixelFormat32bppBGRA,
             WICBitmapDitherTypeNone,
             nullptr,
@@ -592,10 +586,6 @@ Gdiplus::Bitmap* LoadWithWic(const std::wstring& path) {
         }
     }
 
-    SafeRelease(converter);
-    SafeRelease(frame);
-    SafeRelease(decoder);
-    SafeRelease(factory);
     return bitmap;
 }
 
@@ -605,11 +595,12 @@ Gdiplus::Bitmap* LoadWebP(const std::wstring& path) {
 
     int width = 0;
     int height = 0;
-    uint8_t* bgra = WebPDecodeBGRA(bytes.data(), bytes.size(), &width, &height);
-    if (!bgra || width <= 0 || height <= 0) {
-        if (bgra) WebPFree(bgra);
+    uint8_t* rawBgra = WebPDecodeBGRA(bytes.data(), bytes.size(), &width, &height);
+    if (!rawBgra || width <= 0 || height <= 0) {
+        if (rawBgra) WebPFree(rawBgra);
         return nullptr;
     }
+    std::unique_ptr<uint8_t, decltype(&WebPFree)> bgra(rawBgra, WebPFree);
 
     Gdiplus::Bitmap* bitmap = new Gdiplus::Bitmap(width, height, PixelFormat32bppARGB);
     Gdiplus::BitmapData data = {};
@@ -620,13 +611,12 @@ Gdiplus::Bitmap* LoadWebP(const std::wstring& path) {
         for (int y = 0; y < height; ++y) {
             memcpy(
                 static_cast<BYTE*>(data.Scan0) + (size_t)y * data.Stride,
-                bgra + (size_t)y * srcStride,
+                bgra.get() + (size_t)y * srcStride,
                 srcStride);
         }
         bitmap->UnlockBits(&data);
         ok = true;
     }
-    WebPFree(bgra);
 
     if (!ok || bitmap->GetLastStatus() != Gdiplus::Ok) {
         delete bitmap;
