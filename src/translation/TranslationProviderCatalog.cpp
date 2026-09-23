@@ -202,6 +202,10 @@ std::vector<TranslationProviderPreset> BuildPresets() {
         L"https://api.siliconflow.cn/v1/chat/completions", L"api.siliconflow.cn",
         {L"Qwen/Qwen3.5-9B", L"tencent/Hunyuan-MT-7B",
             L"deepseek-ai/DeepSeek-V4-Flash"});
+    const auto xiaomiMimo = buildOpenAiCompatiblePreset(
+        L"xiaomi-mimo", L"Xiaomi MiMo",
+        L"https://api.xiaomimimo.com/v1/chat/completions", L"api.xiaomimimo.com",
+        {L"mimo-v2.6-flash", L"mimo-v2.6-pro", L"mimo-v2.5", L"mimo-v2.5-pro"});
     TranslationProviderPreset openrouter;
     openrouter.kind = L"openrouter";
     openrouter.displayName = L"OpenRouter";
@@ -341,6 +345,7 @@ std::vector<TranslationProviderPreset> BuildPresets() {
         huggingface,
         volcengine,
         siliconflow,
+        xiaomiMimo,
         openrouter,
         custom,
         ollama,
@@ -516,7 +521,8 @@ const TranslationProviderPreset* FindTranslationProviderPreset(
     const auto& presets = Presets();
     const auto it = std::find_if(presets.begin(), presets.end(),
         [&](const TranslationProviderPreset& preset) {
-            return preset.kind == presetKind;
+            return preset.kind == presetKind ||
+                (preset.kind == L"xiaomi-mimo" && presetKind == L"mimo");
         });
     return it == presets.end() ? nullptr : &*it;
 }
@@ -535,6 +541,8 @@ const TranslationProviderPreset* FindBuiltInProviderPreset(
         {L"builtin.grok.default", L"grok"},
         {L"builtin.alibaba-cloud.default", L"alibaba-cloud"},
         {L"builtin.siliconflow.default", L"siliconflow"},
+        {L"builtin.xiaomi-mimo.default", L"xiaomi-mimo"},
+        {L"builtin.mimo.default", L"xiaomi-mimo"},
     };
     const auto it = std::find_if(
         std::begin(mappings), std::end(mappings),

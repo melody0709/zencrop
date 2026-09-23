@@ -278,6 +278,10 @@ void NormalizeProfileDisplayDefaults(TranslationProviderProfile& profile) {
         profile.reasoningMode == TranslationReasoningMode::ProviderDefault) {
         profile.reasoningMode = TranslationReasoningMode::Off;
     }
+    if ((profile.presetKind == L"xiaomi-mimo" || profile.presetKind == L"mimo") &&
+        profile.reasoningMode == TranslationReasoningMode::ProviderDefault) {
+        profile.reasoningMode = TranslationReasoningMode::Off;
+    }
     if (profile.presetKind == L"siliconflow" &&
         profile.model == L"tencent/Hunyuan-MT-7B") {
         profile.reasoningMode = TranslationReasoningMode::Off;

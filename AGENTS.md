@@ -2,6 +2,15 @@
 
 架构重构 Stage 0–4 与 R5 已完成。默认处理独立 feature/bug；不要为普通任务读取或回写 EXECUTION、GOAL、ADR、KPI 或历史施工记录，也不要自行重开架构 Stage。
 
+## 实施中的 C++23 架构重构（开工前必读）
+
+- 入口文档：**`.plan/refactor/00-HANDOFF.md`** —— 现状、硬禁止清单、第一步、每阶段判据、命令备忘、已知陷阱。
+- 方案书：`.plan/refactor/zencrop-cxx23-architecture-plan.md`（§10 实施前缺口审查、§11 工具链清点）。
+- 阶段闸门：`scripts/check_architecture.ps1 -Stage P0…P6`；守卫已挂在 `build.bat`，**每次构建都跑**。
+- 回滚锚点：`.plan/refactor/rollback-anchors.md`（当前工作区未提交，实施前必须先提交一次）。
+- **本机环境铁律与历史事故**：`.workbuddy/memory/MEMORY.md`（shell `>>` 会截断已存在文件、`.git` 原子写不可靠、
+  生成目录只允许删本次自己新建的文件等）——这些属于会真实造成损坏的约束，动手前务必读。
+
 
 ## ZenCrop 开发参考
 
@@ -36,14 +45,61 @@ ZenCrop 的构建、架构、踩坑规则等开发文档已迁移至 `docs/01_ar
 - Window/Host 只保留 HWND lifecycle、路由和 transaction shell；业务状态与策略进入现有 owner。禁止 callback facade、`private→public` 和 test-only production API。
 - production class-method `.inl` 保持为 0；避免新增依赖环、反向 include 和无边界公共 header。
 - 不让已有大文件重新无边界膨胀；新增独立责任域时放入现有 owner 或专用 TU，小修改不要机械拆 helper。
-- 复用现有测试目标，不为小功能新建独立 test executable。
+- 复用现有测试目标，不为小功能新建独立 test executable；测试目标必须链接库，禁止再列 `src/**/*.cpp`。
+
+## C++23 语言标准（硬约束）
+
+- 本仓唯一语言标准是 **C++23**。`CMakeLists.txt` 保持 `set(CMAKE_CXX_STANDARD 23)`；CMake 3.31 对 MSVC ≥19.29 会展开为 `/std:c++latest`（依据 VS 自带 `Modules/Compiler/MSVC-CXX.cmake` 的 `CMAKE_CXX23_STANDARD_COMPILE_OPTION`），这是正确取值。
+- **禁止手写 `/std:c++23`**。实测（MSVC 14.44.35207）该开关使 `_MSVC_LANG` 变为 `201402L`、`_HAS_CXX17/20/23` 全为 0，STL 静默退回 C++14：`std::span`/`std::format`/`std::optional`/`std::jthread` 全部消失，而纯语法特性仍可用，症状极难定位。守卫对此硬 FAIL。
+- 新增和修改的代码按 C++23 惯用法书写：只读切片用 `std::span`；可恢复失败用 `std::expected`；只读字符串参数用 `std::string_view`；协作式取消用 `std::jthread` + `std::stop_token`；格式化用 `std::format`（宽字符场景用 `L"..."` 形态，已验证可产出 `std::wstring`）。
+- 本工具链**没有 `<flat_map>`**，不要引入。`<print>`/`std::println` 仅在 `c++latest` 下可用。
+- 依赖 `/Zc:__cplusplus` 让 `__cplusplus` 报真值，不得依赖其 199711L 的旧行为。
+- 语言标准与上述惯用法属于架构契约：调整必须同步本文件、开发指南和守卫基线。
+
+## 分层架构契约
+
+依赖方向严格单向，下层不得 include 上层：
+
+| 层 | 目录 | 允许依赖 |
+|---|---|---|
+| L5 App | `src/`（`main.cpp`、`AppMessages.h`） | 全部 |
+| L4 Feature UI | `src/ocr/ui/`、`src/ocr/ui/dashboard/` | L0–L2、同层 |
+| L3 Feature Domain | `src/screenshot/`（含 `overlay`/`render`/`editor`/`annotation`/`longshot`）、`src/translation/`、`src/selection/` | L0–L2 |
+| L2 OCR Domain | `src/ocr/`、`src/ocr/{engine,layout,batch,document,model_download}/` | L0–L1 |
+| L1 Platform | `src/window/`、`src/detect/`、`src/net/` | L0 |
+| L0 Core | `src/core/`、`src/image/` | 仅 SDK/STL/third_party；**出边必须为 0** |
+
+- 新增 `src/` 子目录前，必须先在 `scripts/check_architecture.ps1` 的层表与本文档中登记；未登记目录守卫硬 FAIL。
+- 层内"家族互依"只减不增且必须登记在守卫基线中；不得新增跨特性直连，需要时走 L0/L1 接口。
+- 现存倒置边是历史债，不是先例：不得以"别处也这样"为由新增反向 include。
+
+## 架构守卫（强制门禁）
+
+- `scripts/check_architecture.ps1` 挂在 `build.bat` 主流程（编译环境就绪后、编译前），**每次产品构建都执行**；失败即构建失败，报告写入 `build/artifacts/diagnostics/architecture-guard.json`。
+- 基线唯一权威是 `.plan/refactor/architecture-baseline.json`，**只允许下调**；上调必须显式使用 `-AllowBaselineChange` 并在提交说明中写明理由。
+- 新增结构规则必须同时加入规则清单与规则命中自检：守卫必须能失败，当前要求 **15/15 全部命中**（规则命中自检在**每次运行**都会执行，不只在 `-SelfTest` 时）。禁止提交"只会 PASS 的守卫"。
+- `scripts/architecture_audit.ps1` 仍是手工诊断工具；其 `runtimeStagingDiff` 是手写表、`%CLIPPER_SRC%` 硬编码，**不得作为门禁依据**。
+- 每个静态库必须提供 `EXCLUDE_FROM_ALL` 的 `smoke_<lib>` 空 main 链接目标；每层独立可链接是分层契约的验收方式。
+- 不得以注释、重命名或条件分支移除 `build.bat` 中的守卫调用；守卫会读 `build.bat` 断言该调用仍存在（`ARC-WIRING`）。这属于需要评审的构建契约改动。
+- `-UpdateBaseline` **不允许抬高**棘轮：抬高需显式 `-AllowBaselineChange`，否则 `ARC-RAISE` 失败且不写基线。stage 期望属代码侧策略，不受 `-UpdateBaseline` 影响。
+- 代码格式：仓库根 `.clang-format`（4 空格、同行大括号、`T *x`、120 列）与 `.clang-tidy`（顾问性质，非门禁）。**`SortIncludes` 必须保持关闭**——include 顺序是承重结构（winsock2 必须先于 windows.h）。只对正在修改的文件运行，**禁止一次性全仓格式化**。
+
+## 脚本约定
+
+- `scripts/` 下由 `build.bat` / 测试脚本调用的 `.ps1` 保持纯 ASCII（本仓用 pwsh 7，仍以纯 ASCII 换取可移植性）。
+- 读源码必须显式 UTF-8：用 `[System.IO.File]::ReadAllLines($path, $utf8)`，不要用 `Get-Content`（Windows PowerShell 5.1 会按 ANSI 代码页解码并吞掉紧跟非 ASCII 字节的换行，导致行数/匹配错位）。
+- **PowerShell 函数返回数组必须使用一元逗号**（如 `return ,$lines`）。函数输出会被展开，只有一个元素的数组会退化成裸字符串，调用方 `$lines[0]` 随即变成"取第一个字符"；本仓已因该行为发生一次静默失效。
+- 可复用的测量/守卫工具放入 `scripts/`（或 `scripts/python/`）；一次性诊断脚手架在交付前删除，只保留生成的证据文件。
 
 ## `build/` 生成目录边界
 
 - `build/` 完全属于可删除、gitignored 的生成输出；禁止在其中保存源码、手工脚本、截图、OCR 输入/输出、临时分析、用户数据或人工备份。
 - `build/` 顶层白名单仅为 `cmake/`、`cmake-msvc/`、`run/`、`artifacts/`、`logs/`、`packages/` 和 `README.txt`。新增顶层项必须同时修改 `build.bat`、开发指南和布局校验脚本，禁止临时另起目录。
 - 唯一可运行开发目录是 `build/run/x64-release/`；不得运行 `build/cmake/ZenCrop.exe`，不得手工向运行目录复制 EXE、DLL 或资源，运行载荷只能由 CMake install 生成。
-- 测试输出只能进入 `build/artifacts/tests/`，诊断进入 `build/artifacts/diagnostics/`，显式日志进入 `build/logs/`，发布包只在 `build.bat --package`、`--package-msi` 或 `--package-portable` 时进入 `build/packages/`。
+- 测试输出只能进入 `build/artifacts/tests/`，诊断进入 `build/artifacts/diagnostics/`，显式日志进入 `build/logs/`。
+- 发布包只在 `build.bat --package`、`--package-msi` 或 `--package-portable` 时进入 `build/packages/<版本号>/`（如 `build/packages/2.9.30/`），**禁止平铺在 `build/packages/` 根下**。目录名是裸三段版本号，不带 `v` 前缀。
+- 手工保留的历史归档只能放在 `build/packages/_archive/`；该目录不由任何构建产生。
+- 布局校验会拒绝其他形态，并校验目录内文件名版本号与目录名一致（`2.9.30/` 内只能是 `ZenCrop-v2.9.30-*`）。
 - 可变应用数据默认只能写入 `%LOCALAPPDATA%\ZenCrop`；`ZENCROP_DATA_DIR` 是显式覆盖，只有用户明确要求便携模式时才可在 EXE 旁创建 `portable.flag`。禁止静默回退到运行目录。
 - 构建、安装或清理前若本仓库 `build/run/x64-release/ZenCrop.exe` 正在运行，必须先只结束该绝对路径对应的进程再继续；禁止按进程名终止其他目录中的 ZenCrop 实例。
 - 安装完成及打包前必须运行布局校验；发现未知文件时应失败并报告，不自动删除未知项。清理由 `build.bat --clean` 负责，且保留 `build/packages/`。

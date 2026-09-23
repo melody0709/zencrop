@@ -1,5 +1,8 @@
 /temp_powertoys
 build/
+# Local safety backup of the hand-written tree (excludes ocr/ and build/).
+# Never track it, never recurse into it.
+/.bak/
 # CTest host working directory when ctest is run from repo root
 Testing/
 .trae/

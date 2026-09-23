@@ -149,6 +149,17 @@ LlmModelPolicy ResolveLlmModelPolicy(
         return policy;
     }
 
+    if (presetKind == L"xiaomi-mimo" || presetKind == L"mimo") {
+        policy.reasoningWireFormat = ReasoningWireFormat::ThinkingDisabled;
+        policy.reasoningModes = {TranslationReasoningMode::Off};
+        policy.defaultReasoning = TranslationReasoningMode::Off;
+        policy.allowsTemperature = true;
+        policy.defaultTemperature = 0.1;
+        policy.outputMode = LlmOutputMode::PromptJson;
+        policy.revision = 2;
+        return policy;
+    }
+
     if (presetKind == L"groq" || presetKind == L"deepinfra" ||
         presetKind == L"mistral" || presetKind == L"togetherai" ||
         presetKind == L"fireworks" || presetKind == L"cerebras" ||

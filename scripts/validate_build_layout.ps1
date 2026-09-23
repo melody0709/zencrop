@@ -120,20 +120,48 @@ if (Test-Path -LiteralPath $packagesRoot -PathType Container) {
     }
     else {
         foreach ($entry in Get-ChildItem -LiteralPath $packagesRoot -Force) {
-            $allowedPackageName =
-                $entry.Name -like "ZenCrop-*.zip" -or
-                $entry.Name -like "ZenCrop-*.zip.tmp" -or
-                $entry.Name -like "ZenCrop-*.zip.sha256" -or
-                $entry.Name -like "ZenCrop-*.7z" -or
-                $entry.Name -like "ZenCrop-*.7z.tmp" -or
-                $entry.Name -like "ZenCrop-*.7z.sha256" -or
-                $entry.Name -like "ZenCrop-*.msi" -or
-                $entry.Name -like "ZenCrop-*.msi.tmp" -or
-                $entry.Name -like "ZenCrop-*.msi.sha256"
-            if ($entry.PSIsContainer -or
-                !$allowedPackageName -or
-                ($entry.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
-                $issues.Add("Unexpected packages layout entry: $($entry.FullName)")
+            if (($entry.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+                $issues.Add("Packages entry must not be a reparse point: $($entry.FullName)")
+                continue
+            }
+            $isVersionFolder = $entry.PSIsContainer -and $entry.Name -match '^[0-9]+\.[0-9]+\.[0-9]+$'
+            $isArchiveFolder = $entry.PSIsContainer -and $entry.Name -eq "_archive"
+            if (!$isVersionFolder -and !$isArchiveFolder) {
+                $issues.Add(
+                    "Unexpected packages layout entry: $($entry.FullName). " +
+                    "Released artifacts belong under a per-version folder packages\<version>\ " +
+                    "and manual historical archives under packages\_archive\.")
+                continue
+            }
+            foreach ($child in Get-ChildItem -LiteralPath $entry.FullName -Force) {
+                if ($child.PSIsContainer) {
+                    $issues.Add("Packages version folder must not contain directories: $($child.FullName)")
+                    continue
+                }
+                if (($child.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+                    $issues.Add("Packages artifact must not be a reparse point: $($child.FullName)")
+                    continue
+                }
+                if ($isArchiveFolder) { continue }
+                $allowedArtifactName =
+                    $child.Name -like "ZenCrop-*.zip" -or
+                    $child.Name -like "ZenCrop-*.zip.tmp" -or
+                    $child.Name -like "ZenCrop-*.zip.sha256" -or
+                    $child.Name -like "ZenCrop-*.7z" -or
+                    $child.Name -like "ZenCrop-*.7z.tmp" -or
+                    $child.Name -like "ZenCrop-*.7z.sha256" -or
+                    $child.Name -like "ZenCrop-*.msi" -or
+                    $child.Name -like "ZenCrop-*.msi.tmp" -or
+                    $child.Name -like "ZenCrop-*.msi.sha256"
+                if (!$allowedArtifactName) {
+                    $issues.Add("Unexpected packages artifact: $($child.FullName)")
+                    continue
+                }
+                if ($child.Name -notlike "ZenCrop-v$($entry.Name)-*") {
+                    $issues.Add(
+                        "Packages artifact does not belong to its version folder: $($child.FullName). " +
+                        "A file inside packages\$($entry.Name)\ must be named ZenCrop-v$($entry.Name)-*.")
+                }
             }
         }
     }

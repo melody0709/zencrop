@@ -395,7 +395,10 @@ bool ParseProfile(
         return false;
     }
     const std::wstring reasoningName = StringOr(
-        value, "reasoningMode", profile.presetKind == L"deepseek"
+        value, "reasoningMode",
+        (profile.presetKind == L"deepseek" ||
+         profile.presetKind == L"xiaomi-mimo" ||
+         profile.presetKind == L"mimo")
             ? L"off" : L"provider-default");
     if (reasoningName != L"provider-default" && reasoningName != L"off" &&
         reasoningName != L"minimal" && reasoningName != L"low" &&
@@ -425,6 +428,19 @@ bool ParseProfile(
         profile.model != L"deepseek-v4-flash" &&
         profile.model != L"deepseek-v4-pro") {
         profile.model = L"deepseek-v4-flash";
+    }
+    if ((profile.presetKind == L"xiaomi-mimo" || profile.presetKind == L"mimo") &&
+        !profile.customModel &&
+        profile.reasoningMode == TranslationReasoningMode::ProviderDefault) {
+        profile.reasoningMode = TranslationReasoningMode::Off;
+    }
+    if ((profile.presetKind == L"xiaomi-mimo" || profile.presetKind == L"mimo") &&
+        !profile.customModel &&
+        profile.model != L"mimo-v2.6-flash" &&
+        profile.model != L"mimo-v2.6-pro" &&
+        profile.model != L"mimo-v2.5" &&
+        profile.model != L"mimo-v2.5-pro") {
+        profile.model = L"mimo-v2.6-flash";
     }
     const bool credentialTargetValid = !TranslationAuthUsesCredential(profile.authMode)
         ? (profile.credentialRef.empty() || IsSafeCredentialRef(profile.credentialRef))
@@ -523,7 +539,7 @@ bool ParseTranslationSection(
             settings.enabled = false;
             return true;
         }
-        settings.enabled = value.value("enabled", false);
+        settings.enabled = value.value("enabled", true);
         settings.selectionCopyFallbackEnabled = BoolOr(
             value, "selectionCopyFallbackEnabled", true);
         settings.ocrRoute = NormalizeOcrRoute(StringOr(

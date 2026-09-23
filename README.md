@@ -1,8 +1,17 @@
-# ZenCrop v2.9.29
+# ZenCrop v2.9.30
 
 [中文文档](doc/README_zh.md)
 
 An independent, **enhanced** reimplementation of [PowerToys Crop And Lock](https://github.com/microsoft/PowerToys/tree/main/src/modules/CropAndLock/), with rich screenshot annotation, long screenshot, multi-engine OCR, and OCR Dashboard.
+
+## What's new in v2.9.30
+
+- **Compacted Settings Dialog Layout**: Reduced the overall Settings dialog height from 370 down to 250 dlu (~180 physical pixels saved). The Translate page height dropped from 370 to 240 dlu by removing the redundant enable toggle (always active), simplifying copy hints to a single line, shortening the Prompt label to prevent clipping, and grouping result window options into two compact rows. The OCR page height dropped from 304 to 230 dlu by merging local server port, idle timeout, and test server buttons into a single row, combining document parsing options, and tightening Alt model rows.
+- **Xiaomi MiMo Translation Preset**: Added official OpenAI-compatible preset for Xiaomi MiMo (`api.xiaomimimo.com`) with `mimo-v2.6-flash`, `mimo-v2.6-pro`, `mimo-v2.5`, and `mimo-v2.5-pro` models. Configured with thinking/reasoning disabled and a stable 0.1 temperature for structured JSON translation.
+- **Fixed Win32 Popup Menu Outside-Click Dismissal**: Corrected popup menus (language, provider, OCR route) in the translation result window so they dismiss reliably when clicking outside the window.
+- **Version Bump**: Unified product version bump to `v2.9.30` across binaries, MSI installer, portable package, and documentation.
+
+See [CHANGELOG](doc/CHANGELOG.md) for the complete release notes.
 
 ## What's new in v2.9.29
 

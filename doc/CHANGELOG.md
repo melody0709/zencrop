@@ -1,5 +1,26 @@
 # Changelog
 
+## V2.9.30 (2026-09-23)
+
+### 新增 (New Features)
+
+- **小米 Xiaomi MiMo 翻译服务预设**: 新增 Xiaomi MiMo 官方翻译预设（`api.xiaomimimo.com`），支持 `mimo-v2.6-flash`、`mimo-v2.6-pro`、`mimo-v2.5`、`mimo-v2.5-pro` 模型，默认关闭 thinking/reasoning，并采用 0.1 稳定温度与结构化 JSON 输出策略。
+
+### 优化 (Improvements)
+
+- **设置面板高度紧凑化与布局整合**:
+  - **翻译设置页 (Translate tab)**: 高度由 370 dlu 深度优化至 240 dlu（缩减 130 dlu）。移除冗余的「启用 OCR 来源翻译」复选框（翻译功能默认始终启用，由 Provider 开关统一控制）；精简剪贴板复制提示为单行；将提示词标签统一精简为「Prompt:」避免在非 LLM 模式下被截断；将 4 个结果窗口外观及行为复选框整合为紧凑的双行并排排列；移除底部冗余的端点通知文本。
+  - **OCR 设置页 (OCR tab)**: 高度由 304 dlu 优化至 230 dlu（缩减 74 dlu）。将本地 Paddle 端口、闲置退出和测试服务器按钮整合为单行紧凑布局；将文档解析（Layout + VLM）选项与 Options 按钮合并为同一行；将备用模型（Alt Model）与闲置退出选项整合为更紧凑的行高。
+  - **设置主窗口尺寸**: 属性页对话框总高度从 370 dlu 降至 250 dlu（节省约 180 物理像素），彻底消除高度溢出并使面板布局更为紧凑专业。
+
+### 修复 (Bug Fixes)
+
+- **Win32 弹窗菜单点击外部不自动关闭**: 修复翻译结果窗口中 Provider、语言及 OCR 路由弹窗菜单在点击窗口外部时不自动消失的问题（移除非标准的 `MNS_AUTODISMISS`，添加标准的 `SetForegroundWindow` / `PostMessage(WM_NULL)` 消息泵调度序列）。
+
+### 调整 (Changes)
+
+- **版本号更新**: 应用、MSI、Portable 包、README 与发布产物统一升级到 `v2.9.30`。
+
 ## V2.9.29 (2026-09-17)
 
 ### 修复 (Bug Fixes)

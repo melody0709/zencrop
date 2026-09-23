@@ -381,7 +381,7 @@ void ConfigureCompactPopupMenu(HMENU menu) {
     if (!menu) return;
     MENUINFO info = { sizeof(info) };
     info.fMask = MIM_STYLE;
-    info.dwStyle = MNS_NOCHECK | MNS_AUTODISMISS;
+    info.dwStyle = MNS_NOCHECK;
     SetMenuInfo(menu, &info);
 }
 
@@ -1272,9 +1272,11 @@ void TranslationResultWindow::ShowLanguageMenu(HWND control, bool sourceLanguage
     GetWindowRect(control, &rect);
     popupMenuAnchorWidth_ = static_cast<int>(rect.right - rect.left);
     popupMenuAnchorEngineLabel_ = false;
+    SetForegroundWindow(window_);
     const int result = TrackPopupMenuEx(menu,
         TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN | TPM_RIGHTBUTTON,
         rect.left, rect.bottom, window_, nullptr);
+    PostMessage(window_, WM_NULL, 0, 0);
     popupMenuAnchorWidth_ = 0;
     popupMenuAnchorEngineLabel_ = false;
     DestroyMenu(menu);
@@ -1308,9 +1310,11 @@ void TranslationResultWindow::ShowOcrRouteMenu() {
     GetWindowRect(engineLabel_, &rect);
     popupMenuAnchorWidth_ = static_cast<int>(rect.right - rect.left);
     popupMenuAnchorEngineLabel_ = true;
+    SetForegroundWindow(window_);
     const int result = TrackPopupMenuEx(menu,
         TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN | TPM_RIGHTBUTTON,
         rect.left, rect.bottom, window_, nullptr);
+    PostMessage(window_, WM_NULL, 0, 0);
     popupMenuAnchorWidth_ = 0;
     popupMenuAnchorEngineLabel_ = false;
     DestroyMenu(menu);
@@ -1345,9 +1349,11 @@ void TranslationResultWindow::ShowProviderMenu() {
     GetWindowRect(providerCombo_, &rect);
     popupMenuAnchorWidth_ = static_cast<int>(rect.right - rect.left);
     popupMenuAnchorEngineLabel_ = false;
+    SetForegroundWindow(window_);
     const int result = TrackPopupMenuEx(menu,
         TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN | TPM_RIGHTBUTTON,
         rect.left, rect.bottom, window_, nullptr);
+    PostMessage(window_, WM_NULL, 0, 0);
     popupMenuAnchorWidth_ = 0;
     popupMenuAnchorEngineLabel_ = false;
     DestroyMenu(menu);

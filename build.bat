@@ -13,6 +13,11 @@ rem
 rem CMake objects/tests: build\cmake\
 rem Sole runnable tree:  build\run\x64-release\
 rem Persistent data:     %%LOCALAPPDATA%%\ZenCrop\
+rem
+rem scripts\check_architecture.ps1 runs before every product build. A structural
+rem regression (new include cycle, cross-layer inversion, layer-rule break) fails
+rem the build instead of being reviewed away.
+rem Released artifacts live in build\packages\, one folder per product version.
 rem =============================================================================
 
 set "ZENCROP_CLEAN_ONLY=0"
@@ -128,6 +133,9 @@ if not exist "!NINJA_DIR!\ninja.exe" (
 )
 set "PATH=!NINJA_DIR!;!PATH!"
 
+call :check_architecture
+if errorlevel 1 exit /b !ERRORLEVEL!
+
 call :build_product
 if errorlevel 1 exit /b !ERRORLEVEL!
 
@@ -146,6 +154,18 @@ if defined ZENCROP_PACKAGE_MODE (
 echo Build Success
 echo Runnable: !RUNTIME_DIR!\ZenCrop.exe
 echo Manifest: !RUNTIME_DIR!\runtime-manifest.json
+exit /b 0
+
+:check_architecture
+echo Running architecture guard...
+"!POWERSHELL_EXE!" -NoProfile -ExecutionPolicy Bypass -File "%CD%\scripts\check_architecture.ps1"
+if errorlevel 1 (
+    echo ERROR: Architecture guard failed.
+    echo Report: build\artifacts\diagnostics\architecture-guard.json
+    echo Structural regressions are build failures. Fix the dependency, or change the
+    echo baseline deliberately with -AllowBaselineChange and record why.
+    exit /b 1
+)
 exit /b 0
 
 :build_product
@@ -236,13 +256,15 @@ if not exist build mkdir build
     echo cmake\                    CMake cache, objects, and on-demand test binaries.
     echo run\x64-release\          Sole runnable development payload.
     echo artifacts\tests\         Generated test outputs.
-    echo artifacts\diagnostics\   Generated diagnostics.
+    echo artifacts\diagnostics\   Generated diagnostics, including architecture-guard.json.
     echo logs\                     Explicit build/test logs.
-    echo packages\                 Verified MSI and Portable package output only.
+    echo packages\                 Verified MSI and Portable artifacts, one folder per version.
+    echo packages\_archive\        Retained historical archives; never produced by a build.
     echo.
     echo Persistent settings and OCR history live in %%LOCALAPPDATA%%\ZenCrop.
     echo Unknown build/runtime files fail validation instead of being deleted or packaged.
     echo WebView2 assets are verified against a manifest compiled into ZenCrop.exe.
+    echo scripts\check_architecture.ps1 gates every product build.
 ) > build\README.txt
 exit /b 0
 
@@ -289,6 +311,9 @@ echo   --package-msi       Create or verify the x64 per-machine MSI without inst
 echo   --package           Create or verify both MSI and Portable artifacts from one payload
 echo   --require-signing   Require configured production signing before any product build
 echo   --cl             REMOVED: CMake is the only compile authority
+echo.
+echo Every product build runs scripts\check_architecture.ps1 after the compile
+echo environment is ready and before compiling; a structural regression fails it.
 exit /b 0
 
 :package_option_conflict

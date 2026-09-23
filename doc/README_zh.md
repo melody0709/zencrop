@@ -1,8 +1,17 @@
-# ZenCrop v2.9.29
+# ZenCrop v2.9.30
 
 [English](../README.md)
 
 ZenCrop 是对 [PowerToys Crop And Lock](https://github.com/microsoft/PowerToys/tree/main/src/modules/CropAndLock/) 的独立、**增强型**重构实现，并融合了丰富的截图标注、长截图、多引擎 OCR 和 OCR 工作台。
+
+## v2.9.30 更新重点
+
+- **设置面板高度紧凑化与布局整合**: 属性页对话框总高度从 370 dlu 深度精简至 250 dlu（节省约 180 物理像素）。翻译标签页（Translate）高度从 370 缩减至 240 dlu：移除无冗余的「启用 OCR 来源翻译」复选框（翻译默认始终启用，由 Provider 单独开关）；精简剪贴板复制提示为单行；将提示词标签统一为「Prompt:」避免非 LLM 模式下发生截断；结果窗口 4 项复选框整合为双行紧凑布局。OCR 标签页高度从 304 缩减至 230 dlu：合并本地 Paddle 端口、闲置退出和测试服务器按钮为单行，合并文档解析开关与 Options 按钮为单行，紧凑化备用模型行。
+- **新增小米 Xiaomi MiMo 官方翻译预设**: 新增 Xiaomi MiMo 官方翻译预设（`api.xiaomimimo.com`，内置 `mimo-v2.6-flash`, `mimo-v2.6-pro`, `mimo-v2.5`, `mimo-v2.5-pro` 模型支持），默认关闭 thinking/reasoning，并采用 0.1 稳定温度与结构化 JSON 提示词翻译。
+- **修复 Win32 弹窗菜单点击外部不自动关闭**: 修复翻译结果窗口中 Provider、语言及 OCR 路由下拉菜单在点击窗口外部时不自动消失的问题。
+- **全套版本统一升级**: 应用、MSI 安装包、便携包及相关文档统一升级至 `v2.9.30`。
+
+完整变更请参阅 [CHANGELOG](CHANGELOG.md)。
 
 ## v2.9.29 更新重点
 

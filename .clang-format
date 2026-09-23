@@ -1,0 +1,57 @@
+# ZenCrop code style. Derived from the existing tree, not invented:
+# 4-space indent, same-line braces (K&R), pointer bound to the name (T *x),
+# effective column limit 120 (p99 of the current tree is 112; only 0.56% of
+# existing lines exceed 120).
+#
+# IMPORTANT — SortIncludes must stay false.
+# AGENTS.md and the development guide both make header order load-bearing:
+# <winsock2.h> MUST precede <windows.h> or the build breaks with hundreds of
+# redefinition errors. clang-format's include sorting would silently reorder
+# them, so include reordering is deliberately disabled.
+#
+# Apply it only to files you are already changing:
+#   clang-format -i src/ocr/ui/SomeFile.cpp
+# Never run it across the tree in one pass — that produces an unreviewable diff
+# and conflicts with the "smallest complete change" rule in AGENTS.md.
+---
+Language: Cpp
+BasedOnStyle: LLVM
+Standard: Latest
+
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+ContinuationIndentWidth: 4
+AccessModifierOffset: -4
+
+BreakBeforeBraces: Attach
+AllowShortFunctionsOnASingleLine: Inline
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+AllowShortBlocksOnASingleLine: Empty
+
+PointerAlignment: Right
+ReferenceAlignment: Pointer
+DerivePointerAlignment: false
+
+ColumnLimit: 120
+AlignAfterOpenBracket: Align
+BinPackArguments: true
+BinPackParameters: true
+AlignConsecutiveAssignments: false
+AlignConsecutiveDeclarations: false
+
+SortIncludes: false
+IncludeBlocks: Preserve
+SortUsingDeclarations: false
+
+NamespaceIndentation: None
+FixNamespaceComments: false
+ReflowComments: false
+MaxEmptyLinesToKeep: 1
+
+SpaceBeforeParens: ControlStatements
+SpaceAfterCStyleCast: false
+Cpp11BracedListStyle: true
+
+PenaltyReturnTypeOnItsOwnLine: 200

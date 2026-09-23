@@ -11,9 +11,9 @@
 
 1. **可行，而且语言层的迁移几乎是免费的。** 本机 MSVC 14.44 的 16 个代表性产品 TU（覆盖 onnxruntime / WebView2 / OpenCV / gdiplus / winhttp / winsock / clipper2 / miniz / `/await` 协程）在 `/std:c++23preview` 与 `/std:c++latest` 下**全部编译通过**，零改动。今天的 C++20 代码本身就是合法的 C++23 代码。
 2. **真正的风险不在语法，在一个具体的开关陷阱**：`/std:c++23` 会把 STL **整体退回 C++14**（实测 `_MSVC_LANG=201402L`）。好消息是 CMake 不会产出这个值（`CMAKE_CXX_STANDARD 23` → `/std:c++latest`）。
-3. **需要重估的是"重构"的重心。** 与 VoxType 相比，ZenCrop 的**依赖卫生已经很好**（include 图是 DAG，0 个环，7 月基线的 3 组环 / 18 条禁止边已全部清零），但**模块边界完全不存在**：产品侧只有 1 个 `add_executable`、0 个 `add_library`，170 个 .cpp 编成一个整体；为写测试，测试目标**直接重新编译 92 个产品 .cpp**。  
+3. **需要重估的是"重构"的重心。** 与 VoxType 相比，ZenCrop 的**依赖卫生已经很好**（include 图是 DAG，0 个环，7 月基线的 3 组环 / 18 条禁止边已全部清零），但**模块边界完全不存在**：产品侧只有 1 个 `add_executable`、0 个 `add_library`，**174 个源文件**（170 个 `.cpp` + 4 个 `.c`）编成一个整体；为写测试，测试目标**直接重新编译 92 个产品 `.cpp`**。  
    → 因此 ZenCrop 的正确顺序是「**先断模块级互依，再建链接边界，最后才是语法**」，而 VoxType 是「先断 include hub → 拆巨型文件 → 再谈语法」。
-4. **必选的叠加项**（五项，见 §3）：① 结构守卫进 `build.bat`；② 语言模式正确切换；③ 消 43 条倒置边 / 26 对模块互依；④ 引入分层静态库；⑤ 测试改为链接库。  
+4. **必选的叠加项**（五项，见 §3）：① 结构守卫进 `build.bat`；② 语言模式正确切换；③ 消 **59** 条倒置边 / 26 对模块互依；④ 引入分层静态库；⑤ 测试改为链接库。  
    **二选一的替代项**只有两组（见 §5.0）：`/std:c++latest` vs `/std:c++23preview`；错误模型全量 vs 仅边界层。
 5. **不需要做的事**（VoxType 有、ZenCrop 没有）：不存在 `globals.h` 式 include hub（只有 4 条 `extern`，其中 2 条是 `const` 表）；不存在 `.inl` 巨型翻译单元（**0 个**）；`main.cpp` 只有 929 行，**不需要六路拆分**。
 
@@ -145,12 +145,12 @@ PaddleVlLlamaClient.cpp(json+net) │ OcrDashboardWindow.cpp │ clipper.engine.
 ### 2.2 构建拓扑：单体型（**本轮最重要的发现**）
 
 ```
-产品侧：  add_executable(ZenCrop WIN32)  ← 170 个 .cpp，0 个 add_library
+产品侧：  add_executable(ZenCrop WIN32)  ← 174 个源文件，0 个 add_library
 测试侧：  91 个测试目标，由 tests/CMakeLists.txt 的 4 个 helper 生成
           └─ 其中 92 个「产品 .cpp」被测试目标直接重新编译（硬编码源列表）
 ```
 
-- 产品侧 170 个 .cpp = 166 个 `src/**` + 4 个 clipper2；**没有任何库边界**。
+- 产品侧 **174 个源文件** = 166 个 `src/**` + 4 个 clipper2 `.cpp` + 4 个 miniz `.c`；**没有任何库边界**。
 - `tests/CMakeLists.txt` 用 `ZENCROP_ANNOTATION_SOURCES` 这类**手工维护的源列表**把产品实现"搬进"测试目标；  
   全仓有 **92 个产品 .cpp 被测试直接编译**。
 - 后果一（可测性）：给一个新模块写测试，必须人工枚举它依赖的全部 .cpp。
@@ -168,11 +168,14 @@ PaddleVlLlamaClient.cpp(json+net) │ OcrDashboardWindow.cpp │ clipper.engine.
 - 对照 7 月基线（`03_REFACTOR_BASELINE.md`）：当时有 3 组真双向环、18 条禁止边  
   （`screenshot↔ocr/ui` 5、`net↔ocr/engine` 5、`batch↔document` 6）→ **已被 R5 + Stage 3 全部清零**。
 
-**坏消息（实测）**：**目录/模块级**仍有 **26 对互相依赖**，按"下层不得指向上层"归类共 **43 条倒置边**：
+**坏消息（实测）**：**目录/模块级**仍有 **26 对互相依赖**，按"下层不得指向上层"归类共 **59 条倒置边**：
+
+> **口径更正（2026-09-17 当轮修正，此前为 43）**：初稿把 `src/`（App 入口层）排除在层表之外，所有指向 `src/AppMessages.h` 的边被静默丢弃，属**统计盲区**。补上入口层后为 **59 条**，多出的 **16 条全部指向同一个文件**：`AppMessages.h` 物理位置在 L5，却被 L1–L4 的 16 个文件 include。→ **P1 的第一项应是把 `AppMessages.h` 下沉到 L0/L1**，一次文件搬迁即可消掉 16/59 条边。
 
 | 方向                                                                                                                                                       | 边数     | 性质                 |
 | -------------------------------------------------------------------------------------------------------------------------------------------------------- | ------ | ------------------ |
 | `src/window` → `src/screenshot`                                                                                                                          | 14     | **倒置**：通用窗口层依赖截图特性 |
+| `{L1–L4}` → `src`（`AppMessages.h`）                                                                                                                      | **16** | **倒置**：共享消息 ID 头长在 App 层，一次搬迁可清零 |
 | `src/window` → `src/screenshot/annotation`                                                                                                               | 5      | **倒置**             |
 | `src/window` → `src/screenshot/editor`                                                                                                                   | 3      | **倒置**             |
 | `src/ocr/batch` → `src/ocr/ui`                                                                                                                           | 6      | **倒置**：批处理依赖 UI    |
@@ -224,13 +227,41 @@ PaddleVlLlamaClient.cpp(json+net) │ OcrDashboardWindow.cpp │ clipper.engine.
 | `globals.h` 被 22 文件 include，含 91 条 `extern` | 无 `globals.h`；**4 条 `extern`**（2 条 `const` 表），689 个函数内 static                                       | **不需要**"终结 globals.h"阶段                        |
 | 23 个 .inl、34,026 行的巨型翻译单元                   | **0 个 .inl**                                                                                        | **不需要** .inl 转 TU 阶段（已完成）                      |
 | `main.cpp` 2,759 行需六路拆分                     | `main.cpp` **929 行**（入口层仅 982 行）                                                                    | **不需要**拆 main                                  |
-| 46 处跨层越权 include                            | 现有 9 条规则命中 **0**；但模块级 **43 条倒置边**                                                                   | 目标从"越权 include"改为"**模块方向**"                    |
+| 46 处跨层越权 include                            | 现有 9 条规则命中 **0**；但模块级 **59 条倒置边**                                                                   | 目标从"越权 include"改为"**模块方向**"                    |
 | 5 个静态库已按层存在                                 | **0 个 `add_library`**，测试靠重编产品 .cpp                                                                  | **这是 ZenCrop 最主要的缺口**：先建库                      |
 | `settings.cpp` 4,405 行需拆 + provider 选项模型下沉  | `src/core/Settings.cpp` 1,439 行；配置分散在 `Settings.h`/`TranslationSettingsCodec`/`DashboardTextMode` 等 | 无同等量级的单文件危机；但 `core→translation` 3 条边是同类问题的小型版 |
 | `/utf-8` 缺失、零源文件 target、PCH+NOMINMAX 陷阱     | `/utf-8` 已在 target 上；无 PCH                                                                          | 红线保留，但**当前未触发**                                |
 
 
 **一句话**：VoxType 是"先把纠缠的依赖砍开"，ZenCrop 是"**依赖已经砍开了，但没有把边界立成墙**"。
+
+### 2.7 大文件与大函数（"是否需要拆分"的依据）
+
+22 个文件 ≥1,500 行；全仓 **16 个函数 ≥400 行**，最大的几个都在消息处理里：
+
+| 行数 | 位置 | 函数 |
+| --- | --- | --- |
+| **1,265** | `src/ocr/ui/dashboard/OcrDashboardWindow.Messages.cpp:75` | `OcrDashboardWindow::MessageHandler` |
+| **950** | `src/window/OverlayWindow.cpp:1764` | `OverlayWindow::MessageHandler` |
+| **911** | `src/ocr/ui/OcrMarkdownPreviewHost.cpp:727` | `BuildStructuredSelectionMessage()` |
+| 644 | `screenshot/overlay/…AnnotationEdit.cpp:642` | `HandleScreenshotLButtonDown` |
+| 609 | `OcrDashboardWindow.Messages.cpp:1652` | `ImageAreaMessageHandler` |
+| 563 | `translation/TranslationResultWindow.cpp:2549` | `LayoutControls` |
+| 550 | `ocr/ui/DashboardHistory.cpp:1300` | `DeleteSelectedBatchSource` |
+| 548 | `core/SettingsDialog.cpp:1150` | `OcrPageProc`（对话框过程） |
+| 542 | `…Screenshot.Surface.cpp:19` | `UpdateScreenshotOverlay` |
+| 523 | `dashboard/DashboardPdfOptionsDialog.cpp:666` | `PdfOptionsDialogWndProc` |
+| 511 | `OcrDashboardWindow.Lifecycle.cpp:116` | `Create` |
+| 434 | `…AnnotationEdit.cpp:1287` | `HandleScreenshotMouseMove` |
+| 421 | `OcrDashboardWindow.Batch.cpp:976` | `LaunchCloudNativePdfThread` |
+| 414 | `ocr/engine/OcrEngine_PaddleOCR_Doc.cpp:349` | `DoRecognizeOfficial` |
+| 409 | `…SourceRail.cpp:1739` | `DrawBatchTaskSection` |
+
+**判读**：ZenCrop 的主要可读性问题**不是"文件太大"，而是"消息处理函数太大"**——前四名里三个是 `switch` 式的窗口过程/消息处理器。
+因此拆分的正确切口是**按消息切分处理器**（每个 `WM_*`/`WM_APP` 分支一个具名私有函数，或按消息族拆成独立 TU），
+而不是先按行数机械切文件。这条与 `AGENTS.md` 既有规则"不让已有大文件重新无边界膨胀；小修改不要机械拆 helper"一致。
+
+> 完整 40 条候选见 `build/artifacts/diagnostics/architecture-measurement.json` 的 `largeFunctions`。
 
 ---
 
@@ -326,7 +357,7 @@ target_link_libraries(ZenCrop PRIVATE zencrop_build_flags
    （`C2001 newline in constant` 一类）。守卫对此**硬 FAIL**。
 2. **每个静态库都要有一个 `EXCLUDE_FROM_ALL` 的空 `main` 链接冒烟目标。**  
    这是把"没有反向依赖"从**文本断言**升级为**链接器断言**的关键：库若引用了上层符号，冒烟目标直接链接失败。  
-   这一条直接消灭 §2.3 的 43 条倒置边（"能编过但结构是错的"变成"链不上"）。
+   这一条直接消灭 §2.3 的 59 条倒置边（"能编过但结构是错的"变成"链不上"）。
 3. **测试目标一律改为 `target_link_libraries` 引用库，禁止再列 `src/**/*.cpp`。**  
    目标：被测试直接编译的产品 .cpp 从 **92 → 0**。这条同时是 §2.2 三个后果的共同解。
 
@@ -347,11 +378,11 @@ target_link_libraries(ZenCrop PRIVATE zencrop_build_flags
 | -- | -------------------------------- | -------- | -------- | --------------------- |
 | 1  | include 图强连通分量（环）                | **0**    | 恒 0      | `> 0` → **硬 FAIL**    |
 | 2  | `architecture_audit` 9 条禁止边命中    | **0**    | 恒 0      | `> 0` → **硬 FAIL**    |
-| 3  | **模块级倒置边**（下层→上层）                | **43**   | 0        | `> 43` → FAIL；棘轮逐阶段下调 |
+| 3  | **模块级倒置边**（下层→上层）                | **59**   | 0        | `> 59` → FAIL；棘轮逐阶段下调 |
 | 4  | **模块级互依对数**                      | **26**   | 0        | 同上                    |
 | 5  | 层内家族互依对（登记制）                     | 见 §2.3 表 | 只减不增     | 列表外新增 → FAIL          |
 | 6  | `add_library` 产品静态库数             | **0**    | ≥ 6      | `< 基线` → 阶段闸门 FAIL    |
-| 7  | 产品 target 直接列出的 .cpp             | **170**  | 仅入口（1）   | 阶段闸门                  |
+| 7  | 产品 target 直接列出的源文件             | **174**  | 仅入口（1）   | 阶段闸门                  |
 | 8  | 测试直接编译的产品 .cpp 数                 | **92**   | 0        | 阶段闸门                  |
 | 9  | `WideStringUtils.h` 直接 include 者 | **107**  | ≤ 40     | `> 107` → FAIL        |
 | 10 | `extern` 声明数                     | **4**    | ≤ 2      | `> 4` → FAIL          |
@@ -382,7 +413,7 @@ target_link_libraries(ZenCrop PRIVATE zencrop_build_flags
 **必选叠加项（A 组，五项，必须全部做）**
 
 1. **P0** 守卫进 `build.bat` + 语言模式切到 C++23
-2. **P1** 消 43 条倒置边 / 26 对模块互依
+2. **P1** 消 59 条倒置边 / 26 对模块互依
 3. **P2** 引入分层静态库 + 链接冒烟目标
 4. **P3** 测试改为链接库（92 → 0）
 5. **P4** 拆 `WideStringUtils.h`（2021 行 / 212 inline / 107 include 者）
@@ -400,7 +431,7 @@ target_link_libraries(ZenCrop PRIVATE zencrop_build_flags
 
 ```mermaid
 graph LR
-    P0[P0: 守卫 + 语言模式<br/>零结构改动] --> P1[P1: 消倒置边<br/>43 → 0]
+    P0[P0: 守卫 + 语言模式<br/>零结构改动] --> P1[P1: 消倒置边<br/>59 → 0]
     P1 --> P2[P2: 建分层静态库<br/>1 target → 7]
     P2 --> P3[P3: 测试改链接库<br/>92 → 0]
     P3 --> P4[P4: 拆工具头 + PCH]
@@ -410,18 +441,21 @@ graph LR
 
 ### P0：守卫与语言模式（零结构改动）
 
-- **操作**：① 建 `scripts/check_architecture.ps1`（§4.2 的 14 项）；② 挂进 `build.bat` 主流程；  
+- **操作**：① 建 `scripts/check_architecture.ps1`（§4.2 的 15 项）；② 挂进 `build.bat` 主流程；  
   ③ 建 `zencrop_build_flags`；④ `CMAKE_CXX_STANDARD 23` + `/Zc:__cplusplus` + `/Zc:preprocessor`；  
   ⑤ 把基线值写死进守卫；⑥ `cmake_minimum_required` 从 3.15 提到 **3.20**（CMake 3.15 不认识标准值 23；`tests/CMakeLists.txt` 已经是 3.20）。
-- **退出判据**：`build.bat` 全绿；守卫在真实仓库全绿；**注入违规的合成工程 14/14 命中**；  
+- **退出判据**：`build.bat` 全绿；守卫在真实仓库全绿；**注入违规的合成工程 15/15 命中**；  
   编译命令行的实际 `/std:` 值经打印确认是 `c++latest`；  
   `__cplusplus` 从 199711L 变为真值。
 - **风险**：`/Zc:__cplusplus` 会改变第三方头对标准的判断（nlohmann/json 等）→ 必须先跑一次全量编译确认。
 
-### P1：消模块级倒置边与互依（43 → 0，26 → 0）
+### P1：消模块级倒置边与互依（59 → 0，26 → 0）
 
 - **为什么先做这一步**：它在**不建库**的前提下可用 include 图门禁验收，全程保持 `build.bat` 绿。
-- **操作**（按边数从多到少）：
+- **操作**（按性价比从高到低）：
+  0. **先把 `src/AppMessages.h` 下沉**（16 条边，一次文件搬迁）：它只是共享消息 ID 定义，却被 L1–L4 的 16 个文件引用，
+     留在 App 目录只会让"入口层"看起来被所有层依赖。迁到 L0/L1 后同步 16 处 include 与 include 目录配置。
+     这是全仓**单点收益最高**的一步。
   1. `src/window` → `src/screenshot`（14+5+3 = 22 条）：把两者共享的类型下沉到 L0/L1  
      （`OverlayWindow` 与 screenshot/annotation 共用的几何/样式类型应有唯一归属地）；
   2. `src/ocr/batch` → `src/ocr/ui`（6）+ `src/ocr/document` → `src/ocr/ui`（2）：批处理侧不得认识 UI 类型，  
@@ -437,7 +471,7 @@ graph LR
 
 - **操作**：按 §3.2 建库；为**每个**库加 `EXCLUDE_FROM_ALL` 空 `main` 冒烟目标并纳入守卫；  
   三方源码（clipper2/miniz）拆到 `zencrop_thirdparty`，让一方库编译标志不被三方代码污染。
-- **退出判据**：守卫 #6/#14 通过；冒烟目标全部链接成功（这就是 43 条倒置边已真正消失的**链接器级**证明）；  
+- **退出判据**：守卫 #6/#14 通过；冒烟目标全部链接成功（这就是 59 条倒置边已真正消失的**链接器级**证明）；  
   `build.bat` 全绿；产物 EXE 与 P2 前**字节无关但行为一致**（跑一次发布包冒烟）。
 - **风险**：静态库拆分后链接顺序问题；`#pragma comment(lib, ...)` 仍需保留但要审计。
 
@@ -534,17 +568,114 @@ graph LR
 
 ---
 
-## 附：本次测量产物
+## 10. 实施前防护缺口审查（2026-09-17 第二轮）
 
-| 文件                                                                               | 内容                                       |
-| -------------------------------------------------------------------------------- | ---------------------------------------- |
-| `build/artifacts/diagnostics/arch_analysis.py`                                   | 规模 / include 图 / SCC / 禁止边 / 特性普查 / 全局状态 |
-| `build/artifacts/diagnostics/arch_analysis2.py`                                  | include 解析完备性 / hub 头内部结构 / 测试目标枚举       |
-| `build/artifacts/diagnostics/arch_analysis3.py`                                  | 格式化与平台 API 普查 / 模块权重 / 热路径文件             |
-| `build/artifacts/diagnostics/arch_analysis4.py`                                  | 完整目录耦合矩阵 / 26 对互依 / 倒置边                  |
-| `build/artifacts/diagnostics/cxx23_probe.py`                                     | 19 个 C++23 特性 × 4 个 `/std:` 开关           |
-| `build/artifacts/diagnostics/tu_probe.py`                                        | 16 个真实产品 TU × 3 个开关                      |
-| `build/artifacts/diagnostics/wide_and_cost.py`                                   | 宽字符串 `std::format` + 单 TU 编译成本           |
-| `build/artifacts/diagnostics/arch-analysis.json`                                 | 上述测量汇总                                   |
-| `build/artifacts/diagnostics/cxx23-probe-results.json` / `tu-probe-results.json` | 原始通过/失败矩阵                                |
-| `build/artifacts/diagnostics/cxx23-probe/P20_macro_dump.cpp`                     | `/std:c++23` 陷阱的证据源                      |
+> 口径：按"下一步就要实施"的标准自查，只列**尚未落实**的项。本轮已修的 5 个守卫缺口列在最前，便于复核。
+
+### 10.1 守卫本轮已修（此前可被绕过）
+
+| # | 缺口 | 后果 | 修法 | 证据 |
+| --- | --- | --- | --- | --- |
+| 1 | `-UpdateBaseline` 无条件把**测量值**写成基线 | 一次回归被"合法化"为基线，棘轮失效 | 抬高棘轮需显式 `-AllowBaselineChange`，否则 `ARC-RAISE` FAIL 且**不写基线** | 已实现 |
+| 2 | 规则被削弱/删除无人发现 | 守卫退化成"只会 PASS" | 每次运行都跑合成违规仓库，要求 **15/15 命中**（`ARC-SELFTEST`）；并断言规则清单长度（`ARC-RULESET`） | `ruleFiring: {hit:15,total:15}` |
+| 3 | 删掉 `build.bat` 里的守卫调用 | 门禁静默失效 | `ARC-WIRING` 直接读 `build.bat` 断言调用行与脚本路径 | `guardWiringProblems: 0` |
+| 4 | `-UpdateBaseline` 把 stage 期望从旧文件复制回来 | 期望被永久冻结在旧值 | stage 期望改为**代码侧策略**，`-UpdateBaseline` 不再复制旧值 | P0 期望含 `cxxStandardDeclared: 23` |
+| 5 | `msvcToolchain` 返回 `1` | 遥测错误 | 单元素数组被展开 → `@()` 包裹 | `msvcToolchain: 14.44.35207` |
+
+### 10.2 仍未落实（按严重度排序）
+
+| 严重度 | 缺口 | 现状 | 建议 |
+| --- | --- | --- | --- |
+| **高** | **P0 语言标准只交付了一半** | `cxxStandardDeclared = 20`（`-Stage P0` 现为 FAIL，这是如实反映）；缺 `CMAKE_CXX_STANDARD 23`、`/Zc:__cplusplus`、`/Zc:preprocessor`、`zencrop_build_flags` INTERFACE、全局 `NOMINMAX` | 见 §10.3 的实施注意 |
+| **高** | 守卫不覆盖"测试资产被删" | 删掉测试目标或 `tests/*.cpp` 不会 FAIL | 加棘轮：测试目标数下限（当前 91）、`tests/` 源文件数下限 |
+| **高** | 守卫不校验工具链版本 | 只记录 `msvcToolchain`，不设约束；VS 升级可能改变 `/std:c++latest` 语义 | 把 MSVC 版本纳入棘轮，升级时人工确认并更新记录 |
+| 中 | 无 CI | 全部门禁都是本地、依赖 `build.bat`；换机器或换会话即失效 | 至少给守卫加一条"提交前运行"的书面流程；有 CI 后挂上去 |
+| 中 | 大文件/大函数**无机械上限** | 只有散文规则"不让大文件膨胀"；实测最大文件 3,843 行、最大函数 1,265 行 | 把"单文件行数""单函数行数"纳入棘轮（需在守卫里做函数级括号匹配；方案已具备算法，未实现） |
+| 中 | 层表是硬编码单点 | 改层要同步守卫 + `AGENTS.md` + 本文档（三处） | 可接受，但必须在 §10.4 的清单里显式登记 |
+| 中 | `.clang-format` / `.clang-tidy` 不是门禁 | 已创建且与现有风格一致（4 空格、同行大括号、`T *x`、120 列），但无任何流程强制执行 | 维持顾问性质；**禁止一次性全仓格式化** |
+| 中 | 无 `x64-asan` / `x64-debug` 预设 | 只有 `x64-release`；`build.bat` 也只认 release | 本机 MSVC ASan 运行时齐备（`vcasan.lib`/`clang_rt.asan_*`），可落地；需同步 `build.bat` 的派生路径 |
+| 低 | `build.bat --test` 不存在 | 测试走独立的 `tests\build_and_run.bat` | 可选统一入口 |
+| 低 | 第三方来源/许可证无机械检查 | `AGENTS.md` 只有散文要求 | 低优先 |
+| 低 | `tmp/` 767 MB / 11.6k 文件仍在 | 未决问题 Q7 的一部分 | 清理前先确认无独有内容 |
+| 低 | `.bak` 是快照、不自动更新 | 且它含 `src/`、`tests/`、`scripts/` 的副本 | 任何"从仓库根递归"的新脚本**必须排除 `.bak/`**；守卫已按 `src/` 限定，不受影响 |
+
+### 10.3 P0 剩余项的实施注意（务必先读）
+
+1. **`CMAKE_CXX_STANDARD 23` 是安全路径**（CMake 3.31 → `/std:c++latest`，见 §1.3）；**绝不手写 `/std:c++23`**。
+   本轮新增的旁证：**clang-cl 22 也静默忽略 `/std:c++23`**（`warning: argument unused`），与 MSVC 的 `_MSVC_LANG=201402L` 互相印证。
+2. **切完必须做一次全量构建**。§1.5 只验证了 16 个代表性 TU 的**编译**（`/c`），未验证 174 个源文件的全量编译与**链接**。
+3. **`/Zc:__cplusplus` 会改变第三方头对标准的判断**（当前恒为 `199711L`）。开启后必须全量构建一次，重点看 onnxruntime / WebView2 / OpenCV / nlohmann 头。
+4. **`NOMINMAX` 必须在同一提交里全局定义**（`zencrop_build_flags`），否则将来引入 PCH 时 `<windows.h>` 会污染所有 TU，`std::min/max` 全量 `C2589`（§6 红线 R4）。
+5. 切换后 `-Stage P0` 应转为 PASS；在此之前它**故意是 FAIL**，这是进度信号而不是故障。
+
+### 10.4 改层/改规则时必须同步的三处清单
+
+改 `src/` 目录分类或新增层级时，必须同时改：① `scripts/check_architecture.ps1` 的 `$script:LayerMap`（并在 `$script:RuleIds` 里登记新规则）；② `AGENTS.md` 的"分层架构契约"表；③ 本文档 §3.1 的层表与 §2.3 的倒置边基线。缺一处，`ARC-NEWDIR` 会在下次构建报错。
+
+---
+
+## 11. 工具链结论（2026-09-17 清点，无需安装新工具链）
+
+| 组件 | 版本 / 位置 | 状态 |
+| --- | --- | --- |
+| MSVC 工具集 | **14.44.35207**（VS 17.14 Community） | ✅ C++23 齐备（无 `<flat_map>`） |
+| Windows SDK | **10.0.26100.0**（另有 22621 / 19041） | ✅ |
+| CMake | 3.31.6-msvc6（VS 自带） | ✅ 已知 `CXX_STANDARD 23` → `/std:c++latest` |
+| Ninja | VS 自带 | ✅ |
+| vswhere | `%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\` | ✅ `build.bat` 依赖 |
+| 7-Zip | `C:\Program Files\7-Zip\7z.exe` + scoop shim | ✅ Portable 打包依赖 |
+| WiX Toolset 7.0.0 | NuGet：`wixtoolset.sdk`、`wixtoolset.ui.wixext` | ✅ MSI 打包依赖 |
+| signtool | SDK `bin\10.0.26100.0\x64\` | ✅ 可用（无证书 → 走 `-unsigned`，见 `AGENTS.md`） |
+| MSVC ASan 运行时 | `vcasan.lib` / `libvcasan.lib` / `clang_rt.asan_*` | ✅ 可落地 `x64-asan`；注意**动态**运行时需其 DLL 在 PATH |
+| pwsh 7 | `pwsh.exe` | ✅ `build.bat` 硬依赖 |
+| Python | `python` 在 PATH（托管的 3.13.x） | ✅ `scripts/python/` 工具可用 |
+| LLVM/Clang | **22.1.4**：`clang-format`、`clang-tidy`、`clangd`、`clang-cl` | ✅ 已配 `.clang-format` / `.clang-tidy` / `compile_flags.txt`（clangd 用） |
+| git | 可用（`gh` 未登录，发布走 REST API） | ✅ 见开放议题 |
+
+**结论**：**不需要安装新工具链**。C++23 目标、打包、签名、静态分析、ASan 所需的组件本机全部齐备。唯一的"缺"不是工具，而是**配置与门禁**（§10.2）。
+
+---
+
+
+
+**可复用工具（进仓库，长期维护）**
+
+| 文件 | 作用 |
+| --- | --- |
+| `scripts/check_architecture.ps1` | 结构守卫（15 条规则，棘轮 + `-Stage` 闸门 + `-SelfTest` 自检）。挂在 `build.bat` 主流程 |
+| `.plan/refactor/architecture-baseline.json` | 守卫基线的唯一权威；只允许下调 |
+| `scripts/python/measure_architecture.py` | 深研测量：规模 / include 图与环 / 模块耦合矩阵与倒置边 / hub 头放大 / 惯用法普查 / 大文件与大函数候选 |
+| `scripts/architecture_audit.ps1` | 历史手工诊断工具（其 runtime staging 为手写表，不得作为门禁） |
+
+**本轮生成的证据（`build/artifacts/diagnostics/`，属可丢弃的生成物）**
+
+| 文件 | 内容 |
+| --- | --- |
+| `architecture-guard.json` | 守卫逐项测量值、findings、notes |
+| `architecture-measurement.json` | 深研测量的完整数据（含大函数候选 40 条） |
+| `guard-selftest.log` | `-SelfTest` 结果：15/15 规则命中 |
+| `cxx23-probe-results.json` / `tu-probe-results.json` | C++23 特性矩阵与 16 个真实 TU 的通过/失败矩阵 |
+| `packages-layout-before.json` / `packages-layout-after.json` | packages 目录迁移的逐文件清单（可审计、可回滚） |
+| `layout-validate.log` / `layout-negative-test.log` | 布局校验通过与两条反向用例的证据 |
+
+> 说明：本文档初稿引用的若干一次性探针脚本（`arch_analysis*.py`、`cxx23_probe.py`、`tu_probe.py`、`wide_and_cost.py`、`P20_macro_dump.cpp`）已按 `AGENTS.md` 的 `build/` 边界（不得在其中保留手工脚本与临时分析）清理；其结论已固化到上表两个可复用工具与本文正文中。
+
+---
+
+## 9. 本轮已落地的边界（2026-09-17，未做任何 src 重构）
+
+按"先把边界做好、不动产品源码"的口径，本轮落地以下内容：
+
+| # | 落地项 | 位置 | 验收证据 |
+| --- | --- | --- | --- |
+| 1 | 结构守卫（15 条规则、棘轮基线、`-Stage` 闸门、`-SelfTest`） | `scripts/check_architecture.ps1` + `.plan/refactor/architecture-baseline.json` | 真实仓库 PASS；`-SelfTest` **15/15** 命中 |
+| 2 | 守卫挂进产品构建主流程 | `build.bat`（`call :check_architecture`，编译前） | errorlevel 向上传播 |
+| 3 | 深研测量工具 | `scripts/python/measure_architecture.py` | 复现 0 环 / 59 倒置边 / 26 互依 / hub 107 直接 include |
+| 4 | C++23 语言标准与分层契约写入规则 | `AGENTS.md` 新增 4 节：C++23 语言标准 / 分层架构契约 / 架构守卫 / 脚本约定 | 规则与守卫基线逐条对应 |
+| 5 | 发布产物按版本号分目录 | `build/packages/<X.Y.Z>/`（+`_archive/`），改 `package_zencrop.ps1` 一处派生路径 | 104 个文件全部就位，26 个版本目录 |
+| 6 | 布局校验收紧到版本目录 + 目录内版本一致性 | `scripts/validate_build_layout.ps1` | 干净状态 PASS；两条反向用例均 FAIL |
+| 7 | 开发指南同步 | `docs/01_architecture/01_ZENCROP_DEV_GUIDE.md` | — |
+
+**未做（按用户口径留待后续）**：任何 `src/` 源码改动、拆库、消除倒置边、C++23 惯用法替换。
+
+

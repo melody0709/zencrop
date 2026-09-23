@@ -531,6 +531,8 @@ inline constexpr BuiltInOpenAiCompatibleProviderDefault
             L"alibaba-cloud", L"qwen3.5-flash"},
         {L"builtin.siliconflow.default", L"SiliconFlow",
             L"siliconflow", L"Qwen/Qwen3.5-9B"},
+        {L"builtin.xiaomi-mimo.default", L"Xiaomi MiMo",
+            L"xiaomi-mimo", L"mimo-v2.6-flash"},
     };
 
 struct TranslationSettings {

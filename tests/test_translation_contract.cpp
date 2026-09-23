@@ -3047,6 +3047,8 @@ int TestProviderPromptAndSchemaContracts() {
         !FindTranslationProviderPreset(L"grok") ||
         !FindTranslationProviderPreset(L"alibaba-cloud") ||
         !FindTranslationProviderPreset(L"siliconflow") ||
+        !FindTranslationProviderPreset(L"xiaomi-mimo") ||
+        !FindTranslationProviderPreset(L"mimo") ||
         !FindTranslationProviderPreset(L"openrouter") ||
         !FindTranslationProviderPreset(L"custom-openai-compatible")) return 130;
     std::wstring error;
@@ -3069,6 +3071,8 @@ int TestProviderPromptAndSchemaContracts() {
             TranslationAuthMode::BearerApiKey, LlmOutputMode::PromptJson},
         {L"siliconflow", TranslationAdapterKind::OpenAIChatCompletions,
             TranslationAuthMode::BearerApiKey, LlmOutputMode::JsonObject},
+        {L"xiaomi-mimo", TranslationAdapterKind::OpenAIChatCompletions,
+            TranslationAuthMode::BearerApiKey, LlmOutputMode::PromptJson},
     };
     for (const auto& expected : expectedPresets) {
         const auto* preset = FindTranslationProviderPreset(expected.kind);
@@ -3143,6 +3147,7 @@ int TestProviderPromptAndSchemaContracts() {
         {L"builtin.grok.default", L"grok"},
         {L"builtin.alibaba-cloud.default", L"alibaba-cloud"},
         {L"builtin.siliconflow.default", L"siliconflow"},
+        {L"builtin.xiaomi-mimo.default", L"xiaomi-mimo"},
     };
     for (const auto& builtIn : existingBuiltInProfiles) {
         const auto* preset = FindTranslationProviderPreset(builtIn.kind);
@@ -3190,7 +3195,7 @@ int TestProviderPromptAndSchemaContracts() {
         restoredGoogle == restoredDefaults.providerProfiles.end()) return 184;
 
     for (const auto& kind : {L"openai", L"gemini", L"minimax", L"grok",
-                             L"alibaba-cloud", L"siliconflow"}) {
+                             L"alibaba-cloud", L"siliconflow", L"xiaomi-mimo"}) {
         TranslationProviderProfile customModel;
         customModel.id = L"provider.custom." + std::wstring(kind);
         customModel.displayName = L"Custom model contract";
@@ -3319,6 +3324,7 @@ int TestProviderPromptAndSchemaContracts() {
         L"builtin.grok.default",
         L"builtin.alibaba-cloud.default",
         L"builtin.siliconflow.default",
+        L"builtin.xiaomi-mimo.default",
     };
     for (const auto& id : builtInIds) {
         const auto profile = std::find_if(
@@ -4012,6 +4018,22 @@ int TestExistingProviderWireContracts() {
             body["options"].value("top_p", -1.0) != 0.3 ||
             body["options"].value("seed", -1) != 29 ||
             !body.contains("messages") || !body["messages"].is_array()) return 413;
+    }
+
+    {
+        const auto profile = WireProfile(L"xiaomi-mimo", L"mimo-v2.6-flash");
+        CapturedProviderCall call;
+        if (!RunCapturedProvider(
+                profile, makeResponse(chatEnvelope("mimo-v2.6-flash")), call) ||
+            !call.result.success) return 414;
+        const auto body = nlohmann::json::parse(call.body);
+        if (call.url != L"https://api.xiaomimimo.com/v1/chat/completions" ||
+            !HasHeader(call.headers, L"Authorization: Bearer contract-key") ||
+            body.value("model", "") != "mimo-v2.6-flash" ||
+            !body.contains("thinking") ||
+            body["thinking"].value("type", "") != "disabled" ||
+            std::abs(body.value("temperature", 0.0) - 0.1) > 0.001 ||
+            body.value("max_tokens", 0) != 16384) return 415;
     }
 
     return 0;

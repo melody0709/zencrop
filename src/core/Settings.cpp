@@ -979,10 +979,16 @@ void SaveOcrSettings(const OcrSettings& settings) {
 TranslationSettings LoadTranslationSettings() {
     TranslationSettings settings;
     const std::wstring json = ReadFileToString(GetSettingsFilePath());
-    if (json.empty()) return settings;
+    if (json.empty()) {
+        settings.enabled = true;
+        return settings;
+    }
 
     const std::wstring section = FindTopLevelJsonValue(json, L"translation");
-    if (section.empty()) return settings;
+    if (section.empty()) {
+        settings.enabled = true;
+        return settings;
+    }
     std::wstring parseError;
     if (!ParseTranslationSection(section, settings, &parseError)) return TranslationSettings{};
     return settings;

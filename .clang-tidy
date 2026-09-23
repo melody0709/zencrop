@@ -1,0 +1,33 @@
+# ZenCrop static analysis. Advisory only, never a build gate.
+#
+# The gate is scripts/check_architecture.ps1. This file exists so that
+# clang-tidy can be pointed at a file during review without flooding the
+# console with thousands of pre-existing modernize-* findings. The check list is
+# deliberately small and biased toward real defects, not style preferences.
+#
+# Run on a file you are already changing:
+#   clang-tidy -p build/cmake src/ocr/ui/SomeFile.cpp
+# (build/cmake must hold compile_commands.json; if it does not, add
+#  -DCMAKE_EXPORT_COMPILE_COMMANDS=ON to the configure step.)
+FormatStyle: file
+
+Checks: >
+  -*,
+  bugprone-sizeof-expression,
+  bugprone-suspicious-memset-usage,
+  bugprone-macro-parentheses,
+  bugprone-integer-division,
+  bugprone-string-constructor,
+  bugprone-not-null-terminated-result,
+  bugprone-misplaced-widening-cast,
+  bugprone-unused-return-value,
+  modernize-use-nullptr,
+  modernize-use-override,
+  modernize-use-default-member-init
+
+CheckOptions:
+  bugprone-unused-return-value.CheckedFunctions: "::CreateProcessW;::CreateProcessA"
+
+WarningsAsErrors: ''
+HeaderFilterRegex: '^.*[\\/](src|tests|scripts)[\\/].*$'
+SystemHeaders: false

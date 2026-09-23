@@ -99,26 +99,12 @@ void UpdateDataRoute(HWND page, const TranslationSettings& settings) {
     const bool usesPromptProfile = profile &&
         GetCapabilities(*profile).usesPromptProfile;
     SetText(page, IDC_TRANSLATE_MODEL_LABEL,
-        usesPromptProfile
-            ? (S::IsChinese() ? L"\u63d0\u793a\u8bcd\uff1a" : L"Prompt:")
-            : (S::IsChinese() ? L"\u63d0\u793a\u8bcd\uff08\u4ec5 LLM\uff09\uff1a" : L"Prompt (LLM only):"));
+        S::IsChinese() ? L"\u63d0\u793a\u8bcd\uff1a" : L"Prompt:");
     for (const int id : {IDC_TRANSLATE_MODEL_LABEL, IDC_TRANSLATE_PROMPT,
                          IDC_TRANSLATE_PROMPT_MANAGE}) {
         EnableWindow(GetDlgItem(page, id), usesPromptProfile);
     }
-    if (!profile || !profile->enabled) {
-        SetText(page, IDC_TRANSLATE_NOTICE_TEXT,
-            S::IsChinese() ? L"当前没有启用的 Provider。" :
-                L"No provider is enabled for translation.");
-        return;
-    }
-    const auto* preset = profile
-        ? FindTranslationProviderPreset(profile->presetKind) : nullptr;
-    const std::wstring host = preset ? preset->dataHost : L"custom endpoint";
-    const std::wstring message = S::IsChinese()
-        ? L"OCR \u4e0e\u9009\u4e2d\u6587\u672c\u4f1a\u53d1\u9001\u5230 " + host + L"\u3002"
-        : L"OCR and selected text are sent to " + host + L".";
-    SetText(page, IDC_TRANSLATE_NOTICE_TEXT, message);
+
 }
 
 TranslationSettings ReadPage(HWND page, PageState& state) {
@@ -133,7 +119,7 @@ TranslationSettings ReadPage(HWND page, PageState& state) {
     settings.customPromptProfiles = shared.customPromptProfiles;
     settings.schemaVersion = shared.schemaVersion;
     settings.schemaSupported = shared.schemaSupported;
-    settings.enabled = IsDlgButtonChecked(page, IDC_TRANSLATE_ENABLED) == BST_CHECKED;
+    settings.enabled = true;
     settings.selectionCopyFallbackEnabled = IsDlgButtonChecked(
         page, IDC_TRANSLATE_SELECTION_COPY_FALLBACK) == BST_CHECKED;
     UpdateSelectionCopyFallbackDraft(
@@ -230,13 +216,8 @@ void InitializePage(HWND page, PageState& state) {
             L"Allow copy to preserve selection formatting");
     SetText(page, IDC_TRANSLATE_SELECTION_COPY_HINT,
         S::IsChinese()
-            ? L"会触发 Ctrl+C 读取 Markdown/HTML/编辑器格式；选区可能进入剪贴板历史、云同步或管理器，原内容仅尽力恢复。"
-            : L"Uses Ctrl+C to read Markdown, HTML, or editor formats; the selection may reach clipboard history, sync, or managers, and prior content is restored best-effort.");
-    SetText(page, IDC_TRANSLATE_ENABLED,
-        S::IsChinese() ? L"启用 OCR 来源翻译" :
-            L"Enable OCR-source translation");
-    SetText(page, IDC_TRANSLATE_LANGUAGES_LABEL,
-        S::IsChinese() ? L"语言" : L"Languages");
+            ? L"使用 Ctrl+C 保留格式；读取后尽力恢复剪贴板。"
+            : L"Uses Ctrl+C to preserve rich formatting; restores prior clipboard.");
     SetText(page, IDC_TRANSLATE_SOURCE_LABEL,
         S::IsChinese() ? L"源语言：" : L"Source:");
     SetText(page, IDC_TRANSLATE_TARGET_LABEL,
@@ -326,8 +307,6 @@ void InitializePage(HWND page, PageState& state) {
     }
     SelectComboValue(prompt, settings.activePromptId);
 
-    CheckDlgButton(page, IDC_TRANSLATE_ENABLED,
-        settings.enabled ? BST_CHECKED : BST_UNCHECKED);
     CheckDlgButton(page, IDC_TRANSLATE_SELECTION_COPY_FALLBACK,
         settings.selectionCopyFallbackEnabled ? BST_CHECKED : BST_UNCHECKED);
     CheckDlgButton(page, IDC_TRANSLATE_SHOW_SOURCE,

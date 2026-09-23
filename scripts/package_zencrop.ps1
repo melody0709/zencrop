@@ -1597,7 +1597,11 @@ $runtimeRootPath = Get-AbsolutePath $RuntimeDirectory
 $installManifestPath = Get-AbsolutePath $InstallManifest
 $repoRoot = Split-Path $PSScriptRoot -Parent
 $stagingRoot = Join-Path $buildRootPath "cmake\package-staging"
-$packagesRoot = Join-Path $buildRootPath "packages"
+# Released artifacts are grouped by product version so a flat folder never
+# accumulates every historical release. scripts\validate_build_layout.ps1
+# enforces this shape, and the same-version immutability checks below read and
+# write through the same derived path, so they keep working unchanged.
+$packagesRoot = Join-Path (Join-Path $buildRootPath "packages") $ProductVersion
 $layoutValidator = Join-Path $repoRoot "scripts\validate_build_layout.ps1"
 $wixProject = Join-Path $repoRoot "packaging\windows\ZenCrop.Installer.wixproj"
 $packageSource = Join-Path $repoRoot "packaging\windows\Package.wxs"
