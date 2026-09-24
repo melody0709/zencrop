@@ -1,4 +1,5 @@
 #include "ocr/ui/dashboard/DashboardHostUtils.h"
+#include "core/WideFormatPaths.h"
 
 #include <atomic>
 #include <limits>

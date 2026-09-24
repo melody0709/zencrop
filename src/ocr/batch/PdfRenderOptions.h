@@ -4,7 +4,7 @@
 #include <cstdint>
 #include <cwctype>
 #include <string>
-#include "core/WideFormatUtils.h"
+#include "core/WideCaseOps.h"
 // Stage3 3-B: raster bound constants/clamps sole in core; Settings no longer includes batch.
 #include "core/RasterBoundOptions.h"
 

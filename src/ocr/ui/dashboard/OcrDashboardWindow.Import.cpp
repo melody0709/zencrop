@@ -10,10 +10,9 @@
 #include "dashboard/DashboardOutputArtifactOptionsDialog.h"
 #include "dashboard/DashboardPdfOptionsDialog.h"
 #include "BatchOcrWriter.h"
-#include "Settings.h"
 #include "Strings.h"
 #include "OcrUtils.h"
-#include "core/WideFormatUtils.h"
+#include "core/WidePathUtils.h"
 
 #include <commdlg.h>
 #include <objbase.h>

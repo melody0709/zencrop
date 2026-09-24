@@ -1,7 +1,9 @@
 #include "ocr/ui/dashboard/DashboardResultProjection.h"
 
 #include "ocr/OcrBlockJson.h"
-#include "core/WideFormatUtils.h"
+#include "core/WideFormatPrimitives.h"
+#include "core/WideFormatLabels.h"
+#include "core/WideTextOps.h"
 #include "core/WideMarkdownUtils.h"
 #include "core/WideJsonUtils.h"
 

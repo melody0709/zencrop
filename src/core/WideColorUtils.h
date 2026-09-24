@@ -5,6 +5,7 @@
 
 #include "core/WideTextOps.h"
 
+#include <format>
 #include <string>
 
 // Hex digit value 0..15, or -1 if not hex.
@@ -55,20 +56,16 @@ inline unsigned int WideParseColorHex(
 
 // Format packed COLORREF-layout RGB as "#RRGGBB" (uppercase).
 inline std::wstring WideColorToHex(unsigned int packed) {
-    wchar_t buf[8] = {};
-    swprintf_s(buf, L"#%02X%02X%02X",
+    return std::format(L"#{:02X}{:02X}{:02X}",
         static_cast<unsigned>(WideUnpackR(packed)),
         static_cast<unsigned>(WideUnpackG(packed)),
         static_cast<unsigned>(WideUnpackB(packed)));
-    return buf;
 }
 
 // Format packed COLORREF-layout RGB as "#rrggbb" (lowercase).
 inline std::wstring WideColorToHexLower(unsigned int packed) {
-    wchar_t buf[16] = {};
-    swprintf_s(buf, L"#%02x%02x%02x",
+    return std::format(L"#{:02x}{:02x}{:02x}",
         WideUnpackR(packed), WideUnpackG(packed), WideUnpackB(packed));
-    return buf;
 }
 
 // UI integer / mode cycling helpers.

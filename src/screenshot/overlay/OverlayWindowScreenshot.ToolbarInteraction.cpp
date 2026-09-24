@@ -1,7 +1,6 @@
 #define WIN32_LEAN_AND_MEAN
 #include "screenshot/OverlayWindow.h"
 
-#include "core/Settings.h"
 #include "screenshot/ToolbarIconRenderer.h"
 #include "screenshot/ScreenshotAnnotationGeometry.h"
 #include "screenshot/ScreenshotAnnotationHelpers.h"
@@ -19,6 +18,7 @@
 #include "screenshot/editor/ScreenshotToolbarColorMutation.h"
 #include "screenshot/editor/ScreenshotToolbarHitTest.h"
 #include "screenshot/editor/ScreenshotToolbarSliderMutation.h"
+#include "core/GdiHandles.h"
 
 #include <algorithm>
 #include <mutex>
@@ -320,16 +320,16 @@ static void FunctionAreaDialogMoveRow(FunctionAreaDialogState* state, int from, 
 
 static void FunctionAreaDialogDrawButton(HDC hdc, const RECT& rc, const wchar_t* text,
     bool primary, HFONT font) {
-    HBRUSH brush = CreateSolidBrush(primary ? RGB(0, 120, 215) : RGB(245, 245, 245));
-    FillRect(hdc, &rc, brush);
-    DeleteObject(brush);
-    HPEN pen = CreatePen(PS_SOLID, 1, primary ? RGB(0, 120, 215) : RGB(210, 210, 210));
-    HGDIOBJ oldPen = SelectObject(hdc, pen);
-    HGDIOBJ oldBrush = SelectObject(hdc, GetStockObject(NULL_BRUSH));
-    RoundRect(hdc, rc.left, rc.top, rc.right, rc.bottom, 6, 6);
-    SelectObject(hdc, oldBrush);
-    SelectObject(hdc, oldPen);
-    DeleteObject(pen);
+    {
+        zencrop::ScopedHBRUSH brush(CreateSolidBrush(primary ? RGB(0, 120, 215) : RGB(245, 245, 245)));
+        FillRect(hdc, &rc, brush.get());
+    }
+    {
+        zencrop::ScopedHPEN pen(CreatePen(PS_SOLID, 1, primary ? RGB(0, 120, 215) : RGB(210, 210, 210)));
+        zencrop::ScopedSelectObject selPen(hdc, pen.get());
+        zencrop::ScopedSelectObject selBrush(hdc, GetStockObject(NULL_BRUSH));
+        RoundRect(hdc, rc.left, rc.top, rc.right, rc.bottom, 6, 6);
+    }
     SetBkMode(hdc, TRANSPARENT);
     SetTextColor(hdc, primary ? RGB(255, 255, 255) : RGB(38, 38, 38));
     HFONT oldFont = font ? (HFONT)SelectObject(hdc, font) : nullptr;
@@ -342,9 +342,10 @@ static void FunctionAreaDialogDraw(HWND hwnd, HDC hdc, FunctionAreaDialogState* 
     if (!state) return;
     RECT client = {};
     GetClientRect(hwnd, &client);
-    HBRUSH bg = CreateSolidBrush(RGB(250, 250, 250));
-    FillRect(hdc, &client, bg);
-    DeleteObject(bg);
+    {
+        zencrop::ScopedHBRUSH bg(CreateSolidBrush(RGB(250, 250, 250)));
+        FillRect(hdc, &client, bg.get());
+    }
 
     int s = state->dpi;
     int margin = FunctionAreaDialogScale(14, s);
@@ -356,16 +357,16 @@ static void FunctionAreaDialogDraw(HWND hwnd, HDC hdc, FunctionAreaDialogState* 
         -1, &tip, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 
     RECT list = FunctionAreaDialogListRect(hwnd, state);
-    HBRUSH listBg = CreateSolidBrush(RGB(255, 255, 255));
-    FillRect(hdc, &list, listBg);
-    DeleteObject(listBg);
-    HPEN borderPen = CreatePen(PS_SOLID, 1, RGB(226, 226, 226));
-    HGDIOBJ oldPen = SelectObject(hdc, borderPen);
-    HGDIOBJ oldBrush = SelectObject(hdc, GetStockObject(NULL_BRUSH));
-    Rectangle(hdc, list.left, list.top, list.right, list.bottom);
-    SelectObject(hdc, oldBrush);
-    SelectObject(hdc, oldPen);
-    DeleteObject(borderPen);
+    {
+        zencrop::ScopedHBRUSH listBg(CreateSolidBrush(RGB(255, 255, 255)));
+        FillRect(hdc, &list, listBg.get());
+    }
+    {
+        zencrop::ScopedHPEN borderPen(CreatePen(PS_SOLID, 1, RGB(226, 226, 226)));
+        zencrop::ScopedSelectObject selPen(hdc, borderPen.get());
+        zencrop::ScopedSelectObject selBrush(hdc, GetStockObject(NULL_BRUSH));
+        Rectangle(hdc, list.left, list.top, list.right, list.bottom);
+    }
 
     int rowH = FunctionAreaDialogRowHeight(state);
     for (int i = 0; i < (int)state->rows.size(); ++i) {
@@ -375,16 +376,15 @@ static void FunctionAreaDialogDraw(HWND hwnd, HDC hdc, FunctionAreaDialogState* 
         if (rowRc.bottom > list.bottom) rowRc.bottom = list.bottom;
 
         if (i == state->draggingIndex) {
-            HBRUSH dragBrush = CreateSolidBrush(RGB(229, 241, 255));
-            FillRect(hdc, &rowRc, dragBrush);
-            DeleteObject(dragBrush);
+            zencrop::ScopedHBRUSH dragBrush(CreateSolidBrush(RGB(229, 241, 255)));
+            FillRect(hdc, &rowRc, dragBrush.get());
         }
-        HPEN linePen = CreatePen(PS_SOLID, 1, RGB(238, 238, 238));
-        oldPen = SelectObject(hdc, linePen);
-        MoveToEx(hdc, rowRc.left, rowRc.bottom - 1, nullptr);
-        LineTo(hdc, rowRc.right, rowRc.bottom - 1);
-        SelectObject(hdc, oldPen);
-        DeleteObject(linePen);
+        {
+            zencrop::ScopedHPEN linePen(CreatePen(PS_SOLID, 1, RGB(238, 238, 238)));
+            zencrop::ScopedSelectObject selPen(hdc, linePen.get());
+            MoveToEx(hdc, rowRc.left, rowRc.bottom - 1, nullptr);
+            LineTo(hdc, rowRc.right, rowRc.bottom - 1);
+        }
 
         int iconSize = FunctionAreaDialogScale(18, s);
         RECT handleRc = {
@@ -417,16 +417,16 @@ static void FunctionAreaDialogDraw(HWND hwnd, HDC hdc, FunctionAreaDialogState* 
         DrawTextW(hdc, row.meta ? row.meta->title : L"", -1, &nameRc,
             DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 
-        HBRUSH comboBrush = CreateSolidBrush(RGB(247, 247, 247));
-        FillRect(hdc, &comboRc, comboBrush);
-        DeleteObject(comboBrush);
-        HPEN comboPen = CreatePen(PS_SOLID, 1, RGB(211, 211, 211));
-        oldPen = SelectObject(hdc, comboPen);
-        oldBrush = SelectObject(hdc, GetStockObject(NULL_BRUSH));
-        RoundRect(hdc, comboRc.left, comboRc.top, comboRc.right, comboRc.bottom, 4, 4);
-        SelectObject(hdc, oldBrush);
-        SelectObject(hdc, oldPen);
-        DeleteObject(comboPen);
+        {
+            zencrop::ScopedHBRUSH comboBrush(CreateSolidBrush(RGB(247, 247, 247)));
+            FillRect(hdc, &comboRc, comboBrush.get());
+        }
+        {
+            zencrop::ScopedHPEN comboPen(CreatePen(PS_SOLID, 1, RGB(211, 211, 211)));
+            zencrop::ScopedSelectObject selPen(hdc, comboPen.get());
+            zencrop::ScopedSelectObject selBrush(hdc, GetStockObject(NULL_BRUSH));
+            RoundRect(hdc, comboRc.left, comboRc.top, comboRc.right, comboRc.bottom, 4, 4);
+        }
 
         RECT comboText = comboRc;
         comboText.left += FunctionAreaDialogScale(8, s);
@@ -573,21 +573,18 @@ static LRESULT CALLBACK FunctionAreaDialogProc(HWND hwnd, UINT msg, WPARAM wPara
         GetClientRect(hwnd, &client);
         int w = client.right - client.left;
         int h = client.bottom - client.top;
-        HDC mem = w > 0 && h > 0 ? CreateCompatibleDC(hdc) : nullptr;
-        HBITMAP bmp = mem ? CreateCompatibleBitmap(hdc, w, h) : nullptr;
+        zencrop::ScopedDC mem(w > 0 && h > 0 ? CreateCompatibleDC(hdc) : nullptr);
+        zencrop::ScopedHBITMAP bmp(mem ? CreateCompatibleBitmap(hdc, w, h) : nullptr);
         if (mem && bmp) {
-            HGDIOBJ old = SelectObject(mem, bmp);
-            FunctionAreaDialogDraw(hwnd, mem, state);
+            zencrop::ScopedSelectObject old(mem.get(), bmp.get());
+            FunctionAreaDialogDraw(hwnd, mem.get(), state);
             BitBlt(hdc, ps.rcPaint.left, ps.rcPaint.top,
                 ps.rcPaint.right - ps.rcPaint.left,
                 ps.rcPaint.bottom - ps.rcPaint.top,
-                mem, ps.rcPaint.left, ps.rcPaint.top, SRCCOPY);
-            SelectObject(mem, old);
+                mem.get(), ps.rcPaint.left, ps.rcPaint.top, SRCCOPY);
         } else {
             FunctionAreaDialogDraw(hwnd, hdc, state);
         }
-        if (bmp) DeleteObject(bmp);
-        if (mem) DeleteDC(mem);
         EndPaint(hwnd, &ps);
         return 0;
     }

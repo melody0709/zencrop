@@ -1,5 +1,6 @@
 #include "PinnedImageWindow.h"
 #include "ScreenshotUtils.h"
+#include "core/GdiHandles.h"
 #include "Utils.h"
 #include <gdiplus.h>
 #include <windowsx.h>
@@ -125,13 +126,12 @@ bool PinnedImageWindow::LoadSourcePixels() {
     bmi.bmiHeader.biBitCount = 32;
     bmi.bmiHeader.biCompression = BI_RGB;
 
-    HDC hdc = GetDC(nullptr);
+    zencrop::ScopedWindowDC hdc(nullptr, GetDC(nullptr));
     if (!hdc) {
         m_sourcePixels.clear();
         return false;
     }
-    int lines = GetDIBits(hdc, m_bitmap, 0, m_imageHeight, m_sourcePixels.data(), &bmi, DIB_RGB_COLORS);
-    ReleaseDC(nullptr, hdc);
+    int lines = GetDIBits(hdc.get(), m_bitmap, 0, m_imageHeight, m_sourcePixels.data(), &bmi, DIB_RGB_COLORS);
     if (lines != m_imageHeight) {
         m_sourcePixels.clear();
         return false;
@@ -152,14 +152,11 @@ bool PinnedImageWindow::UpdateLayeredSurface() {
     int surfaceH = windowRect.bottom - windowRect.top;
     if (surfaceW <= 0 || surfaceH <= 0) return false;
 
-    HDC screenDc = GetDC(nullptr);
+    zencrop::ScopedWindowDC screenDc(nullptr, GetDC(nullptr));
     if (!screenDc) return false;
 
-    HDC memDc = CreateCompatibleDC(screenDc);
-    if (!memDc) {
-        ReleaseDC(nullptr, screenDc);
-        return false;
-    }
+    zencrop::ScopedDC memDc(CreateCompatibleDC(screenDc.get()));
+    if (!memDc) return false;
 
     BITMAPINFO bmi = {};
     bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
@@ -170,15 +167,10 @@ bool PinnedImageWindow::UpdateLayeredSurface() {
     bmi.bmiHeader.biCompression = BI_RGB;
 
     void* bits = nullptr;
-    HBITMAP surfaceBitmap = CreateDIBSection(screenDc, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0);
-    if (!surfaceBitmap || !bits) {
-        if (surfaceBitmap) DeleteObject(surfaceBitmap);
-        DeleteDC(memDc);
-        ReleaseDC(nullptr, screenDc);
-        return false;
-    }
+    zencrop::ScopedHBITMAP surfaceBitmap(CreateDIBSection(screenDc.get(), &bmi, DIB_RGB_COLORS, &bits, nullptr, 0));
+    if (!surfaceBitmap || !bits) return false;
 
-    HBITMAP oldBitmap = (HBITMAP)SelectObject(memDc, surfaceBitmap);
+    zencrop::ScopedSelectObject oldBitmap(memDc.get(), surfaceBitmap.get());
     std::memset(bits, 0, (size_t)surfaceW * (size_t)surfaceH * sizeof(DWORD));
 
     bool rendered = false;
@@ -237,20 +229,16 @@ bool PinnedImageWindow::UpdateLayeredSurface() {
         BLENDFUNCTION blend = { AC_SRC_OVER, 0, 255, AC_SRC_ALPHA };
         rendered = UpdateLayeredWindow(
             m_window,
-            screenDc,
+            screenDc.get(),
             nullptr,
             &sizeWnd,
-            memDc,
+            memDc.get(),
             &ptSrc,
             0,
             &blend,
             ULW_ALPHA) != FALSE;
     }
 
-    SelectObject(memDc, oldBitmap);
-    DeleteObject(surfaceBitmap);
-    DeleteDC(memDc);
-    ReleaseDC(nullptr, screenDc);
     return rendered;
 }
 

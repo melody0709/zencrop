@@ -1,7 +1,6 @@
 #include "ScreenshotSession.h"
 #include "OcrEngine.h"
 #include "ScreenshotUtils.h"
-#include "Settings.h"
 #include "ocr/LocalRaster.h"
 #include "AppMessages.h"
 #include "screenshot/longshot/LongShotSession.h"

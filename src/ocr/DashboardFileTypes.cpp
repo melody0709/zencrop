@@ -1,5 +1,11 @@
 #include "DashboardFileTypes.h"
-#include "core/WideFormatUtils.h"
+#include "core/WideFormatPrimitives.h"
+#include "core/WideFormatPaths.h"
+#include "core/WideFormatOcr.h"
+#include "core/WidePathUtils.h"
+#include "core/WideCaseOps.h"
+#include "core/WideCompareOps.h"
+#include "core/WideTextOps.h"
 #include "core/WideMarkdownUtils.h"
 #include <cstdio>
 

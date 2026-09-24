@@ -1,6 +1,7 @@
 #pragma once
 
-#include "core/WideFormatUtils.h"
+#include "core/WidePathUtils.h"
+#include "core/WideCompareOps.h"
 
 #include <string>
 

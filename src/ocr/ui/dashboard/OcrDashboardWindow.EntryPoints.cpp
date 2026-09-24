@@ -7,7 +7,9 @@
 #include "AppMessages.h"
 #include "OcrUtils.h"
 #include "Strings.h"
-#include "core/WideFormatUtils.h"
+#include "core/WideFormatPrimitives.h"
+#include "core/WideFormatPaths.h"
+#include "core/WideCompareOps.h"
 #include "image/BitmapCodec.h"
 #include "translation/TranslationCoordinator.h"
 

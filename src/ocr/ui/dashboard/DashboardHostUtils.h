@@ -5,7 +5,9 @@
 #include "ocr/OcrUtils.h"
 #include "ocr/ui/dashboard/DashboardDialogLayout.h"
 #include "DashboardFileTypes.h"
-#include "core/WideFormatUtils.h"
+#include "core/WideColorUtils.h"
+#include "core/WidePathUtils.h"
+#include "core/WideCaseOps.h"
 #include "image/BitmapCodec.h"
 
 #include <atomic>

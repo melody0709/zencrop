@@ -1,8 +1,10 @@
 #include "ScreenshotEditorWindow.h"
+#include "ScreenshotTypes.h"
 #include "ScreenshotUtils.h"
-#include "Settings.h"
+#include "core/Settings.h"
 #include "ocr/LocalRaster.h"
-#include "core/WideFormatUtils.h"
+#include "core/WideFormatLabels.h"
+#include "core/GdiHandles.h"
 #include <commdlg.h>
 #include <shlwapi.h>
 #include <windowsx.h>
@@ -96,10 +98,8 @@ ScreenshotEditorWindow::~ScreenshotEditorWindow() {
     if (m_window && IsWindow(m_window)) {
         DestroyWindow(m_window);
     }
-    if (m_bitmap) {
-        DeleteObject(m_bitmap);
-        m_bitmap = nullptr;
-    }
+    zencrop::ScopedHBITMAP bmp(m_bitmap);
+    m_bitmap = nullptr;
 }
 
 void ScreenshotEditorWindow::CreateControls() {
@@ -145,9 +145,8 @@ void ScreenshotEditorWindow::Paint(HDC hdc) {
     RECT imageRc = rc;
     imageRc.bottom = (std::max)(imageRc.top, rc.bottom - ToolbarHeight);
 
-    HBRUSH bg = CreateSolidBrush(RGB(32, 32, 32));
-    FillRect(hdc, &imageRc, bg);
-    DeleteObject(bg);
+    zencrop::ScopedHBRUSH bg(CreateSolidBrush(RGB(32, 32, 32)));
+    FillRect(hdc, &imageRc, bg.get());
 
     RECT toolbarRc = rc;
     toolbarRc.top = imageRc.bottom;
@@ -163,12 +162,10 @@ void ScreenshotEditorWindow::Paint(HDC hdc) {
     int drawX = imageRc.left + (areaW - drawW) / 2;
     int drawY = imageRc.top + (areaH - drawH) / 2;
 
-    HDC srcDc = CreateCompatibleDC(hdc);
-    HBITMAP old = (HBITMAP)SelectObject(srcDc, m_bitmap);
+    zencrop::ScopedDC srcDc(CreateCompatibleDC(hdc));
+    zencrop::ScopedSelectObject old(srcDc.get(), m_bitmap);
     SetStretchBltMode(hdc, HALFTONE);
-    StretchBlt(hdc, drawX, drawY, drawW, drawH, srcDc, 0, 0, m_imageWidth, m_imageHeight, SRCCOPY);
-    SelectObject(srcDc, old);
-    DeleteDC(srcDc);
+    StretchBlt(hdc, drawX, drawY, drawW, drawH, srcDc.get(), 0, 0, m_imageWidth, m_imageHeight, SRCCOPY);
 }
 
 void ScreenshotEditorWindow::CopyImage() {
@@ -267,23 +264,21 @@ void ScreenshotEditorWindow::QuickSaveImage() {
 }
 
 void ScreenshotEditorWindow::PinImage() {
-    HBITMAP copy = Screenshot::DuplicateBitmap(m_bitmap);
+    zencrop::ScopedHBITMAP copy(Screenshot::DuplicateBitmap(m_bitmap));
     if (!copy) {
         MessageBoxW(m_window, L"Failed to create pinned image.", L"Pin", MB_OK | MB_ICONERROR);
         return;
     }
 
     if (m_onPin) {
-        m_onPin(copy, m_sourceRect);
-    } else {
-        DeleteObject(copy);
+        m_onPin(copy.release(), m_sourceRect);
     }
 }
 
 void ScreenshotEditorWindow::StartCopyOcrText() {
     if (m_ocrInFlight) return;
 
-    HBITMAP copy = Screenshot::DuplicateBitmap(m_bitmap);
+    zencrop::ScopedHBITMAP copy(Screenshot::DuplicateBitmap(m_bitmap));
     if (!copy) {
         MessageBoxW(m_window, L"Failed to prepare image for OCR.", L"Copy OCR Text", MB_OK | MB_ICONERROR);
         return;
@@ -299,7 +294,6 @@ void ScreenshotEditorWindow::StartCopyOcrText() {
     }
     if (!m_ocrEngine ||
         (!m_ocrEngine->IsAvailable() && resolvedEngineMode != L"ppocrv6_onnx")) {
-        DeleteObject(copy);
         m_ocrEngine.reset();
         MessageBoxW(m_window, L"OCR engine is not available.", L"Copy OCR Text", MB_OK | MB_ICONERROR);
         return;
@@ -312,8 +306,10 @@ void ScreenshotEditorWindow::StartCopyOcrText() {
         limits.maxPixelEdge = ocrSettings.localRasterMaxPixelEdge;
         limits.maxMegapixels = ocrSettings.localRasterMaxMegapixels;
         std::wstring rasterError;
-        if (!CanonicalizeLocalRaster(copy, limits, nullptr, &rasterError)) {
-            DeleteObject(copy);
+        HBITMAP rawBmp = copy.release();
+        bool ok = CanonicalizeLocalRaster(rawBmp, limits, nullptr, &rasterError);
+        copy.reset(rawBmp);
+        if (!ok) {
             m_ocrEngine.reset();
             MessageBoxW(m_window, rasterError.c_str(), L"Copy OCR Text", MB_OK | MB_ICONERROR);
             return;
@@ -328,7 +324,7 @@ void ScreenshotEditorWindow::StartCopyOcrText() {
     SetTimer(m_window, TIMER_OCR_TICK, 500, nullptr);
 
     HWND hwnd = m_window;
-    m_ocrEngine->Recognize(copy, [hwnd](OcrOutput result) {
+    m_ocrEngine->Recognize(copy.release(), [hwnd](OcrOutput result) {
         OcrOutput* heapResult = new OcrOutput(result);
         if (!PostMessageW(hwnd, WM_APP_OCR_TEXT_DONE, 0, (LPARAM)heapResult)) {
             delete heapResult;

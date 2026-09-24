@@ -4,7 +4,11 @@
 #include "StartupRegistration.h"
 #include "AlwaysOnTop.h"
 #include "JsonUtils.h"       // TrimString
-#include "core/WideFormatUtils.h" // WideBuildBearerAuthorizationHeader
+#include "core/WideFormatNumbers.h"
+#include "core/WideFormatWin32.h"
+#include "core/WideColorUtils.h"
+#include "core/WideCaseOps.h"
+#include "core/WideTextOps.h"
 #include "HotkeyEdit.h"      // CreateHotkeyEdit, GetHotkeyFromEdit, ClearHotkeyEdit, HasHotkeyConflict
 #include "Strings.h"         // S::xxx localization
 #include "OcrEngine_PaddleOCR_Local.h"

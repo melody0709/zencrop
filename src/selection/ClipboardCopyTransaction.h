@@ -27,7 +27,7 @@ private:
     struct State;
     std::mutex lifecycleMutex_;
     std::shared_ptr<State> state_;
-    std::thread worker_;
+    std::jthread worker_;
 };
 
 } // namespace selection

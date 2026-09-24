@@ -1,7 +1,7 @@
 #include "OcrModelDownloadDialog.h"
+#include "core/ResourceIds.h"
+#include "core/WideFormatNumbers.h"
 
-#include "core/Settings.h"
-#include "core/WideFormatUtils.h"
 #include "ocr/model_download/OcrModelDownloadCatalog.h"
 #include "ocr/model_download/OcrModelDownloadService.h"
 #include "ocr/model_download/OcrModelInstaller.h"
@@ -58,17 +58,15 @@ std::wstring ControlText(HWND dialog, int id)
 
 std::wstring FormatBytes(std::uint64_t bytes)
 {
-    wchar_t buffer[64] = {};
     if (bytes >= 1024ULL * 1024ULL * 1024ULL) {
-        swprintf_s(buffer, L"%.2f GB", bytes / (1024.0 * 1024.0 * 1024.0));
+        return std::format(L"{:.2f} GB", bytes / (1024.0 * 1024.0 * 1024.0));
     } else if (bytes >= 1024ULL * 1024ULL) {
-        swprintf_s(buffer, L"%.1f MB", bytes / (1024.0 * 1024.0));
+        return std::format(L"{:.1f} MB", bytes / (1024.0 * 1024.0));
     } else if (bytes >= 1024ULL) {
-        swprintf_s(buffer, L"%.1f KB", bytes / 1024.0);
+        return std::format(L"{:.1f} KB", bytes / 1024.0);
     } else {
-        swprintf_s(buffer, L"%llu B", static_cast<unsigned long long>(bytes));
+        return std::format(L"{} B", bytes);
     }
-    return buffer;
 }
 
 OcrModelBundleId SelectedBundle(HWND dialog)

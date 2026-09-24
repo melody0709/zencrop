@@ -1,8 +1,8 @@
 #include "LongShotSession.h"
 #include "LongShotExport.h"
 #include "LongShotScrollInjector.h"
-#include "Settings.h"
 #include "Utils.h"
+#include "core/GdiHandles.h"
 #include "screenshot/ToolbarIconRenderer.h"
 #include "screenshot/ScreenshotKeyboardShortcuts.h"
 #include "screenshot/ScreenshotUtils.h"
@@ -11,6 +11,7 @@
 #include <commctrl.h>
 #include <commdlg.h>
 #include <cstring>
+#include <format>
 #include <limits>
 #include <memory>
 #include <mutex>
@@ -293,31 +294,27 @@ bool LongShotSession::ApplyCaptureHoleRegion() {
     hole.bottom = (std::min)(static_cast<LONG>(height), hole.bottom);
     if (hole.right <= hole.left || hole.bottom <= hole.top) return false;
 
-    HRGN visibleRegion = CreateRectRgn(0, 0, width, height);
-    HRGN captureHole = CreateRectRgn(hole.left, hole.top, hole.right, hole.bottom);
+    zencrop::ScopedHRGN visibleRegion(CreateRectRgn(0, 0, width, height));
+    zencrop::ScopedHRGN captureHole(CreateRectRgn(hole.left, hole.top, hole.right, hole.bottom));
     if (!visibleRegion || !captureHole) {
-        if (captureHole) DeleteObject(captureHole);
-        if (visibleRegion) DeleteObject(visibleRegion);
         return false;
     }
     const int combined = CombineRgn(visibleRegion, visibleRegion, captureHole, RGN_DIFF);
-    DeleteObject(captureHole);
     if (combined == ERROR) {
-        DeleteObject(visibleRegion);
         return false;
     }
     // On success the system owns visibleRegion. The HWND now physically does
     // not exist over the selected rectangle: input and desktop capture reach
     // the target directly, while other screenshot tools still see our chrome.
-    if (!SetWindowRgn(m_window, visibleRegion, FALSE)) {
-        DeleteObject(visibleRegion);
+    if (!SetWindowRgn(m_window, visibleRegion.get(), FALSE)) {
         return false;
     }
+    (void)visibleRegion.release();
     return true;
 }
 
 void LongShotSession::ClearPreview() {
-    if (m_preview) DeleteObject(m_preview);
+    zencrop::ScopedHBITMAP prev(m_preview);
     m_preview = nullptr;
     m_previewW = 0;
     m_previewH = 0;
@@ -338,16 +335,15 @@ void LongShotSession::UpdateStitchedPreview() {
         (std::min)(UiScale(448), captureHeight - border * 2));
     int width = 0;
     int height = 0;
-    HBITMAP preview = m_stitcher.Image().RenderPreview(
-        maxWidth, maxHeight, &width, &height);
+    zencrop::ScopedHBITMAP preview(m_stitcher.Image().RenderPreview(
+        maxWidth, maxHeight, &width, &height));
     if (!preview || width <= 0 || height <= 0) {
-        if (preview) DeleteObject(preview);
         ClearPreview();
         return;
     }
 
     ClearPreview();
-    m_preview = preview;
+    m_preview = preview.release();
     m_previewW = width;
     m_previewH = height;
 }
@@ -542,15 +538,13 @@ RECT LongShotSession::ActionsBarRect() const {
 void LongShotSession::UpdateSizeLabel() {
     const int len = m_stitcher.Length();
     const int cross = m_stitcher.Image().CrossSize();
-    wchar_t buf[64];
     if (m_dir == Direction::Vertical) {
-        swprintf_s(buf, L"%d x %d", cross > 0 ? cross : (m_capture.right - m_capture.left),
+        m_sizeText = std::format(L"{} x {}", cross > 0 ? cross : (m_capture.right - m_capture.left),
             len > 0 ? len : (m_capture.bottom - m_capture.top));
     } else {
-        swprintf_s(buf, L"%d x %d", len > 0 ? len : (m_capture.right - m_capture.left),
+        m_sizeText = std::format(L"{} x {}", len > 0 ? len : (m_capture.right - m_capture.left),
             cross > 0 ? cross : (m_capture.bottom - m_capture.top));
     }
-    m_sizeText = buf;
 }
 
 bool LongShotSession::EnsureMaskSurface(int width, int height) {
@@ -568,25 +562,20 @@ bool LongShotSession::EnsureMaskSurface(int width, int height) {
     bmi.bmiHeader.biBitCount = 32;
     bmi.bmiHeader.biCompression = BI_RGB;
 
-    HDC screen = GetDC(nullptr);
+    zencrop::ScopedWindowDC screen(nullptr, GetDC(nullptr));
     if (!screen) return false;
-    HDC dc = CreateCompatibleDC(screen);
+    zencrop::ScopedDC dc(CreateCompatibleDC(screen));
     void* bits = nullptr;
-    HBITMAP dib = CreateDIBSection(screen, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0);
-    ReleaseDC(nullptr, screen);
+    zencrop::ScopedHBITMAP dib(CreateDIBSection(screen, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0));
     if (!dc || !dib || !bits) {
-        if (dib) DeleteObject(dib);
-        if (dc) DeleteDC(dc);
         return false;
     }
     HGDIOBJ old = SelectObject(dc, dib);
     if (!old || old == HGDI_ERROR) {
-        DeleteObject(dib);
-        DeleteDC(dc);
         return false;
     }
-    m_maskDc = dc;
-    m_maskDib = dib;
+    m_maskDc = std::move(dc);
+    m_maskDib = std::move(dib);
     m_maskOld = old;
     m_maskBits = bits;
     m_maskW = width;
@@ -595,33 +584,25 @@ bool LongShotSession::EnsureMaskSurface(int width, int height) {
 }
 
 void LongShotSession::ReleaseMaskSurface() {
-    if (m_maskDc && m_maskOld) SelectObject(m_maskDc, m_maskOld);
-    if (m_maskDib) DeleteObject(m_maskDib);
-    if (m_maskDc) DeleteDC(m_maskDc);
-    if (m_maskFont) DeleteObject(m_maskFont);
-    m_maskDc = nullptr;
-    m_maskDib = nullptr;
+    if (m_maskDc && m_maskOld) SelectObject(m_maskDc.get(), m_maskOld);
     m_maskOld = nullptr;
+    m_maskDib.reset();
+    m_maskDc.reset();
+    m_maskFont.reset();
     m_maskBits = nullptr;
     m_maskW = 0;
     m_maskH = 0;
-    m_maskFont = nullptr;
     m_maskFontPx = 0;
 }
 
 HFONT LongShotSession::EnsureMaskFont(int pixelHeight) {
     if (pixelHeight <= 0) return nullptr;
-    if (m_maskFont && m_maskFontPx == pixelHeight) return m_maskFont;
-    if (m_maskFont) {
-        DeleteObject(m_maskFont);
-        m_maskFont = nullptr;
-        m_maskFontPx = 0;
-    }
-    m_maskFont = CreateFontW(-pixelHeight, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+    if (m_maskFont && m_maskFontPx == pixelHeight) return m_maskFont.get();
+    m_maskFont.reset(CreateFontW(-pixelHeight, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
         DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-        CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
-    if (m_maskFont) m_maskFontPx = pixelHeight;
-    return m_maskFont;
+        CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI"));
+    m_maskFontPx = m_maskFont ? pixelHeight : 0;
+    return m_maskFont.get();
 }
 
 void LongShotSession::UpdateLayeredMask() {
@@ -767,15 +748,11 @@ void LongShotSession::UpdateLayeredMask() {
         };
 
         fillSurfaceRect({ pl, pt, pr, pb }, 0xff101010u);
-        HDC previewDc = CreateCompatibleDC(mem);
+        zencrop::ScopedDC previewDc(CreateCompatibleDC(mem));
         if (previewDc) {
-            HGDIOBJ oldPreview = SelectObject(previewDc, m_preview);
-            if (oldPreview && oldPreview != HGDI_ERROR) {
-                BitBlt(mem, content.left, content.top, m_previewW, m_previewH,
-                    previewDc, 0, 0, SRCCOPY);
-                SelectObject(previewDc, oldPreview);
-            }
-            DeleteDC(previewDc);
+            zencrop::ScopedSelectObject selectPreview(previewDc, m_preview);
+            BitBlt(mem, content.left, content.top, m_previewW, m_previewH,
+                previewDc, 0, 0, SRCCOPY);
         }
         // GDI does not promise to preserve alpha through BitBlt into a layered
         // DIB. Keep the complete panel opaque before UpdateLayeredWindow.
@@ -847,10 +824,9 @@ void LongShotSession::UpdateLayeredMask() {
     blend.BlendOp = AC_SRC_OVER;
     blend.SourceConstantAlpha = 255;
     blend.AlphaFormat = AC_SRC_ALPHA;
-    HDC screen = GetDC(nullptr);
+    zencrop::ScopedWindowDC screen(nullptr, GetDC(nullptr));
     if (screen) {
         UpdateLayeredWindow(m_window, screen, &ptDst, &size, mem, &ptSrc, 0, &blend, ULW_ALPHA);
-        ReleaseDC(nullptr, screen);
     }
 }
 
@@ -1079,20 +1055,19 @@ void LongShotSession::DoEdit() {
     if (m_saveBusy.load()) return;
     if (m_stitcher.Length() <= 0) return;
     if (m_running) StopCapture(false);
-    HBITMAP full = m_stitcher.Image().Materialize();
+    zencrop::ScopedHBITMAP full(m_stitcher.Image().Materialize());
     if (!full) {
         ShowModalMessage(L"Failed to build long image for edit.", L"Long screenshot",
             MB_OK | MB_ICONERROR);
         return;
     }
     if (!m_hostCallbacks.onEdit) {
-        DeleteObject(full);
         ShowModalMessage(L"Long screenshot editing is unavailable.", L"Long screenshot",
             MB_OK | MB_ICONERROR);
         return;
     }
     // ScreenshotSession owns the editor and receives bitmap ownership.
-    m_hostCallbacks.onEdit(full, m_capture);
+    m_hostCallbacks.onEdit(full.release(), m_capture);
     Close();
 }
 
@@ -1426,8 +1401,9 @@ void LongShotSession::DoSaveSuperLongAsync(std::wstring path, ScreenshotFormat f
     }
     SetSaveProgressUi(10);
     try {
-        m_saveThread = std::thread([this, path = std::move(path), fmt, jpegQuality, sessionHwnd]() mutable {
-            auto postProgress = [this, sessionHwnd](int pct) {
+        m_saveThread = std::jthread([this, path = std::move(path), fmt, jpegQuality, sessionHwnd](std::stop_token st) mutable {
+            auto postProgress = [this, sessionHwnd, &st](int pct) {
+                if (st.stop_requested()) m_saveCancel = true;
                 m_saveProgress = pct;
                 if (sessionHwnd) {
                     // WM_APP+61: wParam = percent 0..100 (UI-thread update).
@@ -1569,7 +1545,7 @@ void LongShotSession::DoSave(bool quick) {
         return;
     }
 
-    HBITMAP full = m_stitcher.Image().Materialize();
+    zencrop::ScopedHBITMAP full(m_stitcher.Image().Materialize());
     if (!full) {
         ShowModalMessage(L"Failed to build long image.", L"Long screenshot",
             MB_OK | MB_ICONERROR);
@@ -1578,7 +1554,6 @@ void LongShotSession::DoSave(bool quick) {
     std::wstring error;
     const bool ok = Screenshot::SaveBitmapToFile(
         full, path, fmt, settings.jpegQuality, &error, false);
-    DeleteObject(full);
     if (!ok) {
         ShowModalMessage(error.c_str(), L"Save Long Screenshot", MB_OK | MB_ICONERROR);
         return;
@@ -1596,30 +1571,27 @@ void LongShotSession::DoPin() {
             L"Pin", MB_OK | MB_ICONINFORMATION);
         return;
     }
-    HBITMAP full = m_stitcher.Image().Materialize();
+    zencrop::ScopedHBITMAP full(m_stitcher.Image().Materialize());
     if (!full) return;
     if (!m_hostCallbacks.onPin) {
-        DeleteObject(full);
         ShowModalMessage(L"Long screenshot pinning is unavailable.", L"Pin",
             MB_OK | MB_ICONERROR);
         return;
     }
     // ScreenshotSession owns the PinnedImageWindow and bitmap.
-    m_hostCallbacks.onPin(full, m_capture);
+    m_hostCallbacks.onPin(full.release(), m_capture);
     Close();
 }
 
 void LongShotSession::DoCopyAndClose() {
     if (m_saveBusy.load() || !m_exportEnabled || m_stitcher.Length() <= 0) return;
-    HBITMAP full = m_stitcher.Image().Materialize();
+    zencrop::ScopedHBITMAP full(m_stitcher.Image().Materialize());
     if (!full) return;
     if (!Screenshot::CopyBitmapToClipboard(m_window, full, false)) {
         ShowModalMessage(L"Failed to copy image.", L"Long screenshot",
             MB_OK | MB_ICONERROR);
-        DeleteObject(full);
         return;
     }
-    DeleteObject(full);
     Close();
 }
 
@@ -1808,7 +1780,10 @@ LRESULT LongShotSession::HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARA
             m_saveCompletionTimerId = 0;
         }
         UnregisterSessionHotkeys(hwnd);
-        if (m_saveThread.joinable()) m_saveCancel = true;
+        if (m_saveThread.joinable()) {
+            m_saveThread.request_stop();
+            m_saveCancel = true;
+        }
         m_window = nullptr;
         m_finished = true;
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
@@ -1968,10 +1943,9 @@ void LongShotSession::SetSaveProgressUi(int percent) {
     if (percent > 100) percent = 100;
     m_saveProgress = percent;
     if (!m_progressWnd || !IsWindow(m_progressWnd)) return;
-    wchar_t buf[64];
-    swprintf_s(buf, L"Saving long screenshot… %d%%", percent);
+    const std::wstring text = std::format(L"Saving long screenshot… {}%", percent);
     if (HWND label = GetDlgItem(m_progressWnd, 1001)) {
-        SetWindowTextW(label, buf);
+        SetWindowTextW(label, text.c_str());
     }
     if (m_progressBar && IsWindow(m_progressBar)) {
         SendMessageW(m_progressBar, PBM_SETPOS, static_cast<WPARAM>(percent), 0);
@@ -1985,10 +1959,7 @@ void LongShotSession::DestroyProgressWindow() {
     m_progressWnd = nullptr;
     m_progressCancelBtn = nullptr;
     m_progressBar = nullptr;
-    if (m_progressFont) {
-        DeleteObject(m_progressFont);
-        m_progressFont = nullptr;
-    }
+    m_progressFont.reset();
 }
 
 void LongShotSession::CreateProgressWindow() {
@@ -2029,16 +2000,16 @@ void LongShotSession::CreateProgressWindow() {
     const int clientW = clientRc.right - clientRc.left;
     const int clientH = clientRc.bottom - clientRc.top;
 
-    m_progressFont = CreateFontW(-UiScale(13), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+    m_progressFont.reset(CreateFontW(-UiScale(13), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
         DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-        CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
+        CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI"));
 
     HWND label = CreateWindowExW(0, L"STATIC", L"Saving long screenshot… 0%",
         WS_CHILD | WS_VISIBLE | SS_LEFT,
         pad, pad, clientW - pad * 2, labelH,
         m_progressWnd, (HMENU)1001, GetModuleHandleW(nullptr), nullptr);
     if (label && m_progressFont) {
-        SendMessageW(label, WM_SETFONT, (WPARAM)m_progressFont, TRUE);
+        SendMessageW(label, WM_SETFONT, (WPARAM)m_progressFont.get(), TRUE);
     }
 
     m_progressBar = CreateWindowExW(0, PROGRESS_CLASSW, nullptr,
@@ -2060,7 +2031,7 @@ void LongShotSession::CreateProgressWindow() {
         btnW, btnH,
         m_progressWnd, (HMENU)1002, GetModuleHandleW(nullptr), nullptr);
     if (m_progressCancelBtn && m_progressFont) {
-        SendMessageW(m_progressCancelBtn, WM_SETFONT, (WPARAM)m_progressFont, TRUE);
+        SendMessageW(m_progressCancelBtn, WM_SETFONT, (WPARAM)m_progressFont.get(), TRUE);
     }
 
     ShowWindow(m_progressWnd, SW_SHOW);

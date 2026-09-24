@@ -1,4 +1,5 @@
 #include "BitmapUtils.h"
+#include "core/GdiHandles.h"
 #include <windows.h>
 #include <gdiplus.h>
 #include <algorithm>
@@ -19,9 +20,8 @@ void GetBitmapBits32(HBITMAP hBitmap, int& width, int& height, std::vector<uint8
     bi.bmiHeader.biBitCount = 32;
     bi.bmiHeader.biCompression = BI_RGB;
 
-    HDC hDC = GetDC(nullptr);
-    GetDIBits(hDC, hBitmap, 0, height, pixels.data(), &bi, DIB_RGB_COLORS);
-    ReleaseDC(nullptr, hDC);
+    zencrop::ScopedWindowDC hDC(nullptr, GetDC(nullptr));
+    GetDIBits(hDC.get(), hBitmap, 0, height, pixels.data(), &bi, DIB_RGB_COLORS);
 }
 
 std::vector<unsigned char> DecodeBase64Image(const std::string& base64Data) {
@@ -145,21 +145,16 @@ HBITMAP CropBitmap(HBITMAP hSrc, RECT rect) {
     int h = rect.bottom - rect.top;
     if (w <= 0 || h <= 0) return nullptr;
 
-    HDC hSrcDC = GetDC(nullptr);
-    HDC hSrcMem = CreateCompatibleDC(hSrcDC);
-    HBITMAP hOldSrc = (HBITMAP)SelectObject(hSrcMem, hSrc);
+    zencrop::ScopedWindowDC hSrcDC(nullptr, GetDC(nullptr));
+    zencrop::ScopedDC hSrcMem(CreateCompatibleDC(hSrcDC.get()));
+    zencrop::ScopedSelectObject selectSrc(hSrcMem.get(), hSrc);
 
-    HDC hDstMem = CreateCompatibleDC(hSrcDC);
-    HBITMAP hDstBmp = CreateCompatibleBitmap(hSrcDC, w, h);
-    HBITMAP hOldDst = (HBITMAP)SelectObject(hDstMem, hDstBmp);
+    zencrop::ScopedDC hDstMem(CreateCompatibleDC(hSrcDC.get()));
+    HBITMAP hDstBmp = CreateCompatibleBitmap(hSrcDC.get(), w, h);
+    if (!hDstBmp) return nullptr;
+    zencrop::ScopedSelectObject selectDst(hDstMem.get(), hDstBmp);
 
-    BitBlt(hDstMem, 0, 0, w, h, hSrcMem, rect.left, rect.top, SRCCOPY);
-
-    SelectObject(hDstMem, hOldDst);
-    SelectObject(hSrcMem, hOldSrc);
-    DeleteDC(hDstMem);
-    DeleteDC(hSrcMem);
-    ReleaseDC(nullptr, hSrcDC);
+    BitBlt(hDstMem.get(), 0, 0, w, h, hSrcMem.get(), rect.left, rect.top, SRCCOPY);
 
     return hDstBmp;
 }

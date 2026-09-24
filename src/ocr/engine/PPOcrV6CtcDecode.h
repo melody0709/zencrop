@@ -20,7 +20,7 @@
 #include <string>
 #include <vector>
 
-#include "core/WideFormatUtils.h"
+#include "core/WideFormatNumbers.h"
 
 namespace PPOcrV6Ctc {
 

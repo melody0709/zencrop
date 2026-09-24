@@ -11,7 +11,14 @@
 #include <windows.h>
 #include "ocr/OcrUtils.h"
 #include "ocr/batch/BatchOcrTypes.h"
-#include "core/WideFormatUtils.h"
+#include "core/WideFormatPrimitives.h"
+#include "core/WideFormatNumbers.h"
+#include "core/WideFormatLabels.h"
+#include "core/WideFormatPaths.h"
+#include "core/WideFormatOcr.h"
+#include "core/WidePathUtils.h"
+#include "core/WideCaseOps.h"
+#include "core/WideCompareOps.h"
 
 enum class DashboardSourceKind {
     Capture,

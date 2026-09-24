@@ -12,7 +12,9 @@
 #include <cstring>
 #include <cwctype>
 #include <limits>
-#include "core/WideFormatUtils.h"
+#include "core/WideFormatPrimitives.h"
+#include "core/WideCaseOps.h"
+#include "core/WideCompareOps.h"
 
 namespace {
 

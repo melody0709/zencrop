@@ -24,7 +24,11 @@
 #include "screenshot/ScreenshotUtils.h"
 #include "selection/SelectionTranslationController.h"
 #include "core/WideJsonUtils.h"
-#include "core/WideFormatUtils.h"
+#include "core/WideFormatPrimitives.h"
+#include "core/WideFormatNumbers.h"
+#include "core/WideFormatPaths.h"
+#include "core/WideCompareOps.h"
+#include "core/WideTextOps.h"
 #include "core/NarrowStringUtils.h"
 #include "core/OcrModelRegistry.h"
 #include <shellapi.h>

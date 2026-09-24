@@ -187,14 +187,12 @@ HFONT DefaultFont(UINT dpi) {
 }
 
 HFONT CompactDefaultFont(UINT dpi) {
-    HFONT base = DefaultFont(dpi);
+    zencrop::ScopedHFONT base(DefaultFont(dpi));
     if (!base) return nullptr;
     LOGFONTW logFont = {};
-    if (GetObjectW(base, sizeof(logFont), &logFont) <= 0) {
-        DeleteObject(base);
+    if (GetObjectW(base.get(), sizeof(logFont), &logFont) <= 0) {
         return nullptr;
     }
-    DeleteObject(base);
 
     const int step = ScaleForDpi(1, dpi);
     if (logFont.lfHeight < 0) {
@@ -438,9 +436,8 @@ void DrawCompactPopupItem(const DRAWITEMSTRUCT& draw, HFONT font, UINT dpi) {
     const COLORREF background = GetSysColor(selected ? COLOR_HIGHLIGHT : COLOR_MENU);
     const COLORREF foreground = GetSysColor(disabled
         ? COLOR_GRAYTEXT : (selected ? COLOR_HIGHLIGHTTEXT : COLOR_MENUTEXT));
-    HBRUSH brush = CreateSolidBrush(background);
-    FillRect(draw.hDC, &draw.rcItem, brush);
-    DeleteObject(brush);
+    zencrop::ScopedHBRUSH brush(CreateSolidBrush(background));
+    FillRect(draw.hDC, &draw.rcItem, brush.get());
 
     RECT text = draw.rcItem;
     const int padding = ScaleForDpi(12, dpi);
@@ -457,10 +454,10 @@ void DrawCompactPopupItem(const DRAWITEMSTRUCT& draw, HFONT font, UINT dpi) {
 void FillRoundedRect(HDC hdc, const RECT& rect, int radius,
                      COLORREF fill, COLORREF border) {
     if (rect.right <= rect.left || rect.bottom <= rect.top) return;
-    HBRUSH brush = CreateSolidBrush(fill);
-    HPEN pen = CreatePen(PS_SOLID, 1, border);
-    HGDIOBJ oldBrush = SelectObject(hdc, brush);
-    HGDIOBJ oldPen = SelectObject(hdc, pen);
+    zencrop::ScopedHBRUSH brush(CreateSolidBrush(fill));
+    zencrop::ScopedHPEN pen(CreatePen(PS_SOLID, 1, border));
+    zencrop::ScopedSelectObject selectBrush(hdc, brush.get());
+    zencrop::ScopedSelectObject selectPen(hdc, pen.get());
     RoundRect(hdc, rect.left, rect.top, rect.right, rect.bottom,
         radius * 2, radius * 2);
 
@@ -478,10 +475,6 @@ void FillRoundedRect(HDC hdc, const RECT& rect, int radius,
     LineTo(hdc, rect.left, rect.bottom - edgeRadius - 1);
     MoveToEx(hdc, rect.right - 1, rect.top + edgeRadius, nullptr);
     LineTo(hdc, rect.right - 1, rect.bottom - edgeRadius - 1);
-    SelectObject(hdc, oldPen);
-    SelectObject(hdc, oldBrush);
-    DeleteObject(pen);
-    DeleteObject(brush);
 }
 
 bool PointInChild(HWND parent, HWND child, POINT point) {
@@ -1012,26 +1005,11 @@ TranslationResultWindow::~TranslationResultWindow() {
     // messages have no receiver; drain them from this UI thread as the final
     // ownership boundary.
     drainAsyncErrors(nullptr);
-    if (font_) {
-        DeleteObject(font_);
-        font_ = nullptr;
-    }
-    if (compactFont_) {
-        DeleteObject(compactFont_);
-        compactFont_ = nullptr;
-    }
-    if (titleFont_) {
-        DeleteObject(titleFont_);
-        titleFont_ = nullptr;
-    }
-    if (textFont_) {
-        DeleteObject(textFont_);
-        textFont_ = nullptr;
-    }
-    if (sourceTextFont_) {
-        DeleteObject(sourceTextFont_);
-        sourceTextFont_ = nullptr;
-    }
+    font_.reset();
+    compactFont_.reset();
+    titleFont_.reset();
+    textFont_.reset();
+    sourceTextFont_.reset();
 }
 
 void TranslationResultWindow::ApplyDarkWindowChrome() {
@@ -1047,19 +1025,19 @@ void TranslationResultWindow::ApplyDarkWindowChrome() {
 }
 
 void TranslationResultWindow::CreateControls(const TranslationRequest& request) {
-    font_ = DefaultFont(LayoutDpi());
-    compactFont_ = CompactDefaultFont(LayoutDpi());
-    titleFont_ = TitleFont(LayoutDpi());
+    font_.reset(DefaultFont(LayoutDpi()));
+    compactFont_.reset(CompactDefaultFont(LayoutDpi()));
+    titleFont_.reset(TitleFont(LayoutDpi()));
     textFontSize_ = (std::clamp)(LoadOcrSettings().ocrFontSize, 8, 32);
-    textFont_ = TextFont(textFontSize_, LayoutDpi());
-    sourceTextFont_ = TextFont(sourceEditFontSize_, LayoutDpi());
+    textFont_.reset(TextFont(textFontSize_, LayoutDpi()));
+    sourceTextFont_.reset(TextFont(sourceEditFontSize_, LayoutDpi()));
     auto create = [&](DWORD exStyle, const wchar_t* cls, const wchar_t* text,
                       DWORD style, int id) {
         HWND control = CreateWindowExW(exStyle, cls, text, style,
             0, 0, 0, 0, window_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)),
             GetModuleHandleW(nullptr), nullptr);
         if (control && font_) {
-            SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(font_), TRUE);
+            SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(font_.get()), TRUE);
         }
         return control;
     };
@@ -1090,7 +1068,7 @@ void TranslationResultWindow::CreateControls(const TranslationRequest& request) 
                          providerCombo_}) {
         if (control && compactFont_) {
             SendMessageW(control, WM_SETFONT,
-                reinterpret_cast<WPARAM>(compactFont_), TRUE);
+                reinterpret_cast<WPARAM>(compactFont_.get()), TRUE);
         }
     }
 
@@ -1108,10 +1086,10 @@ void TranslationResultWindow::CreateControls(const TranslationRequest& request) 
     if (textFont_) {
         if (sourceTextFont_) {
             SendMessageW(sourceEdit_, WM_SETFONT,
-                reinterpret_cast<WPARAM>(sourceTextFont_), TRUE);
+                reinterpret_cast<WPARAM>(sourceTextFont_.get()), TRUE);
         }
         SendMessageW(translationEdit_, WM_SETFONT,
-            reinterpret_cast<WPARAM>(textFont_), TRUE);
+            reinterpret_cast<WPARAM>(textFont_.get()), TRUE);
     }
     ShowWindow(translationElapsedLabel_, SW_HIDE);
 
@@ -1148,7 +1126,7 @@ void TranslationResultWindow::CreateControls(const TranslationRequest& request) 
                           targetCombo_, providerCombo_, copySourceButton_, copyTranslationButton_,
                           sourceEditorCancelButton_, sourceEditorSaveButton_, recognizeButton_,
                           retranslateButton_, cancelButton_, pinButton_,
-                         sourceModeButton_, minimizeButton_, closeButton_}) {
+                          sourceModeButton_, minimizeButton_, closeButton_}) {
         if (control) {
             SetWindowSubclass(control, TranslationChildKeyboardProc,
                 kTranslationChildKeyboardSubclass, 0);
@@ -1156,7 +1134,7 @@ void TranslationResultWindow::CreateControls(const TranslationRequest& request) 
     }
     if (sourceModeButton_ && compactFont_) {
         SendMessageW(sourceModeButton_, WM_SETFONT,
-            reinterpret_cast<WPARAM>(compactFont_), TRUE);
+            reinterpret_cast<WPARAM>(compactFont_.get()), TRUE);
     }
     UpdatePinAccessibleState();
     pinToolTip_ = CreateWindowExW(WS_EX_TOPMOST, TOOLTIPS_CLASSW, nullptr,
@@ -2452,34 +2430,24 @@ void TranslationResultWindow::HandleChildKey(HWND child, WPARAM key) {
 }
 
 void TranslationResultWindow::RefreshFontForLayoutDpi() {
-    HFONT replacement = DefaultFont(LayoutDpi());
-    HFONT replacementCompact = CompactDefaultFont(LayoutDpi());
-    HFONT replacementTitle = TitleFont(LayoutDpi());
-    HFONT replacementText = TextFont(textFontSize_, LayoutDpi());
-    HFONT replacementSourceText = TextFont(sourceEditFontSize_, LayoutDpi());
+    zencrop::ScopedHFONT replacement(DefaultFont(LayoutDpi()));
+    zencrop::ScopedHFONT replacementCompact(CompactDefaultFont(LayoutDpi()));
+    zencrop::ScopedHFONT replacementTitle(TitleFont(LayoutDpi()));
+    zencrop::ScopedHFONT replacementText(TextFont(textFontSize_, LayoutDpi()));
+    zencrop::ScopedHFONT replacementSourceText(TextFont(sourceEditFontSize_, LayoutDpi()));
     if (!replacement || !replacementCompact || !replacementTitle || !replacementText ||
         !replacementSourceText) {
-        if (replacement) DeleteObject(replacement);
-        if (replacementCompact) DeleteObject(replacementCompact);
-        if (replacementTitle) DeleteObject(replacementTitle);
-        if (replacementText) DeleteObject(replacementText);
-        if (replacementSourceText) DeleteObject(replacementSourceText);
         return;
     }
-    HFONT previous = font_;
-    HFONT previousCompact = compactFont_;
-    HFONT previousTitle = titleFont_;
-    HFONT previousText = textFont_;
-    HFONT previousSourceText = sourceTextFont_;
-    font_ = replacement;
-    compactFont_ = replacementCompact;
-    titleFont_ = replacementTitle;
-    textFont_ = replacementText;
-    sourceTextFont_ = replacementSourceText;
+    font_ = std::move(replacement);
+    compactFont_ = std::move(replacementCompact);
+    titleFont_ = std::move(replacementTitle);
+    textFont_ = std::move(replacementText);
+    sourceTextFont_ = std::move(replacementSourceText);
     EnumChildWindows(window_, [](HWND child, LPARAM parameter) {
         SendMessageW(child, WM_SETFONT, static_cast<WPARAM>(parameter), TRUE);
         return TRUE;
-    }, reinterpret_cast<LPARAM>(font_));
+    }, reinterpret_cast<LPARAM>(font_.get()));
     // Must stay in sync with the compact-font list in CreateControls(): a control
     // painted with compactFont_ but measured with font_ would be laid out too
     // narrow (the provider combo and the source-mode button were the ones missing
@@ -2489,11 +2457,11 @@ void TranslationResultWindow::RefreshFontForLayoutDpi() {
                          providerCombo_, sourceModeButton_}) {
         if (control) {
             SendMessageW(control, WM_SETFONT,
-                reinterpret_cast<WPARAM>(compactFont_), TRUE);
+                reinterpret_cast<WPARAM>(compactFont_.get()), TRUE);
         }
     }
-    if (sourceEdit_) SendMessageW(sourceEdit_, WM_SETFONT, reinterpret_cast<WPARAM>(sourceTextFont_), TRUE);
-    if (translationEdit_) SendMessageW(translationEdit_, WM_SETFONT, reinterpret_cast<WPARAM>(textFont_), TRUE);
+    if (sourceEdit_) SendMessageW(sourceEdit_, WM_SETFONT, reinterpret_cast<WPARAM>(sourceTextFont_.get()), TRUE);
+    if (translationEdit_) SendMessageW(translationEdit_, WM_SETFONT, reinterpret_cast<WPARAM>(textFont_.get()), TRUE);
     const int editMargin = ScaleForDpi(kTranslationTextEditMargin, LayoutDpi());
     if (sourceEdit_) {
         SendMessageW(sourceEdit_, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN,
@@ -2503,11 +2471,6 @@ void TranslationResultWindow::RefreshFontForLayoutDpi() {
         SendMessageW(translationEdit_, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN,
             MAKELPARAM(editMargin, editMargin));
     }
-    if (previous) DeleteObject(previous);
-    if (previousCompact) DeleteObject(previousCompact);
-    if (previousTitle) DeleteObject(previousTitle);
-    if (previousText) DeleteObject(previousText);
-    if (previousSourceText) DeleteObject(previousSourceText);
 }
 
 void TranslationResultWindow::AdjustSourceEditFontSize(int step, bool reset) {
@@ -2516,16 +2479,14 @@ void TranslationResultWindow::AdjustSourceEditFontSize(int step, bool reset) {
         : (std::clamp)(sourceEditFontSize_ + step,
             kTranslationSourceFontSizeMin, kTranslationSourceFontSizeMax);
     if (next == sourceEditFontSize_) return;
-    HFONT replacement = TextFont(next, LayoutDpi());
+    zencrop::ScopedHFONT replacement(TextFont(next, LayoutDpi()));
     if (!replacement) return;
-    HFONT previous = sourceTextFont_;
-    sourceTextFont_ = replacement;
+    sourceTextFont_ = std::move(replacement);
     sourceEditFontSize_ = next;
     if (sourceEdit_) {
         SendMessageW(sourceEdit_, WM_SETFONT,
-            reinterpret_cast<WPARAM>(sourceTextFont_), TRUE);
+            reinterpret_cast<WPARAM>(sourceTextFont_.get()), TRUE);
     }
-    if (previous) DeleteObject(previous);
     ResizeToAutomaticWindowSize();
 }
 
@@ -3127,9 +3088,8 @@ void TranslationResultWindow::Paint() {
     const int titleTop = ScaleForDpi(8, dpi);
     const int titleHeight = ScaleForDpi(24, dpi);
 
-    HBRUSH background = CreateSolidBrush(kWindowBackground);
-    FillRect(hdc, &client, background);
-    DeleteObject(background);
+    zencrop::ScopedHBRUSH background(CreateSolidBrush(kWindowBackground));
+    FillRect(hdc, &client, background.get());
 
     if (showSourceText_ && sourceCardRect_.right > sourceCardRect_.left) {
         FillRoundedRect(hdc, sourceCardRect_, ScaleForDpi(14, dpi),
@@ -3143,19 +3103,16 @@ void TranslationResultWindow::Paint() {
         const int lineY = sourceSplitterRect_.top +
             (sourceSplitterRect_.bottom - sourceSplitterRect_.top) / 2;
         const int lineInset = ScaleForDpi(8, dpi);
-        HPEN splitterPen = CreatePen(PS_SOLID, 1,
-            sourceSplitterDragging_ || sourceSplitterHot_ ? kAccent : kCardBorder);
-        HGDIOBJ previousPen = SelectObject(hdc, splitterPen);
+        zencrop::ScopedHPEN splitterPen(CreatePen(PS_SOLID, 1,
+            sourceSplitterDragging_ || sourceSplitterHot_ ? kAccent : kCardBorder));
+        zencrop::ScopedSelectObject selectPen(hdc, splitterPen.get());
         MoveToEx(hdc, sourceSplitterRect_.left + lineInset, lineY, nullptr);
         LineTo(hdc, sourceSplitterRect_.right - lineInset, lineY);
-        SelectObject(hdc, previousPen);
-        DeleteObject(splitterPen);
     }
 
     if (showWindowBorder_) {
-        HBRUSH border = CreateSolidBrush(kCardBorder);
-        FrameRect(hdc, &client, border);
-        DeleteObject(border);
+        zencrop::ScopedHBRUSH border(CreateSolidBrush(kCardBorder));
+        FrameRect(hdc, &client, border.get());
     }
 
     if (!compactHeader) {
@@ -3217,9 +3174,8 @@ void TranslationResultWindow::DrawOwnerDrawControl(const DRAWITEMSTRUCT& draw) {
     const int radius = ScaleForDpi(7, dpi);
 
     if (id == kShowSource) {
-        HBRUSH backgroundBrush = CreateSolidBrush(kWindowBackground);
-        FillRect(draw.hDC, &draw.rcItem, backgroundBrush);
-        DeleteObject(backgroundBrush);
+        zencrop::ScopedHBRUSH backgroundBrush(CreateSolidBrush(kWindowBackground));
+        FillRect(draw.hDC, &draw.rcItem, backgroundBrush.get());
         const int box = ScaleForDpi(16, dpi);
         const int left = draw.rcItem.left;
         const int top = draw.rcItem.top +
@@ -3231,7 +3187,7 @@ void TranslationResultWindow::DrawOwnerDrawControl(const DRAWITEMSTRUCT& draw) {
         SetBkMode(draw.hDC, TRANSPARENT);
         SetTextColor(draw.hDC, showSourceText_ ? kTextPrimary : kTextMuted);
         if (showSourceText_) {
-            HFONT old = font_ ? static_cast<HFONT>(SelectObject(draw.hDC, font_)) : nullptr;
+            HFONT old = font_ ? static_cast<HFONT>(SelectObject(draw.hDC, font_.get())) : nullptr;
             DrawTextW(draw.hDC, L"\u2713", -1, &check, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
             if (old) SelectObject(draw.hDC, old);
         }
@@ -3255,9 +3211,8 @@ void TranslationResultWindow::DrawOwnerDrawControl(const DRAWITEMSTRUCT& draw) {
         const COLORREF background = pressed ? kControlPressed : hot ? kControlHover : kControlBackground;
         const COLORREF border = disabled ? kControlBackground :
             (pressed ? kControlBorderPressed : hot ? kControlBorderHover : kControlBorder);
-        HBRUSH underlay = CreateSolidBrush(kWindowBackground);
-        FillRect(draw.hDC, &draw.rcItem, underlay);
-        DeleteObject(underlay);
+        zencrop::ScopedHBRUSH underlay(CreateSolidBrush(kWindowBackground));
+        FillRect(draw.hDC, &draw.rcItem, underlay.get());
         FillRoundedRect(draw.hDC, draw.rcItem, radius, background, border);
         wchar_t label[128] = {};
         GetWindowTextW(draw.hwndItem, label, static_cast<int>(std::size(label)));
@@ -3300,13 +3255,10 @@ void TranslationResultWindow::DrawOwnerDrawControl(const DRAWITEMSTRUCT& draw) {
             { midX + half, midY - half / 2 },
             { midX, midY + half / 2 + 1 },
         };
-        HBRUSH arrow = CreateSolidBrush(disabled || !hot ? kTextMuted : kTextPrimary);
-        HGDIOBJ oldBrush = SelectObject(draw.hDC, arrow);
-        HGDIOBJ oldPen = SelectObject(draw.hDC, GetStockObject(NULL_PEN));
+        zencrop::ScopedHBRUSH arrow(CreateSolidBrush(disabled || !hot ? kTextMuted : kTextPrimary));
+        zencrop::ScopedSelectObject oldBrush(draw.hDC, arrow.get());
+        zencrop::ScopedSelectObject oldPen(draw.hDC, GetStockObject(NULL_PEN));
         Polygon(draw.hDC, triangle, static_cast<int>(std::size(triangle)));
-        SelectObject(draw.hDC, oldPen);
-        SelectObject(draw.hDC, oldBrush);
-        DeleteObject(arrow);
         if ((draw.itemState & ODS_FOCUS) != 0) {
             RECT focus = draw.rcItem;
             InflateRect(&focus, -ScaleForDpi(2, dpi), -ScaleForDpi(2, dpi));
@@ -3316,9 +3268,8 @@ void TranslationResultWindow::DrawOwnerDrawControl(const DRAWITEMSTRUCT& draw) {
     }
 
     if (id == kPin) {
-        HBRUSH background = CreateSolidBrush(kWindowBackground);
-        FillRect(draw.hDC, &draw.rcItem, background);
-        DeleteObject(background);
+        zencrop::ScopedHBRUSH background(CreateSolidBrush(kWindowBackground));
+        FillRect(draw.hDC, &draw.rcItem, background.get());
         const COLORREF pinColor = disabled ? kTextMuted :
             (alwaysOnTop_ ? (pressed ? kAccentPressed : hot ? kAccentHover : kAccent) : kTextMuted);
         const int centerX = (draw.rcItem.left + draw.rcItem.right) / 2;
@@ -3342,17 +3293,14 @@ void TranslationResultWindow::DrawOwnerDrawControl(const DRAWITEMSTRUCT& draw) {
             rotate(-5, -7), rotate(5, -7), rotate(5, -3), rotate(7, -1),
             rotate(7, 1), rotate(-7, 1), rotate(-7, -1), rotate(-5, -3),
         };
-        HPEN pen = CreatePen(PS_SOLID, 1, pinColor);
-        HGDIOBJ oldPen = SelectObject(draw.hDC, pen);
-        HGDIOBJ oldBrush = SelectObject(draw.hDC, GetStockObject(NULL_BRUSH));
+        zencrop::ScopedHPEN pen(CreatePen(PS_SOLID, 1, pinColor));
+        zencrop::ScopedSelectObject oldPen(draw.hDC, pen.get());
+        zencrop::ScopedSelectObject oldBrush(draw.hDC, GetStockObject(NULL_BRUSH));
         Polygon(draw.hDC, outline, static_cast<int>(std::size(outline)));
         const POINT needleStart = rotate(0, 1);
         const POINT needleEnd = rotate(0, 8);
         MoveToEx(draw.hDC, needleStart.x, needleStart.y, nullptr);
         LineTo(draw.hDC, needleEnd.x, needleEnd.y);
-        SelectObject(draw.hDC, oldPen);
-        SelectObject(draw.hDC, oldBrush);
-        DeleteObject(pen);
         if ((draw.itemState & ODS_FOCUS) != 0) {
             RECT focus = draw.rcItem;
             InflateRect(&focus, -ScaleForDpi(2, dpi), -ScaleForDpi(2, dpi));
@@ -3387,20 +3335,17 @@ void TranslationResultWindow::DrawOwnerDrawControl(const DRAWITEMSTRUCT& draw) {
     }
 
     if (isHeaderButton) {
-        HBRUSH brush = CreateSolidBrush(background);
-        FillRect(draw.hDC, &draw.rcItem, brush);
-        DeleteObject(brush);
+        zencrop::ScopedHBRUSH brush(CreateSolidBrush(background));
+        FillRect(draw.hDC, &draw.rcItem, brush.get());
     } else if (isCopyButton) {
-        HBRUSH underlay = CreateSolidBrush(kCardBackground);
-        FillRect(draw.hDC, &draw.rcItem, underlay);
-        DeleteObject(underlay);
+        zencrop::ScopedHBRUSH underlay(CreateSolidBrush(kCardBackground));
+        FillRect(draw.hDC, &draw.rcItem, underlay.get());
         FillRoundedRect(draw.hDC, draw.rcItem, ScaleForDpi(5, dpi),
             background, border);
     } else {
-        HBRUSH underlay = CreateSolidBrush(
-            usesHeaderUnderlay ? kWindowBackground : kCardBackground);
-        FillRect(draw.hDC, &draw.rcItem, underlay);
-        DeleteObject(underlay);
+        zencrop::ScopedHBRUSH underlay(CreateSolidBrush(
+            usesHeaderUnderlay ? kWindowBackground : kCardBackground));
+        FillRect(draw.hDC, &draw.rcItem, underlay.get());
         FillRoundedRect(draw.hDC, draw.rcItem, radius, background, border);
     }
 

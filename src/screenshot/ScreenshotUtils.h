@@ -1,6 +1,7 @@
 #pragma once
 
-#include "Settings.h"
+enum class ScreenshotFormat : int;
+struct ScreenshotSettings;
 #include <windows.h>
 #include <string>
 

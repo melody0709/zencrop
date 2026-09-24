@@ -7,13 +7,15 @@
 #include "ocr/ui/dashboard/DashboardPdfPasswordDialog.h"
 #include "ocr/ui/OcrDashboardWindow.h"
 #include "ocr/ui/DashboardModels.h"
-#include "core/WideFormatUtils.h"
+#include "core/WideFormatNumbers.h"
+#include "core/WideJsonUtils.h"
 #include "BatchOcrWriter.h"
 #include "PageRange.h"
 #include "PdfPageRenderer.h"
 #include "Strings.h"
 
 #include <windows.h>
+#include "core/GdiHandles.h"
 #include <gdiplus.h>
 #include <windowsx.h>
 #include <commctrl.h>
@@ -89,13 +91,12 @@ static bool DrawImageThumbnail(
 
 static void DrawThumbnailPlaceholder(HDC hdc, const RECT& rc, COLORREF borderColor, COLORREF textColor)
 {
-    HBRUSH bgBrush = CreateSolidBrush(Theme::bgInput);
-    FillRect(hdc, &rc, bgBrush);
-    DeleteObject(bgBrush);
+    zencrop::ScopedHBRUSH bgBrush(CreateSolidBrush(Theme::bgInput));
+    FillRect(hdc, &rc, bgBrush.get());
 
-    HPEN pen = CreatePen(PS_SOLID, 1, borderColor);
-    HPEN oldPen = (HPEN)SelectObject(hdc, pen);
-    HBRUSH oldBrush = (HBRUSH)SelectObject(hdc, GetStockObject(NULL_BRUSH));
+    zencrop::ScopedHPEN pen(CreatePen(PS_SOLID, 1, borderColor));
+    zencrop::ScopedSelectObject selectPen(hdc, pen.get());
+    zencrop::ScopedSelectObject selectBrush(hdc, GetStockObject(NULL_BRUSH));
     Rectangle(hdc, rc.left, rc.top, rc.right, rc.bottom);
 
     int w = rc.right - rc.left;
@@ -110,10 +111,6 @@ static void DrawThumbnailPlaceholder(HDC hdc, const RECT& rc, COLORREF borderCol
     MoveToEx(hdc, icon.left + 3, icon.bottom - 4, nullptr);
     LineTo(hdc, icon.left + (icon.right - icon.left) / 2, icon.top + 5);
     LineTo(hdc, icon.right - 3, icon.bottom - 4);
-
-    SelectObject(hdc, oldBrush);
-    SelectObject(hdc, oldPen);
-    DeleteObject(pen);
 
     SetBkMode(hdc, TRANSPARENT);
     SetTextColor(hdc, textColor);
@@ -485,17 +482,15 @@ static int GetPdfOptionsDialogLineHeight(PdfOptionsDialogState* state) {
     int fallback = DashboardScaleDialogValue(24, state ? state->dpi : kDashboardDialogDesignDpi);
     if (!state || !state->hwnd || !state->font) return fallback;
 
-    HDC hdc = GetDC(state->hwnd);
+    zencrop::ScopedWindowDC hdc(state->hwnd, GetDC(state->hwnd));
     if (!hdc) return fallback;
 
-    HFONT oldFont = reinterpret_cast<HFONT>(SelectObject(hdc, state->font));
+    zencrop::ScopedSelectObject selectFont(hdc.get(), state->font);
     TEXTMETRICW tm = {};
     int lineH = fallback;
-    if (GetTextMetricsW(hdc, &tm)) {
+    if (GetTextMetricsW(hdc.get(), &tm)) {
         lineH = max(lineH, tm.tmHeight + tm.tmExternalLeading);
     }
-    if (oldFont) SelectObject(hdc, oldFont);
-    ReleaseDC(state->hwnd, hdc);
     return lineH;
 }
 

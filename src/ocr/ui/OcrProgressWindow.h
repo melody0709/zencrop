@@ -18,6 +18,7 @@
 #include <windows.h>
 #include <string>
 #include <cstdint>
+#include "core/GdiHandles.h"
 
 class OcrProgressWindow {
 public:
@@ -44,8 +45,8 @@ private:
     OcrProgressWindow& operator=(const OcrProgressWindow&) = delete;
 
     HWND m_hwnd = nullptr;
-    HFONT m_hUiFont = nullptr;     // 粗体 UI 字体
-    HFONT m_hMonoFont = nullptr;   // 等宽字体（elapsed time）
+    zencrop::ScopedHFONT m_hUiFont;     // 粗体 UI 字体
+    zencrop::ScopedHFONT m_hMonoFont;   // 等宽字体（elapsed time）
     int m_fontSize = 18;           // 当前字体大小（与 OcrResultWindow 一致，来自 OcrSettings.ocrFontSize）
     int m_lastFontSize = 0;        // 上次创建字体时的大小，用于检测变化
     DWORD m_startTick = 0;

@@ -6,6 +6,7 @@
 #include "screenshot/longshot/LongShotScrollInjector.h"
 #include "screenshot/longshot/LongShotTypes.h"
 #include "screenshot/ScreenshotUtils.h"
+#include "core/Settings.h"
 
 #include <cstdint>
 #include <atomic>

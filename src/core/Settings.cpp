@@ -3,7 +3,9 @@
 #include "Strings.h"
 #include "JsonUtils.h"
 #include "WideJsonUtils.h"
-#include "WideFormatUtils.h"
+#include "core/WideFormatNumbers.h"
+#include "WideFormatConfig.h"
+#include "WideColorUtils.h"
 #include <shlwapi.h>
 #include <shlobj.h>
 #include <commdlg.h>

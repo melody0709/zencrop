@@ -1,7 +1,8 @@
 #include "ocr/ui/dashboard/DashboardHistoryRepository.h"
 #include "ocr/ui/dashboard/DashboardHistoryStore.h"
 #include "core/AppDataPaths.h"
-#include "core/WideFormatUtils.h"
+#include "core/WideFormatPrimitives.h"
+#include "core/WideFormatNumbers.h"
 
 #include <windows.h>
 #include <shlwapi.h>

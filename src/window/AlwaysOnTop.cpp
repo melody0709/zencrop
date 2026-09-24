@@ -3,7 +3,9 @@
 #include <algorithm>
 #include <dwmapi.h>
 #include <gdiplus.h>
-#include "core/WideFormatUtils.h"
+#include "core/WideColorUtils.h"
+#include "core/WideCompareOps.h"
+#include "core/GdiHandles.h"
 
 #pragma comment(lib, "gdiplus.lib")
 
@@ -40,11 +42,11 @@ static RECT GetWindowVisibleRect(HWND hwnd) {
     }
 
     // Adjust for any applied window regions (used in Viewport mode for modern apps)
-    HRGN rgn = CreateRectRgn(0, 0, 0, 0);
-    int rgnType = GetWindowRgn(hwnd, rgn);
+    zencrop::ScopedHRGN rgn(CreateRectRgn(0, 0, 0, 0));
+    int rgnType = GetWindowRgn(hwnd, rgn.get());
     if (rgnType != ERROR && rgnType != NULLREGION) {
         RECT rgnBox;
-        if (GetRgnBox(rgn, &rgnBox) != ERROR) {
+        if (GetRgnBox(rgn.get(), &rgnBox) != ERROR) {
             RECT wRect;
             GetWindowRect(hwnd, &wRect);
             
@@ -65,7 +67,6 @@ static RECT GetWindowVisibleRect(HWND hwnd) {
             }
         }
     }
-    DeleteObject(rgn);
 
     return rect;
 }
@@ -352,11 +353,10 @@ void AlwaysOnTopManager::DrawBorder(HWND borderWnd, const RECT& targetRect) {
     int bh = borderRect.bottom - borderRect.top;
     if (bw <= 0 || bh <= 0) return;
 
-    HDC hdcScreen = GetDC(nullptr);
+    zencrop::ScopedWindowDC hdcScreen(nullptr, GetDC(nullptr));
     if (!hdcScreen) return;
-    HDC memDc = CreateCompatibleDC(hdcScreen);
+    zencrop::ScopedDC memDc(CreateCompatibleDC(hdcScreen.get()));
     if (!memDc) {
-        ReleaseDC(nullptr, hdcScreen);
         return;
     }
 
@@ -369,15 +369,12 @@ void AlwaysOnTopManager::DrawBorder(HWND borderWnd, const RECT& targetRect) {
     bmi.bmiHeader.biCompression = BI_RGB;
 
     void* pBits = nullptr;
-    HBITMAP bitmap = CreateDIBSection(memDc, &bmi, DIB_RGB_COLORS, &pBits, nullptr, 0);
+    zencrop::ScopedHBITMAP bitmap(CreateDIBSection(memDc.get(), &bmi, DIB_RGB_COLORS, &pBits, nullptr, 0));
     if (!bitmap || !pBits) {
-        if (bitmap) DeleteObject(bitmap);
-        DeleteDC(memDc);
-        ReleaseDC(nullptr, hdcScreen);
         return;
     }
 
-    HBITMAP oldBitmap = (HBITMAP)SelectObject(memDc, bitmap);
+    zencrop::ScopedSelectObject selectBmp(memDc.get(), bitmap.get());
 
     int t = m_settings.thickness;
     BYTE alpha = (BYTE)(m_settings.opacity * 255 / 100);
@@ -433,12 +430,7 @@ void AlwaysOnTopManager::DrawBorder(HWND borderWnd, const RECT& targetRect) {
     POINT ptSrc = { 0, 0 };
     SIZE sizeWnd = { bw, bh };
     BLENDFUNCTION blend = { AC_SRC_OVER, 0, 255, AC_SRC_ALPHA };
-    UpdateLayeredWindow(borderWnd, hdcScreen, nullptr, &sizeWnd, memDc, &ptSrc, 0, &blend, ULW_ALPHA);
-
-    SelectObject(memDc, oldBitmap);
-    DeleteObject(bitmap);
-    DeleteDC(memDc);
-    ReleaseDC(nullptr, hdcScreen);
+    UpdateLayeredWindow(borderWnd, hdcScreen.get(), nullptr, &sizeWnd, memDc.get(), &ptSrc, 0, &blend, ULW_ALPHA);
 }
 
 void CALLBACK AlwaysOnTopManager::WinEventProc(HWINEVENTHOOK hWinEventHook, DWORD event,

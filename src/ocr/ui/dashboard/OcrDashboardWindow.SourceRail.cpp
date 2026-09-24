@@ -10,7 +10,14 @@
 #include "dashboard/DashboardBatchCoordinator.h"
 #include "dashboard/DashboardSelectionState.h"
 #include "Strings.h"
-#include "core/WideFormatUtils.h"
+#include "core/WideFormatPrimitives.h"
+#include "core/WideFormatNumbers.h"
+#include "core/WideFormatLabels.h"
+#include "core/WideFormatPaths.h"
+#include "core/WideFormatOcr.h"
+#include "core/WideJsonUtils.h"
+#include "core/WideCompareOps.h"
+#include "core/GdiHandles.h"
 
 #include <algorithm>
 #include <commctrl.h>
@@ -1968,9 +1975,8 @@ void OcrDashboardWindow::DrawBatchTaskSection(HDC hdc, int width, int viewportH,
 
     RECT headerRc = {0, y, width, y + headerH};
     if (headerRc.bottom > 0 && headerRc.top < viewportH) {
-        HBRUSH headerBrush = CreateSolidBrush(Theme::bgTertiary);
+        zencrop::ScopedHBRUSH headerBrush(CreateSolidBrush(Theme::bgTertiary));
         FillRect(hdc, &headerRc, headerBrush);
-        DeleteObject(headerBrush);
 
         RECT titleRc = headerRc;
         titleRc.left += pad;
@@ -2013,16 +2019,14 @@ void OcrDashboardWindow::DrawBatchTaskSection(HDC hdc, int width, int viewportH,
             : (row.status == BatchOcrTaskStatus::Recognizing)
             ? RGB(32, 43, 52)
             : (row.jobRow ? RGB(32, 36, 40) : ((i % 2 == 0) ? RGB(34, 34, 36) : Theme::bgSecondary));
-        HBRUSH rowBrush = CreateSolidBrush(rowBg);
+        zencrop::ScopedHBRUSH rowBrush(CreateSolidBrush(rowBg));
         FillRect(hdc, &rowRc, rowBrush);
-        DeleteObject(rowBrush);
 
         if (row.selected) {
             RECT strip = rowRc;
             strip.right = strip.left + max(2, Scale(3));
-            HBRUSH accentBrush = CreateSolidBrush(Theme::accent);
+            zencrop::ScopedHBRUSH accentBrush(CreateSolidBrush(Theme::accent));
             FillRect(hdc, &strip, accentBrush);
-            DeleteObject(accentBrush);
         }
 
         COLORREF statusColor = BatchTaskStatusColor(row.status);
@@ -2077,13 +2081,12 @@ void OcrDashboardWindow::DrawBatchTaskSection(HDC hdc, int width, int viewportH,
         int dotY = rowRc.top + max(0, (itemH - dot) / 2);
         int dotLeft = pad + row.indent + (row.expandable ? disclosureW + gap : 0);
         RECT dotRc = {dotLeft, dotY, dotLeft + dot, dotY + dot};
-        HBRUSH dotBrush = CreateSolidBrush(statusColor);
-        HGDIOBJ oldBrush = SelectObject(hdc, dotBrush);
-        HGDIOBJ oldPen = SelectObject(hdc, GetStockObject(NULL_PEN));
-        Ellipse(hdc, dotRc.left, dotRc.top, dotRc.right, dotRc.bottom);
-        SelectObject(hdc, oldPen);
-        SelectObject(hdc, oldBrush);
-        DeleteObject(dotBrush);
+        {
+            zencrop::ScopedHBRUSH dotBrush(CreateSolidBrush(statusColor));
+            zencrop::ScopedSelectObject oldBrush(hdc, dotBrush);
+            zencrop::ScopedSelectObject oldPen(hdc, GetStockObject(NULL_PEN));
+            Ellipse(hdc, dotRc.left, dotRc.top, dotRc.right, dotRc.bottom);
+        }
 
         RECT statusCalc = {0, 0, 0, 0};
         DrawTextW(hdc, row.statusText.c_str(), -1, &statusCalc,
@@ -2112,12 +2115,12 @@ void OcrDashboardWindow::DrawBatchTaskSection(HDC hdc, int width, int viewportH,
             DT_RIGHT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
         }
 
-        HPEN sepPen = CreatePen(PS_SOLID, 1, Theme::separator);
-        HPEN oldSepPen = (HPEN)SelectObject(hdc, sepPen);
-        MoveToEx(hdc, pad, rowRc.bottom - 1, nullptr);
-        LineTo(hdc, width - pad, rowRc.bottom - 1);
-        SelectObject(hdc, oldSepPen);
-        DeleteObject(sepPen);
+        {
+            zencrop::ScopedHPEN sepPen(CreatePen(PS_SOLID, 1, Theme::separator));
+            zencrop::ScopedSelectObject oldSepPen(hdc, sepPen);
+            MoveToEx(hdc, pad, rowRc.bottom - 1, nullptr);
+            LineTo(hdc, width - pad, rowRc.bottom - 1);
+        }
 
         if (GetFocus() == m_sourceList && row.active) {
             RECT focusRc = rowRc;
@@ -2131,12 +2134,10 @@ void OcrDashboardWindow::DrawBatchTaskSection(HDC hdc, int width, int viewportH,
 
     int sectionBottom = y + GetSourceRailBatchSectionHeight() - max(1, m_metrics.sourceItemTextGap);
     if (sectionBottom >= 0 && sectionBottom < viewportH) {
-        HPEN pen = CreatePen(PS_SOLID, 1, Theme::divider);
-        HPEN oldPen = (HPEN)SelectObject(hdc, pen);
+        zencrop::ScopedHPEN pen(CreatePen(PS_SOLID, 1, Theme::divider));
+        zencrop::ScopedSelectObject oldPen(hdc, pen);
         MoveToEx(hdc, 0, sectionBottom, nullptr);
         LineTo(hdc, width, sectionBottom);
-        SelectObject(hdc, oldPen);
-        DeleteObject(pen);
     }
 
     SetTextColor(hdc, oldText);
@@ -2232,16 +2233,14 @@ bool OcrDashboardWindow::WarmVisibleSourceRailThumbnails(int maxDecodeCount) {
 }
 void OcrDashboardWindow::DrawSourceRailItem(HDC hdc, const RECT& rcItem, int itemIndex, bool selected, bool active, bool focused) {
     COLORREF bg = selected ? Theme::accentSubtle : (active ? RGB(42, 42, 44) : Theme::bgSecondary);
-    HBRUSH bgBrush = CreateSolidBrush(bg);
+    zencrop::ScopedHBRUSH bgBrush(CreateSolidBrush(bg));
     FillRect(hdc, &rcItem, bgBrush);
-    DeleteObject(bgBrush);
 
     if (active) {
         RECT strip = rcItem;
         strip.right = strip.left + max(2, Scale(3));
-        HBRUSH accentBrush = CreateSolidBrush(Theme::accent);
+        zencrop::ScopedHBRUSH accentBrush(CreateSolidBrush(Theme::accent));
         FillRect(hdc, &strip, accentBrush);
-        DeleteObject(accentBrush);
     }
 
     if (const auto* item = m_history.model.itemAt(itemIndex)) {
@@ -2263,16 +2262,13 @@ void OcrDashboardWindow::DrawSourceRailItem(HDC hdc, const RECT& rcItem, int ite
                 thumbRc.right - Scale(5),
                 thumbRc.top + Scale(5) + badge
             };
-            HBRUSH badgeBrush = CreateSolidBrush(Theme::accent);
+            zencrop::ScopedHBRUSH badgeBrush(CreateSolidBrush(Theme::accent));
             FillRect(hdc, &badgeRc, badgeBrush);
-            DeleteObject(badgeBrush);
-            HPEN checkPen = CreatePen(PS_SOLID, max(1, Scale(2)), RGB(255, 255, 255));
-            HPEN oldPen = (HPEN)SelectObject(hdc, checkPen);
+            zencrop::ScopedHPEN checkPen(CreatePen(PS_SOLID, max(1, Scale(2)), RGB(255, 255, 255)));
+            zencrop::ScopedSelectObject oldPen(hdc, checkPen);
             MoveToEx(hdc, badgeRc.left + badge / 4, badgeRc.top + badge / 2, nullptr);
             LineTo(hdc, badgeRc.left + badge / 2, badgeRc.bottom - badge / 4);
             LineTo(hdc, badgeRc.right - badge / 4, badgeRc.top + badge / 4);
-            SelectObject(hdc, oldPen);
-            DeleteObject(checkPen);
         }
 
         HFONT oldFont = m_hUiFont ? (HFONT)SelectObject(hdc, m_hUiFont) : nullptr;
@@ -2463,15 +2459,15 @@ void OcrDashboardWindow::DrawSourceRailViewRow(
     COLORREF rowBg = selected ? Theme::accentSubtle
         : active ? RGB(42, 42, 44)
         : (row.pageRow ? Theme::bgSecondary : RGB(34, 34, 36));
-    HBRUSH rowBrush = CreateSolidBrush(rowBg);
-    FillRect(hdc, &rowRc, rowBrush);
-    DeleteObject(rowBrush);
+    {
+        zencrop::ScopedHBRUSH rowBrush(CreateSolidBrush(rowBg));
+        FillRect(hdc, &rowRc, rowBrush.get());
+    }
     if (selected) {
         RECT strip = rowRc;
         strip.right = strip.left + max(2, Scale(3));
-        HBRUSH stripBrush = CreateSolidBrush(Theme::accent);
-        FillRect(hdc, &strip, stripBrush);
-        DeleteObject(stripBrush);
+        zencrop::ScopedHBRUSH stripBrush(CreateSolidBrush(Theme::accent));
+        FillRect(hdc, &strip, stripBrush.get());
     }
 
     COLORREF statusColor = BatchTaskStatusColor(row.status);
@@ -2482,10 +2478,10 @@ void OcrDashboardWindow::DrawSourceRailViewRow(
     auto drawGlyph = [&](int left, int centerY, bool compact) {
         const int size = compact ? max(7, Scale(8)) : max(8, Scale(10));
         RECT glyph = { left, centerY - size / 2, left + size, centerY - size / 2 + size };
-        HPEN pen = CreatePen(PS_SOLID, max(1, Scale(1)), statusColor);
-        HPEN oldPen = static_cast<HPEN>(SelectObject(hdc, pen));
-        HBRUSH brush = CreateSolidBrush(statusColor);
-        HBRUSH oldBrush = static_cast<HBRUSH>(SelectObject(hdc, brush));
+        zencrop::ScopedHPEN pen(CreatePen(PS_SOLID, max(1, Scale(1)), statusColor));
+        zencrop::ScopedSelectObject selPen(hdc, pen.get());
+        zencrop::ScopedHBRUSH brush(CreateSolidBrush(statusColor));
+        zencrop::ScopedSelectObject selBrush(hdc, brush.get());
         if (row.status == BatchOcrTaskStatus::Completed && !row.paused && !row.rendering && !row.requiresPassword) {
             Ellipse(hdc, glyph.left, glyph.top, glyph.right, glyph.bottom);
         } else if (row.status == BatchOcrTaskStatus::Failed || row.status == BatchOcrTaskStatus::Canceled) {
@@ -2506,10 +2502,6 @@ void OcrDashboardWindow::DrawSourceRailViewRow(
             SelectObject(hdc, GetStockObject(NULL_BRUSH));
             Ellipse(hdc, glyph.left, glyph.top, glyph.right, glyph.bottom);
         }
-        SelectObject(hdc, oldBrush);
-        SelectObject(hdc, oldPen);
-        DeleteObject(brush);
-        DeleteObject(pen);
         return glyph;
     };
 
@@ -2566,34 +2558,32 @@ void OcrDashboardWindow::DrawSourceRailViewRow(
                 ? RGB(245, 245, 245)
                 : selected ? RGB(225, 238, 248) : Theme::textPrimary;
 
-            HBRUSH badgeBrush = CreateSolidBrush(badgeBg);
-            HPEN badgePen = CreatePen(PS_SOLID, max(1, Scale(1)), badgeBorder);
-            HBRUSH oldBadgeBrush = static_cast<HBRUSH>(SelectObject(hdc, badgeBrush));
-            HPEN oldBadgePen = static_cast<HPEN>(SelectObject(hdc, badgePen));
-            const int radius = max(4, Scale(6));
-            RoundRect(hdc, badgeRc.left, badgeRc.top, badgeRc.right, badgeRc.bottom, radius, radius);
-            SelectObject(hdc, oldBadgePen);
-            SelectObject(hdc, oldBadgeBrush);
-            DeleteObject(badgePen);
-            DeleteObject(badgeBrush);
+            {
+                zencrop::ScopedHBRUSH badgeBrush(CreateSolidBrush(badgeBg));
+                zencrop::ScopedHPEN badgePen(CreatePen(PS_SOLID, max(1, Scale(1)), badgeBorder));
+                zencrop::ScopedSelectObject selBadgeBrush(hdc, badgeBrush.get());
+                zencrop::ScopedSelectObject selBadgePen(hdc, badgePen.get());
+                const int radius = max(4, Scale(6));
+                RoundRect(hdc, badgeRc.left, badgeRc.top, badgeRc.right, badgeRc.bottom, radius, radius);
+            }
 
             const int centerX = (badgeRc.left + badgeRc.right) / 2;
             const int centerY = (badgeRc.top + badgeRc.bottom) / 2;
             const int halfW = max(3, Scale(4));
             const int halfH = max(2, Scale(3));
-            HPEN chevronPen = CreatePen(PS_SOLID, max(1, Scale(2)), chevronColor);
-            HPEN oldChevronPen = static_cast<HPEN>(SelectObject(hdc, chevronPen));
-            if (row.expanded) {
-                MoveToEx(hdc, centerX - halfW, centerY + halfH / 2, nullptr);
-                LineTo(hdc, centerX, centerY - halfH);
-                LineTo(hdc, centerX + halfW, centerY + halfH / 2);
-            } else {
-                MoveToEx(hdc, centerX - halfW, centerY - halfH / 2, nullptr);
-                LineTo(hdc, centerX, centerY + halfH);
-                LineTo(hdc, centerX + halfW, centerY - halfH / 2);
+            {
+                zencrop::ScopedHPEN chevronPen(CreatePen(PS_SOLID, max(1, Scale(2)), chevronColor));
+                zencrop::ScopedSelectObject selChevronPen(hdc, chevronPen.get());
+                if (row.expanded) {
+                    MoveToEx(hdc, centerX - halfW, centerY + halfH / 2, nullptr);
+                    LineTo(hdc, centerX, centerY - halfH);
+                    LineTo(hdc, centerX + halfW, centerY + halfH / 2);
+                } else {
+                    MoveToEx(hdc, centerX - halfW, centerY - halfH / 2, nullptr);
+                    LineTo(hdc, centerX, centerY + halfH);
+                    LineTo(hdc, centerX + halfW, centerY - halfH / 2);
+                }
             }
-            SelectObject(hdc, oldChevronPen);
-            DeleteObject(chevronPen);
         }
 
         const int textLeft = thumbRc.right + gap;
@@ -2683,12 +2673,12 @@ void OcrDashboardWindow::DrawSourceRailViewRow(
             DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
         if (metaFont) SelectObject(hdc, metaFont);
     }
-    HPEN separatorPen = CreatePen(PS_SOLID, 1, Theme::separator);
-    HPEN oldPen = static_cast<HPEN>(SelectObject(hdc, separatorPen));
-    MoveToEx(hdc, padX, rowRc.bottom - 1, nullptr);
-    LineTo(hdc, rowRc.right - padX, rowRc.bottom - 1);
-    SelectObject(hdc, oldPen);
-    DeleteObject(separatorPen);
+    {
+        zencrop::ScopedHPEN separatorPen(CreatePen(PS_SOLID, 1, Theme::separator));
+        zencrop::ScopedSelectObject selPen(hdc, separatorPen.get());
+        MoveToEx(hdc, padX, rowRc.bottom - 1, nullptr);
+        LineTo(hdc, rowRc.right - padX, rowRc.bottom - 1);
+    }
     if (focused && active) {
         RECT focusRc = rowRc;
         InflateRect(&focusRc, -Scale(2), -Scale(2));
@@ -2712,10 +2702,11 @@ void OcrDashboardWindow::PaintSourceRail(HWND hwnd) {
     bool hasBackbuffer = EnsureSourceRailBackbuffer(hdc, width, height);
     HDC drawDc = hasBackbuffer ? m_sourceRailBufferDc : hdc;
 
-    HBRUSH bgBrush = CreateSolidBrush(Theme::bgSecondary);
     RECT localRc = {0, 0, width, height};
-    FillRect(drawDc, &localRc, bgBrush);
-    DeleteObject(bgBrush);
+    {
+        zencrop::ScopedHBRUSH bgBrush(CreateSolidBrush(Theme::bgSecondary));
+        FillRect(drawDc, &localRc, bgBrush.get());
+    }
 
     // Do not call UpdateSourceRailHeader/UpdateSourceRailScrollInfo here:
     // both rebuild full Source projections. Header/scroll are updated on

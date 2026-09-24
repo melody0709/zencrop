@@ -12,7 +12,9 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
-#include "core/WideFormatUtils.h"
+#include "core/WideFormatConfig.h"
+#include "core/WideColorUtils.h"
+#include "core/WidePathUtils.h"
 #include "AppMessages.h"
 
 namespace {

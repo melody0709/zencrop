@@ -3,7 +3,9 @@
 #include <windows.h>
 #include <objidl.h>
 #include <gdiplus.h>
+#include <expected>
 #include <string>
+#include <string_view>
 
 namespace ImageCodec {
 
@@ -34,6 +36,12 @@ bool SaveHBitmapToFile(
     const EncodeOptions& options,
     std::wstring* error = nullptr);
 
+std::expected<void, std::wstring> SaveHBitmapToFileExpected(
+    HBITMAP bitmap,
+    std::wstring_view path,
+    ImageFileFormat format,
+    const EncodeOptions& options = {});
+
 Gdiplus::Bitmap* LoadBitmapFromFile(
     const std::wstring& path,
     std::wstring* error = nullptr);
@@ -41,5 +49,8 @@ Gdiplus::Bitmap* LoadBitmapFromFile(
 HBITMAP LoadHBitmapFromFile(
     const std::wstring& path,
     std::wstring* error = nullptr);
+
+std::expected<HBITMAP, std::wstring> LoadHBitmapFromFileExpected(
+    std::wstring_view path);
 
 }

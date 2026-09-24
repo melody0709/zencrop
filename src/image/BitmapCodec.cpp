@@ -1,5 +1,8 @@
 #include "BitmapCodec.h"
-#include "core/WideFormatUtils.h"
+#include "core/WideFormatNumbers.h"
+#include "core/WideFormatPaths.h"
+#include "core/WidePathUtils.h"
+#include "core/WideCompareOps.h"
 
 #include <objbase.h>
 #include <shlobj.h>
@@ -737,6 +740,26 @@ HBITMAP LoadHBitmapFromFile(const std::wstring& path, std::wstring* error) {
     return hBitmap;
 }
 
+std::expected<void, std::wstring> SaveHBitmapToFileExpected(
+    HBITMAP bitmap,
+    std::wstring_view path,
+    ImageFileFormat format,
+    const EncodeOptions& options) {
+    std::wstring err;
+    if (SaveHBitmapToFile(bitmap, std::wstring(path), format, options, &err)) {
+        return {};
+    }
+    return std::unexpected(err.empty() ? L"Save failed" : err);
+}
 
+std::expected<HBITMAP, std::wstring> LoadHBitmapFromFileExpected(
+    std::wstring_view path) {
+    std::wstring err;
+    HBITMAP hBitmap = LoadHBitmapFromFile(std::wstring(path), &err);
+    if (hBitmap) {
+        return hBitmap;
+    }
+    return std::unexpected(err.empty() ? L"Load failed" : err);
+}
 
 } // namespace ImageCodec

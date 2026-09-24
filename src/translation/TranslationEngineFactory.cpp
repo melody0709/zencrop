@@ -1,3 +1,4 @@
+#include "core/Settings.h"
 #include "TranslationEngineFactory.h"
 
 #include "DeepSeekTranslationEngine.h"

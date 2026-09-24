@@ -2,7 +2,10 @@
 #include "SmartDetector.h"
 #include "SmartDetectorThread.h"
 #include "Strings.h"
-#include "core/WideFormatUtils.h"
+#include "core/WideFormatLabels.h"
+#include "core/WideColorUtils.h"
+#include "core/WideCompareOps.h"
+#include "core/GdiHandles.h"
 #include "screenshot/annotation/AnnotationLegacyDocument.h"
 #include "screenshot/annotation/AnnotationMigration.h"
 #include "screenshot/CropAdjustMath.h"
@@ -220,7 +223,7 @@ void OverlayWindow::PumpRectAnimationFrame(bool force) {
 void OverlayWindow::CommitOverlay(const RECT* dirtyScreenRect) {
     if (!m_window || !m_memDc || m_bitmapWidth <= 0 || m_bitmapHeight <= 0) return;
 
-    HDC hdcScreen = GetDC(nullptr);
+    zencrop::ScopedWindowDC hdcScreen(nullptr, GetDC(nullptr));
     if (!hdcScreen) return;
 
     POINT ptSrc = { 0, 0 };
@@ -238,7 +241,7 @@ void OverlayWindow::CommitOverlay(const RECT* dirtyScreenRect) {
         if (dirty.right > dirty.left && dirty.bottom > dirty.top) {
             UPDATELAYEREDWINDOWINFO ulwi = {};
             ulwi.cbSize = sizeof(ulwi);
-            ulwi.hdcDst = hdcScreen;
+            ulwi.hdcDst = hdcScreen.get();
             ulwi.psize = &sizeWnd;
             ulwi.hdcSrc = m_memDc;
             ulwi.pptSrc = &ptSrc;
@@ -246,14 +249,12 @@ void OverlayWindow::CommitOverlay(const RECT* dirtyScreenRect) {
             ulwi.dwFlags = ULW_ALPHA;
             ulwi.prcDirty = &dirty;
             if (UpdateLayeredWindowIndirect(m_window, &ulwi)) {
-                ReleaseDC(nullptr, hdcScreen);
                 return;
             }
         }
     }
 
-    UpdateLayeredWindow(m_window, hdcScreen, nullptr, &sizeWnd, m_memDc, &ptSrc, 0, &blend, ULW_ALPHA);
-    ReleaseDC(nullptr, hdcScreen);
+    UpdateLayeredWindow(m_window, hdcScreen.get(), nullptr, &sizeWnd, m_memDc, &ptSrc, 0, &blend, ULW_ALPHA);
 }
 
 void OverlayWindow::RegisterWindowClass() {
@@ -944,12 +945,12 @@ void OverlayWindow::DrawCropLabel(int cropLeft, int cropTop, int cropRight, int 
         (int)ScreenshotEditorCropRectTop(m_editorState),
         cropW, cropH);
 
-    HFONT hFont = CreateFontW(-ScaleScreenshotSelectionMetricLocal(15), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+    zencrop::ScopedHFONT hFont(CreateFontW(-ScaleScreenshotSelectionMetricLocal(15), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
         DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-        NONANTIALIASED_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+        NONANTIALIASED_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI"));
     if (!hFont) return;
 
-    HFONT oldFont = (HFONT)SelectObject(m_memDc, hFont);
+    zencrop::ScopedSelectObject oldFont(m_memDc, hFont.get());
     SIZE textSize;
     GetTextExtentPoint32W(m_memDc, label.c_str(), (int)label.size(), &textSize);
 
@@ -1006,9 +1007,6 @@ void OverlayWindow::DrawCropLabel(int cropLeft, int cropTop, int cropRight, int 
             }
         }
     }
-
-    SelectObject(m_memDc, oldFont);
-    DeleteObject(hFont);
 }
 
 void OverlayWindow::DrawHintText() {
@@ -1024,12 +1022,12 @@ void OverlayWindow::DrawHintText() {
         return;
     }
 
-    HFONT hFont = CreateFontW(-ScaleScreenshotSelectionMetricLocal(16), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+    zencrop::ScopedHFONT hFont(CreateFontW(-ScaleScreenshotSelectionMetricLocal(16), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
         DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-        NONANTIALIASED_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+        NONANTIALIASED_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI"));
     if (!hFont) return;
 
-    HFONT oldFont = (HFONT)SelectObject(m_memDc, hFont);
+    zencrop::ScopedSelectObject oldFont(m_memDc, hFont.get());
 
     int padX = ScaleScreenshotSelectionMetricLocal(10);
     int padY = ScaleScreenshotSelectionMetricLocal(5);
@@ -1118,9 +1116,6 @@ void OverlayWindow::DrawHintText() {
             }
         }
     }
-
-    SelectObject(m_memDc, oldFont);
-    DeleteObject(hFont);
 }
 
 void OverlayWindow::ShowToast(const std::wstring& text) {
@@ -1139,12 +1134,12 @@ void OverlayWindow::DrawToast() {
         return;
     }
 
-    HFONT hFont = CreateFontW(-14, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+    zencrop::ScopedHFONT hFont(CreateFontW(-14, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
         DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-        CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+        CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI"));
     if (!hFont) return;
 
-    HFONT oldFont = (HFONT)SelectObject(m_memDc, hFont);
+    zencrop::ScopedSelectObject oldFont(m_memDc, hFont.get());
     SIZE textSize = {};
     GetTextExtentPoint32W(m_memDc, ScreenshotEditorToastText(m_editorState).c_str(), (int)ScreenshotEditorToastText(m_editorState).size(), &textSize);
 
@@ -1186,9 +1181,6 @@ void OverlayWindow::DrawToast() {
             }
         }
     }
-
-    SelectObject(m_memDc, oldFont);
-    DeleteObject(hFont);
 }
 
 void OverlayWindow::EnsureBitmap(int width, int height) {
@@ -1196,10 +1188,9 @@ void OverlayWindow::EnsureBitmap(int width, int height) {
 
     FreeBitmap();
 
-    HDC hdcScreen = GetDC(nullptr);
+    zencrop::ScopedWindowDC hdcScreen(nullptr, GetDC(nullptr));
     if (!hdcScreen) return;
-    m_memDc = CreateCompatibleDC(hdcScreen);
-    ReleaseDC(nullptr, hdcScreen);
+    m_memDc = CreateCompatibleDC(hdcScreen.get());
     if (!m_memDc) return;
 
     BITMAPINFO bmi = {};
@@ -2695,15 +2686,14 @@ LRESULT OverlayWindow::MessageHandler(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
         // wParam: 0 = normal crop confirm; 1 = OCR silent copy (Shift+C).
         if (!ScreenshotEditorIsScreenshotMode(m_editorState) && m_onCropped) {
             const bool copyOnly = (wParam != 0);
-            HBITMAP frozenCrop = m_runtime.CreateFrozenCropBitmap(
+            zencrop::ScopedHBITMAP frozenCrop(m_runtime.CreateFrozenCropBitmap(
                 ScreenshotEditorPendingCropRect(m_editorState),
-                ScreenshotEditorScreenRect(m_editorState));
+                ScreenshotEditorScreenRect(m_editorState)));
             m_onCropped(
                 m_targetWindow,
                 ScreenshotEditorPendingCropRect(m_editorState),
-                frozenCrop,
+                frozenCrop.get(),
                 copyOnly);
-            if (frozenCrop) DeleteObject(frozenCrop);
         }
         return 0;
     }

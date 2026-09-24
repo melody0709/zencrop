@@ -1,5 +1,5 @@
 #include "screenshot/annotation/AnnotationItem.h"
-#include "core/WideFormatUtils.h"
+#include "core/WideFormatOcr.h"
 #include <atomic>
 #include <algorithm>
 

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "core/WideFormatUtils.h"
+#include "core/WideFormatOcr.h"
 
 #include <windows.h>
 #include <map>

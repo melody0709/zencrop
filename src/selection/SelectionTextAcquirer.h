@@ -24,7 +24,7 @@ public:
 private:
     struct State;
     std::shared_ptr<State> state_;
-    std::thread worker_;
+    std::jthread worker_;
 };
 
 } // namespace selection

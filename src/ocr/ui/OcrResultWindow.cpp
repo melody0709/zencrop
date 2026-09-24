@@ -1,10 +1,11 @@
 #include "OcrResultWindow.h"
 #include "Strings.h"
-#include "Settings.h"
 #include "OcrUtils.h"
 #include "core/ClipboardUtils.h"
 #include "core/Utils.h"
-#include "core/WideFormatUtils.h"
+#include "core/WideFormatPrimitives.h"
+#include "core/WideCompareOps.h"
+#include "core/GdiHandles.h"
 #include <windowsx.h>
 #include <dwmapi.h>
 #include <cwctype>
@@ -194,17 +195,16 @@ OcrResultWindow::OcrResultWindow(const std::wstring& text, RECT cropRect,
     std::wstring normalizedText = NormalizeEditText(m_text);
     std::wstring sizingText = BuildSizingText(normalizedText);
 
-    HFONT hCalcFont = CreateFontW(-m_fontSize, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+    zencrop::ScopedHFONT hCalcFont(CreateFontW(-m_fontSize, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
         DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-        CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+        CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI"));
 
-    HDC hDC = GetDC(nullptr);
-    HFONT hOldFont = (HFONT)SelectObject(hDC, hCalcFont);
-
-    SIZE initialSize = CalculateInitialWindowSize(hDC, sizingText, cropRect);
-    SelectObject(hDC, hOldFont);
-    ReleaseDC(nullptr, hDC);
-    DeleteObject(hCalcFont);
+    SIZE initialSize = {};
+    {
+        zencrop::ScopedWindowDC hDC(nullptr, GetDC(nullptr));
+        zencrop::ScopedSelectObject selectFont(hDC.get(), hCalcFont.get());
+        initialSize = CalculateInitialWindowSize(hDC.get(), sizingText, cropRect);
+    }
 
     int winWidth = initialSize.cx;
     int winHeight = initialSize.cy;
@@ -363,21 +363,19 @@ void OcrResultWindow::PaintBorder(HWND hwnd) {
     RECT clientRect;
     GetClientRect(hwnd, &clientRect);
 
-    HBRUSH bgBrush = CreateSolidBrush(BgColor);
-    FillRect(hdc, &clientRect, bgBrush);
-    DeleteObject(bgBrush);
+    zencrop::ScopedHBRUSH bgBrush(CreateSolidBrush(BgColor));
+    FillRect(hdc, &clientRect, bgBrush.get());
 
     if (!m_showTitlebar) {
-        HBRUSH borderBrush = CreateSolidBrush(BorderColor);
+        zencrop::ScopedHBRUSH borderBrush(CreateSolidBrush(BorderColor));
         RECT topRect = { clientRect.left, clientRect.top, clientRect.right, clientRect.top + BorderWidth };
         RECT bottomRect = { clientRect.left, clientRect.bottom - BorderWidth, clientRect.right, clientRect.bottom };
         RECT leftRect = { clientRect.left, clientRect.top + BorderWidth, clientRect.left + BorderWidth, clientRect.bottom - BorderWidth };
         RECT rightRect = { clientRect.right - BorderWidth, clientRect.top + BorderWidth, clientRect.right, clientRect.bottom - BorderWidth };
-        FillRect(hdc, &topRect, borderBrush);
-        FillRect(hdc, &bottomRect, borderBrush);
-        FillRect(hdc, &leftRect, borderBrush);
-        FillRect(hdc, &rightRect, borderBrush);
-        DeleteObject(borderBrush);
+        FillRect(hdc, &topRect, borderBrush.get());
+        FillRect(hdc, &bottomRect, borderBrush.get());
+        FillRect(hdc, &leftRect, borderBrush.get());
+        FillRect(hdc, &rightRect, borderBrush.get());
     }
 
     EndPaint(hwnd, &ps);
@@ -475,17 +473,13 @@ LRESULT OcrResultWindow::MessageHandler(HWND hwnd, UINT msg, WPARAM wParam, LPAR
         bool hovered = (dis->itemState & ODS_HOTLIGHT) != 0;
         bool pressed = (dis->itemState & ODS_SELECTED) != 0;
         COLORREF bg = pressed ? BtnPressedBg : hovered ? BtnHoverBg : BtnNormalBg;
-        HBRUSH brush = CreateSolidBrush(bg);
-        FillRect(dis->hDC, &dis->rcItem, brush);
-        DeleteObject(brush);
+        zencrop::ScopedHBRUSH brush(CreateSolidBrush(bg));
+        FillRect(dis->hDC, &dis->rcItem, brush.get());
 
-        HPEN pen = CreatePen(PS_SOLID, 1, BorderColor);
-        HPEN oldPen = (HPEN)SelectObject(dis->hDC, pen);
-        HBRUSH oldBrush = (HBRUSH)SelectObject(dis->hDC, GetStockObject(NULL_BRUSH));
+        zencrop::ScopedHPEN pen(CreatePen(PS_SOLID, 1, BorderColor));
+        zencrop::ScopedSelectObject selectPen(dis->hDC, pen.get());
+        zencrop::ScopedSelectObject selectBrush(dis->hDC, GetStockObject(NULL_BRUSH));
         Rectangle(dis->hDC, dis->rcItem.left, dis->rcItem.top, dis->rcItem.right, dis->rcItem.bottom);
-        SelectObject(dis->hDC, oldPen);
-        SelectObject(dis->hDC, oldBrush);
-        DeleteObject(pen);
 
         wchar_t text[64];
         GetWindowTextW(dis->hwndItem, text, 64);

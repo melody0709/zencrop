@@ -1,7 +1,11 @@
 #include "BatchOcrController.h"
 #include "BatchOcrWriter.h"
 #include "DashboardFileTypes.h"
-#include "core/WideFormatUtils.h"
+#include "core/WideFormatPrimitives.h"
+#include "core/WideFormatWin32.h"
+#include "core/WidePathUtils.h"
+#include "core/WideCaseOps.h"
+#include "core/WideCompareOps.h"
 
 #include <windows.h>
 #include <shlwapi.h>

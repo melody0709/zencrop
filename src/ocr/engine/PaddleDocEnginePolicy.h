@@ -3,7 +3,7 @@
 #include "LayoutEngine.h"
 #include "OcrUtils.h"
 #include "Settings.h"
-#include "core/WideFormatUtils.h"
+#include "core/WideFormatLabels.h"
 
 #include <cstddef>
 #include <string>

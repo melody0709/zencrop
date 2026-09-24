@@ -1,5 +1,6 @@
 #include "LongShotStitcher.h"
 #include "screenshot/ScreenshotUtils.h"
+#include "core/GdiHandles.h"
 
 #include <algorithm>
 #include <cmath>
@@ -54,10 +55,9 @@ bool LoadBgra(HBITMAP bmp, BgraFrame& out) {
     } catch (const std::bad_alloc&) {
         return false;
     }
-    HDC dc = GetDC(nullptr);
+    zencrop::ScopedWindowDC dc(nullptr, GetDC(nullptr));
     if (!dc) return false;
-    int got = GetDIBits(dc, bmp, 0, out.height, out.bgra.data(), &bmi, DIB_RGB_COLORS);
-    ReleaseDC(nullptr, dc);
+    int got = GetDIBits(dc.get(), bmp, 0, out.height, out.bgra.data(), &bmi, DIB_RGB_COLORS);
     return got == out.height;
 }
 
@@ -751,13 +751,13 @@ bool LongShotStitcher::DetectDisplacement(
 }
 
 StitchCode LongShotStitcher::TryAddImage(HBITMAP frame, int maxLen, bool strictFlag) {
+    zencrop::ScopedHBITMAP frameHolder(frame);
     m_lastResultWasFirstFrame = false;
     m_lastDispFull = 0;
     if (!frame) return StitchCode::InternalError;
 
     auto size = Screenshot::GetBitmapSize(frame);
     if (size.width <= 0 || size.height <= 0) {
-        DeleteObject(frame);
         return StitchCode::InternalError;
     }
 
@@ -769,13 +769,12 @@ StitchCode LongShotStitcher::TryAddImage(HBITMAP frame, int maxLen, bool strictF
         std::vector<unsigned char> feat;
         int fw = 0, fh = 0;
         if (!BuildFeature(frame, feat, fw, fh)) {
-            DeleteObject(frame);
             return StitchCode::InternalError;
         }
         m_prevFeature = std::move(feat);
         m_prevFeatW = fw;
         m_prevFeatH = fh;
-        const StitchCode code = m_image.AddFirstFrame(frame, m_dir);
+        const StitchCode code = m_image.AddFirstFrame(frameHolder.release(), m_dir);
         m_lastResultWasFirstFrame = m_image.LastAddAccepted() &&
             code == StitchCode::AcceptedNoExpand;
         if (m_lastResultWasFirstFrame) m_trimAnchor = 0;
@@ -785,7 +784,6 @@ StitchCode LongShotStitcher::TryAddImage(HBITMAP frame, int maxLen, bool strictF
     std::vector<unsigned char> feat;
     int fw = 0, fh = 0;
     if (!BuildFeature(frame, feat, fw, fh)) {
-        DeleteObject(frame);
         return StitchCode::MatchFail;
     }
 
@@ -793,10 +791,8 @@ StitchCode LongShotStitcher::TryAddImage(HBITMAP frame, int maxLen, bool strictF
     if (!DetectDisplacement(
             m_prevFeature, m_prevFeatW, m_prevFeatH, feat, fw, fh, matchDispFeat)) {
         if (!strictFlag && (maxLen < 1 || m_image.Length() < maxLen)) {
-            DeleteObject(frame);
             return StitchCode::MatchFail;
         }
-        DeleteObject(frame);
         return StitchCode::MaxLength;
     }
 
@@ -815,10 +811,8 @@ StitchCode LongShotStitcher::TryAddImage(HBITMAP frame, int maxLen, bool strictF
     if (std::abs(matchDispFull) >
         static_cast<int>(frameMain * kFastScrollRecoveryMaxRatio)) {
         if (!strictFlag && (maxLen < 1 || m_image.Length() < maxLen)) {
-            DeleteObject(frame);
             return StitchCode::MatchFail;
         }
-        DeleteObject(frame);
         return StitchCode::MaxLength;
     }
 
@@ -830,14 +824,12 @@ StitchCode LongShotStitcher::TryAddImage(HBITMAP frame, int maxLen, bool strictF
     const long long newStart64 = static_cast<long long>(previousStart) - matchDispFull;
     if (newStart64 > (std::numeric_limits<int>::max)() ||
         newStart64 < (std::numeric_limits<int>::min)()) {
-        DeleteObject(frame);
         return StitchCode::MaxLength;
     }
     const int newOffset = static_cast<int>(newStart64);
     const int newLen = m_image.ProjectedLength(newOffset, frameMain);
 
     if (maxLen > 0 && newLen > maxLen) {
-        DeleteObject(frame);
         return StitchCode::MaxLength;
     }
 
@@ -849,7 +841,6 @@ StitchCode LongShotStitcher::TryAddImage(HBITMAP frame, int maxLen, bool strictF
         // Return code 2 for a full frame that stays inside the
         // existing long image.  It advances only the feature/raw contact; the
         // existing pixels are intentionally not repainted.
-        DeleteObject(frame);
         m_image.NoteContactOnly(newOffset);
         m_prevFeature = std::move(feat);
         m_prevFeatW = fw;
@@ -887,7 +878,7 @@ StitchCode LongShotStitcher::TryAddImage(HBITMAP frame, int maxLen, bool strictF
     }
 
     StitchCode code = m_image.AddFrameAt(
-        frame, contactStart, contactMainLen, frameCross, sourceMainStart, newOffset);
+        frameHolder.release(), contactStart, contactMainLen, frameCross, sourceMainStart, newOffset);
     if (!m_image.LastAddAccepted()) {
         // AddFrameAt reports InternalError for GDI/OOM failures. Do not move
         // the feature contact in that case: the next displacement must still be

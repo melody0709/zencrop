@@ -4,6 +4,7 @@
 
 #include <atomic>
 #include <mutex>
+#include <stop_token>
 #include <string>
 #include <thread>
 
@@ -30,6 +31,7 @@ public:
 
 private:
     void Run(
+        std::stop_token stopToken,
         OcrModelBundleId bundle,
         std::wstring modelRoot,
         OcrModelMirrorPreference mirrorPref);
@@ -45,6 +47,6 @@ private:
     mutable std::mutex mutex_;
     OcrModelDownloadSnapshot snapshot_;
     std::atomic_bool cancelRequested_{ false };
-    std::thread worker_;
+    std::jthread worker_;
 };
 

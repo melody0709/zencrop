@@ -9,7 +9,8 @@
 #include <cmath>
 #include <string>
 
-#include "Settings.h" // IDR_CURSOR_ROTATE_* / IDR_CURSOR_RECT_ROUND macros
+#include "core/ResourceIds.h" // IDR_CURSOR_ROTATE_* / IDR_CURSOR_RECT_ROUND macros
+#include "core/GdiHandles.h"
 #include "ScreenshotAnnotationGeometry.h"
 #include "ScreenshotPixelUtils.h"
 #include "CropAdjustMath.h" // GetOutsideCropAdjustActionLocal
@@ -95,29 +96,26 @@ SIZE MeasureTextAnnotationNaturalSizeLocal(const ScreenshotAnnotation& ann, int 
     const wchar_t* fontFamily = !ann.textFontFamily.empty()
         ? ann.textFontFamily.c_str()
         : L"Microsoft YaHei";
-    HDC hdc = GetDC(nullptr);
-    if (!hdc) {
+    HDC rawHdc = GetDC(nullptr);
+    if (!rawHdc) {
         result.cx = ann.text.empty() ? ScaleScreenshotSelectionMetricLocal(80) : fontSize;
         result.cy = fontSize + 4;
         return result;
     }
+    zencrop::ScopedWindowDC hdc(nullptr, rawHdc);
 
-    HFONT font = CreateFontW(-fontSize, 0, 0, 0, ann.textBold ? FW_SEMIBOLD : FW_NORMAL,
+    zencrop::ScopedHFONT font(CreateFontW(-fontSize, 0, 0, 0, ann.textBold ? FW_SEMIBOLD : FW_NORMAL,
         ann.textItalics ? TRUE : FALSE, FALSE, FALSE,
         DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-        CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, fontFamily);
-    HFONT oldFont = font ? (HFONT)SelectObject(hdc, font) : nullptr;
+        CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, fontFamily));
+    zencrop::ScopedSelectObject selectFont(hdc.get(), font.get());
 
     RECT measureRc = { 0, 0, 1, 1 };
-    DrawTextW(hdc, measureText.c_str(), -1, &measureRc, DT_LEFT | DT_TOP | DT_SINGLELINE | DT_CALCRECT);
+    DrawTextW(hdc.get(), measureText.c_str(), -1, &measureRc, DT_LEFT | DT_TOP | DT_SINGLELINE | DT_CALCRECT);
     TEXTMETRICW metric = {};
-    GetTextMetricsW(hdc, &metric);
+    GetTextMetricsW(hdc.get(), &metric);
     result.cx = (int)(measureRc.right - measureRc.left);
     result.cy = (std::max)((int)(measureRc.bottom - measureRc.top), (int)metric.tmHeight);
-
-    if (oldFont) SelectObject(hdc, oldFont);
-    if (font) DeleteObject(font);
-    ReleaseDC(nullptr, hdc);
 
     if (ann.text.empty()) {
         result.cx = (std::max)((int)result.cx, ScaleScreenshotSelectionMetricLocal(80));
@@ -1073,13 +1071,12 @@ HCURSOR CreateCursorFromPngResourceLocal(
     bmi.bmiHeader.biCompression = BI_RGB;
 
     void* dibBits = nullptr;
-    HDC hdc = GetDC(nullptr);
-    HBITMAP colorBitmap = CreateDIBSection(hdc, &bmi, DIB_RGB_COLORS, &dibBits, nullptr, 0);
-    ReleaseDC(nullptr, hdc);
+    zencrop::ScopedHBITMAP colorBitmap;
+    {
+        zencrop::ScopedWindowDC hdc(nullptr, GetDC(nullptr));
+        colorBitmap.reset(CreateDIBSection(hdc.get(), &bmi, DIB_RGB_COLORS, &dibBits, nullptr, 0));
+    }
     if (!colorBitmap || !dibBits) {
-        if (colorBitmap) {
-            DeleteObject(colorBitmap);
-        }
         return nullptr;
     }
 
@@ -1087,7 +1084,6 @@ HCURSOR CreateCursorFromPngResourceLocal(
     Gdiplus::BitmapData data = {};
     if (bitmap->LockBits(&rect, Gdiplus::ImageLockModeRead, PixelFormat32bppARGB, &data) !=
         Gdiplus::Ok) {
-        DeleteObject(colorBitmap);
         return nullptr;
     }
 
@@ -1098,9 +1094,8 @@ HCURSOR CreateCursorFromPngResourceLocal(
     }
     bitmap->UnlockBits(&data);
 
-    HBITMAP maskBitmap = CreateBitmap(width, height, 1, 1, nullptr);
+    zencrop::ScopedHBITMAP maskBitmap(CreateBitmap(width, height, 1, 1, nullptr));
     if (!maskBitmap) {
-        DeleteObject(colorBitmap);
         return nullptr;
     }
 
@@ -1110,12 +1105,10 @@ HCURSOR CreateCursorFromPngResourceLocal(
     info.fIcon = FALSE;
     info.xHotspot = (DWORD)hotX;
     info.yHotspot = (DWORD)hotY;
-    info.hbmMask = maskBitmap;
-    info.hbmColor = colorBitmap;
+    info.hbmMask = maskBitmap.get();
+    info.hbmColor = colorBitmap.get();
     HCURSOR cursor = CreateIconIndirect(&info);
 
-    DeleteObject(maskBitmap);
-    DeleteObject(colorBitmap);
     return cursor;
 }
 

@@ -3,7 +3,7 @@
 #include "OcrBlock.h"
 #include "OcrUtils.h"
 #include "layout/LayoutEngine.h"
-#include "core/WideFormatUtils.h"
+#include "core/WideFormatOcr.h"
 
 #include <string>
 #include <utility>

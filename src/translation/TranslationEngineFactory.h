@@ -2,7 +2,7 @@
 
 #include "TranslationEngine.h"
 #include "TranslationCredentialStore.h"
-#include "core/Settings.h"
+struct TranslationSettings;
 
 #include <memory>
 #include <string>

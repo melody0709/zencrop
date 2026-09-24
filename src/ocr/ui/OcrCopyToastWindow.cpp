@@ -1,4 +1,5 @@
 #include "OcrCopyToastWindow.h"
+#include "core/GdiHandles.h"
 
 #include "Strings.h"
 
@@ -86,19 +87,16 @@ void OcrCopyToastWindow::PositionAndSize()
     const int workHeight = static_cast<int>(work.bottom - work.top);
     const int maxWidth = (std::max)(minWidth, workWidth / 5);
 
-    HDC screenDc = GetDC(nullptr);
-    HFONT font = CreateFontW(-ScaleForDpi(18, dpi), 0, 0, 0, FW_NORMAL,
+    zencrop::ScopedWindowDC screenDc(nullptr, GetDC(nullptr));
+    zencrop::ScopedHFONT font(CreateFontW(-ScaleForDpi(18, dpi), 0, 0, 0, FW_NORMAL,
         FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
         CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE,
-        S::IsChinese() ? L"Microsoft YaHei UI" : L"Segoe UI");
+        S::IsChinese() ? L"Microsoft YaHei UI" : L"Segoe UI"));
     SIZE textSize = {};
     if (screenDc && font) {
-        HGDIOBJ oldFont = SelectObject(screenDc, font);
-        GetTextExtentPoint32W(screenDc, m_text.c_str(), static_cast<int>(m_text.size()), &textSize);
-        SelectObject(screenDc, oldFont);
+        zencrop::ScopedSelectObject selFont(screenDc.get(), font.get());
+        GetTextExtentPoint32W(screenDc.get(), m_text.c_str(), static_cast<int>(m_text.size()), &textSize);
     }
-    if (font) DeleteObject(font);
-    if (screenDc) ReleaseDC(nullptr, screenDc);
 
     const int textWidth = static_cast<int>(textSize.cx);
     const int textHeight = static_cast<int>(textSize.cy);
@@ -158,57 +156,55 @@ void OcrCopyToastWindow::Paint(HWND hwnd)
     const int height = client.bottom - client.top;
     const UINT dpi = GetDpiForWindow(hwnd);
 
-    HDC memoryDc = CreateCompatibleDC(hdc);
-    HBITMAP bitmap = CreateCompatibleBitmap(hdc, width, height);
-    HGDIOBJ oldBitmap = (memoryDc && bitmap) ? SelectObject(memoryDc, bitmap) : nullptr;
-    HDC drawDc = memoryDc && bitmap ? memoryDc : hdc;
+    zencrop::ScopedDC memoryDc(CreateCompatibleDC(hdc));
+    zencrop::ScopedHBITMAP bitmap(memoryDc ? CreateCompatibleBitmap(hdc, width, height) : nullptr);
+    HDC drawDc = memoryDc && bitmap ? memoryDc.get() : hdc;
+    std::optional<zencrop::ScopedSelectObject> selBmp;
+    if (memoryDc && bitmap) {
+        selBmp.emplace(memoryDc.get(), bitmap.get());
+    }
 
     const int radius = ScaleForDpi(4, dpi);
-    HBRUSH background = CreateSolidBrush(kSuccessBackground);
-    HPEN border = CreatePen(PS_SOLID, ScaleForDpi(1, dpi), kSuccessBorder);
-    HGDIOBJ oldBrush = SelectObject(drawDc, background);
-    HGDIOBJ oldPen = SelectObject(drawDc, border);
-    RoundRect(drawDc, 0, 0, width, height, radius * 2, radius * 2);
-    SelectObject(drawDc, oldPen);
-    SelectObject(drawDc, oldBrush);
-    DeleteObject(border);
-    DeleteObject(background);
+    {
+        zencrop::ScopedHBRUSH background(CreateSolidBrush(kSuccessBackground));
+        zencrop::ScopedHPEN border(CreatePen(PS_SOLID, ScaleForDpi(1, dpi), kSuccessBorder));
+        zencrop::ScopedSelectObject selBrush(drawDc, background.get());
+        zencrop::ScopedSelectObject selPen(drawDc, border.get());
+        RoundRect(drawDc, 0, 0, width, height, radius * 2, radius * 2);
+    }
 
     const int paddingX = ScaleForDpi(20, dpi);
     const int closeWidth = ScaleForDpi(34, dpi);
     m_closeRect = { width - closeWidth, 0, width, height };
-    HFONT textFont = CreateFontW(-ScaleForDpi(18, dpi), 0, 0, 0, FW_NORMAL,
+    zencrop::ScopedHFONT textFont(CreateFontW(-ScaleForDpi(18, dpi), 0, 0, 0, FW_NORMAL,
         FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
         CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE,
-        S::IsChinese() ? L"Microsoft YaHei UI" : L"Segoe UI");
-    HFONT closeFont = CreateFontW(-ScaleForDpi(22, dpi), 0, 0, 0, FW_NORMAL,
+        S::IsChinese() ? L"Microsoft YaHei UI" : L"Segoe UI"));
+    zencrop::ScopedHFONT closeFont(CreateFontW(-ScaleForDpi(22, dpi), 0, 0, 0, FW_NORMAL,
         FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
         CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE,
-        L"Segoe UI");
+        L"Segoe UI"));
 
     SetBkMode(drawDc, TRANSPARENT);
-    HGDIOBJ oldFont = textFont ? SelectObject(drawDc, textFont) : nullptr;
-    SetTextColor(drawDc, kSuccessText);
-    const int textRight = (std::max)(paddingX,
-        static_cast<int>(m_closeRect.left) - ScaleForDpi(6, dpi));
-    RECT textRect = { paddingX, 0, textRight, height };
-    DrawTextW(drawDc, m_text.c_str(), -1, &textRect,
-        DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
-    if (oldFont) SelectObject(drawDc, oldFont);
+    if (textFont) {
+        zencrop::ScopedSelectObject selFont(drawDc, textFont.get());
+        SetTextColor(drawDc, kSuccessText);
+        const int textRight = (std::max)(paddingX,
+            static_cast<int>(m_closeRect.left) - ScaleForDpi(6, dpi));
+        RECT textRect = { paddingX, 0, textRight, height };
+        DrawTextW(drawDc, m_text.c_str(), -1, &textRect,
+            DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    }
 
-    oldFont = closeFont ? SelectObject(drawDc, closeFont) : nullptr;
-    SetTextColor(drawDc, m_closeHovered ? kCloseTextHover : kCloseText);
-    RECT closeTextRect = m_closeRect;
-    DrawTextW(drawDc, L"×", -1, &closeTextRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-    if (oldFont) SelectObject(drawDc, oldFont);
-    if (textFont) DeleteObject(textFont);
-    if (closeFont) DeleteObject(closeFont);
+    if (closeFont) {
+        zencrop::ScopedSelectObject selFont(drawDc, closeFont.get());
+        SetTextColor(drawDc, m_closeHovered ? kCloseTextHover : kCloseText);
+        RECT closeTextRect = m_closeRect;
+        DrawTextW(drawDc, L"×", -1, &closeTextRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    }
 
     if (memoryDc && bitmap) {
-        BitBlt(hdc, 0, 0, width, height, memoryDc, 0, 0, SRCCOPY);
-        SelectObject(memoryDc, oldBitmap);
-        DeleteObject(bitmap);
-        DeleteDC(memoryDc);
+        BitBlt(hdc, 0, 0, width, height, memoryDc.get(), 0, 0, SRCCOPY);
     }
     EndPaint(hwnd, &ps);
 }

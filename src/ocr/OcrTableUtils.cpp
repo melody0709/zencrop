@@ -1,5 +1,5 @@
 #include "OcrTableUtils.h"
-#include "core/WideFormatUtils.h"
+#include "core/WideFormatNumbers.h"
 #include <vector>
 
 std::wstring ConvertOTSLToMarkdown(const std::wstring& otsl) {

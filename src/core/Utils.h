@@ -11,6 +11,8 @@
 #include <algorithm>
 #include <mutex>
 
+#include "GdiHandles.h"
+
 #ifdef min
 #undef min
 #endif
@@ -49,17 +51,12 @@ inline HBITMAP DuplicateHBitmap(HBITMAP bitmap) {
     if (!GetObjectW(bitmap, sizeof(bm), &bm)) return nullptr;
     if (bm.bmWidth <= 0 || bm.bmHeight <= 0) return nullptr;
 
-    HDC hScreen = GetDC(nullptr);
+    zencrop::ScopedWindowDC hScreen(nullptr, GetDC(nullptr));
     if (!hScreen) return nullptr;
 
-    HDC hSrc = CreateCompatibleDC(hScreen);
-    HDC hDst = CreateCompatibleDC(hScreen);
-    if (!hSrc || !hDst) {
-        if (hSrc) DeleteDC(hSrc);
-        if (hDst) DeleteDC(hDst);
-        ReleaseDC(nullptr, hScreen);
-        return nullptr;
-    }
+    zencrop::ScopedDC hSrc(CreateCompatibleDC(hScreen.get()));
+    zencrop::ScopedDC hDst(CreateCompatibleDC(hScreen.get()));
+    if (!hSrc || !hDst) return nullptr;
 
     BITMAPINFO bmi = {};
     bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
@@ -70,23 +67,14 @@ inline HBITMAP DuplicateHBitmap(HBITMAP bitmap) {
     bmi.bmiHeader.biCompression = BI_RGB;
 
     void* bits = nullptr;
-    HBITMAP copy = CreateDIBSection(hScreen, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0);
-    if (!copy || !bits) {
-        if (copy) DeleteObject(copy);
-        DeleteDC(hSrc);
-        DeleteDC(hDst);
-        ReleaseDC(nullptr, hScreen);
-        return nullptr;
+    zencrop::ScopedHBITMAP copy(CreateDIBSection(hScreen.get(), &bmi, DIB_RGB_COLORS, &bits, nullptr, 0));
+    if (!copy || !bits) return nullptr;
+
+    {
+        zencrop::ScopedSelectObject oldSrc(hSrc.get(), bitmap);
+        zencrop::ScopedSelectObject oldDst(hDst.get(), copy.get());
+        BitBlt(hDst.get(), 0, 0, bm.bmWidth, bm.bmHeight, hSrc.get(), 0, 0, SRCCOPY);
     }
 
-    HBITMAP oldSrc = (HBITMAP)SelectObject(hSrc, bitmap);
-    HBITMAP oldDst = (HBITMAP)SelectObject(hDst, copy);
-    BitBlt(hDst, 0, 0, bm.bmWidth, bm.bmHeight, hSrc, 0, 0, SRCCOPY);
-    if (oldSrc) SelectObject(hSrc, oldSrc);
-    if (oldDst) SelectObject(hDst, oldDst);
-
-    DeleteDC(hSrc);
-    DeleteDC(hDst);
-    ReleaseDC(nullptr, hScreen);
-    return copy;
+    return copy.release();
 }

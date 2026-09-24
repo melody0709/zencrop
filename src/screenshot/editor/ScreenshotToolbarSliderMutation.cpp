@@ -1,7 +1,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include "screenshot/editor/ScreenshotToolbarSliderMutation.h"
 
-#include "core/WideFormatUtils.h"
+#include "core/WideColorUtils.h"
 #include "screenshot/annotation/AnnotationEditSession.h"
 #include "screenshot/annotation/AnnotationHistory.h"
 #include "screenshot/annotation/AnnotationLegacyDocument.h"

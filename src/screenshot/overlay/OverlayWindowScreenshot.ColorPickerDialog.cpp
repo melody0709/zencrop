@@ -1,7 +1,11 @@
 #define WIN32_LEAN_AND_MEAN
 #include "screenshot/OverlayWindow.h"
 
-#include "core/WideFormatUtils.h"
+#include "core/WideFormatNumbers.h"
+#include "core/WideColorUtils.h"
+#include "core/WideJsonUtils.h"
+#include "core/WideCompareOps.h"
+#include "core/GdiHandles.h"
 #include "screenshot/ScreenshotColorFormat.h"
 #include "screenshot/ScreenshotImageUtils.h"
 #include "screenshot/ScreenshotPixelUtils.h"
@@ -110,12 +114,10 @@ static HBITMAP ScreenshotColorPickerCreateDib(int width, int height, DWORD** pix
 
 static void ScreenshotColorPickerDrawBitmap(HDC hdc, HBITMAP bitmap, RECT rc) {
     if (!bitmap || rc.right <= rc.left || rc.bottom <= rc.top) return;
-    HDC mem = CreateCompatibleDC(hdc);
+    zencrop::ScopedDC mem(CreateCompatibleDC(hdc));
     if (!mem) return;
-    HGDIOBJ old = SelectObject(mem, bitmap);
-    BitBlt(hdc, rc.left, rc.top, rc.right - rc.left, rc.bottom - rc.top, mem, 0, 0, SRCCOPY);
-    SelectObject(mem, old);
-    DeleteDC(mem);
+    zencrop::ScopedSelectObject old(mem.get(), bitmap);
+    BitBlt(hdc, rc.left, rc.top, rc.right - rc.left, rc.bottom - rc.top, mem.get(), 0, 0, SRCCOPY);
 }
 
 static ScreenshotColorPickerDialogLayout ScreenshotColorPickerGetLayout(const ScreenshotColorPickerDialogState& state) {
@@ -403,35 +405,27 @@ static void ScreenshotColorPickerDrawTextCentered(HDC hdc, RECT rc, const wchar_
 }
 
 static void ScreenshotColorPickerFillRect(HDC hdc, RECT rc, COLORREF color) {
-    HBRUSH brush = CreateSolidBrush(color);
-    FillRect(hdc, &rc, brush);
-    DeleteObject(brush);
+    zencrop::ScopedHBRUSH brush(CreateSolidBrush(color));
+    FillRect(hdc, &rc, brush.get());
 }
 
 static void ScreenshotColorPickerStrokeRect(HDC hdc, RECT rc, COLORREF color) {
-    HPEN pen = CreatePen(PS_SOLID, 1, color);
-    HGDIOBJ oldPen = SelectObject(hdc, pen);
-    HGDIOBJ oldBrush = SelectObject(hdc, GetStockObject(HOLLOW_BRUSH));
+    zencrop::ScopedHPEN pen(CreatePen(PS_SOLID, 1, color));
+    zencrop::ScopedSelectObject selPen(hdc, pen.get());
+    zencrop::ScopedSelectObject selBrush(hdc, GetStockObject(HOLLOW_BRUSH));
     Rectangle(hdc, rc.left, rc.top, rc.right, rc.bottom);
-    SelectObject(hdc, oldBrush);
-    SelectObject(hdc, oldPen);
-    DeleteObject(pen);
 }
 
 static void ScreenshotColorPickerDrawButton(HDC hdc, RECT rc, const wchar_t* text, bool primary, int dpi) {
     COLORREF bg = primary ? RGB(52, 135, 245) : RGB(48, 48, 52);
     COLORREF border = primary ? RGB(52, 135, 245) : RGB(62, 62, 68);
-    HBRUSH brush = CreateSolidBrush(bg);
-    HPEN pen = CreatePen(PS_SOLID, 1, border);
-    HGDIOBJ oldBrush = SelectObject(hdc, brush);
-    HGDIOBJ oldPen = SelectObject(hdc, pen);
+    zencrop::ScopedHBRUSH brush(CreateSolidBrush(bg));
+    zencrop::ScopedHPEN pen(CreatePen(PS_SOLID, 1, border));
+    zencrop::ScopedSelectObject selBrush(hdc, brush.get());
+    zencrop::ScopedSelectObject selPen(hdc, pen.get());
     RoundRect(hdc, rc.left, rc.top, rc.right, rc.bottom,
         ScreenshotColorPickerScale(6, dpi),
         ScreenshotColorPickerScale(6, dpi));
-    SelectObject(hdc, oldPen);
-    SelectObject(hdc, oldBrush);
-    DeleteObject(pen);
-    DeleteObject(brush);
     ScreenshotColorPickerDrawTextCentered(hdc, rc, text, RGB(255, 255, 255));
 }
 
@@ -441,15 +435,13 @@ static void ScreenshotColorPickerDrawEyeDropper(HDC hdc, RECT rc, bool active, i
     int cx = (rc.left + rc.right) / 2;
     int cy = (rc.top + rc.bottom) / 2;
     int d = (std::min)(rc.right - rc.left, rc.bottom - rc.top);
-    HPEN pen = CreatePen(PS_SOLID, ScreenshotColorPickerScale(2, dpi), RGB(245, 245, 245));
-    HGDIOBJ oldPen = SelectObject(hdc, pen);
+    zencrop::ScopedHPEN pen(CreatePen(PS_SOLID, ScreenshotColorPickerScale(2, dpi), RGB(245, 245, 245)));
+    zencrop::ScopedSelectObject selPen(hdc, pen.get());
     MoveToEx(hdc, cx - d / 5, cy + d / 5, nullptr);
     LineTo(hdc, cx + d / 5, cy - d / 5);
     Ellipse(hdc, cx + d / 9, cy - d / 3, cx + d / 3, cy - d / 9);
     MoveToEx(hdc, cx - d / 4, cy + d / 4, nullptr);
     LineTo(hdc, cx - d / 8, cy + d / 3);
-    SelectObject(hdc, oldPen);
-    DeleteObject(pen);
 }
 
 static COLORREF ScreenshotColorPickerAlphaBlend(COLORREF fg, COLORREF bg, int alpha) {
@@ -571,15 +563,11 @@ static bool ScreenshotColorPickerEnsureAlphaBitmap(ScreenshotColorPickerDialogSt
 
 static void ScreenshotColorPickerDrawSliderKnob(HDC hdc, int x, int y, int dpi) {
     int r = ScreenshotColorPickerScale(7, dpi);
-    HPEN pen = CreatePen(PS_SOLID, ScreenshotColorPickerScale(2, dpi), RGB(255, 255, 255));
-    HBRUSH brush = CreateSolidBrush(RGB(70, 70, 76));
-    HGDIOBJ oldPen = SelectObject(hdc, pen);
-    HGDIOBJ oldBrush = SelectObject(hdc, brush);
+    zencrop::ScopedHPEN pen(CreatePen(PS_SOLID, ScreenshotColorPickerScale(2, dpi), RGB(255, 255, 255)));
+    zencrop::ScopedHBRUSH brush(CreateSolidBrush(RGB(70, 70, 76)));
+    zencrop::ScopedSelectObject selPen(hdc, pen.get());
+    zencrop::ScopedSelectObject selBrush(hdc, brush.get());
     Ellipse(hdc, x - r, y - r, x + r, y + r);
-    SelectObject(hdc, oldBrush);
-    SelectObject(hdc, oldPen);
-    DeleteObject(brush);
-    DeleteObject(pen);
 }
 
 static void ScreenshotColorPickerDrawContent(HWND hwnd, HDC hdc, ScreenshotColorPickerDialogState* state) {
@@ -668,10 +656,9 @@ static void ScreenshotColorPickerSampleScreen(HWND hwnd, ScreenshotColorPickerDi
     if (!state || !state->picking) return;
     POINT pt = {};
     GetCursorPos(&pt);
-    HDC screen = GetDC(nullptr);
+    zencrop::ScopedWindowDC screen(nullptr, GetDC(nullptr));
     if (!screen) return;
-    COLORREF color = GetPixel(screen, pt.x, pt.y);
-    ReleaseDC(nullptr, screen);
+    COLORREF color = GetPixel(screen.get(), pt.x, pt.y);
     if (color != CLR_INVALID && color != state->color) {
         ScreenshotColorPickerSetColor(state, color);
         if (syncFields) {
@@ -882,30 +869,27 @@ static LRESULT CALLBACK ScreenshotColorPickerDialogProc(HWND hwnd, UINT msg, WPA
         GetClientRect(hwnd, &client);
         int clientW = client.right - client.left;
         int clientH = client.bottom - client.top;
-        HDC mem = clientW > 0 && clientH > 0 ? CreateCompatibleDC(hdc) : nullptr;
-        HBITMAP buffer = mem ? CreateCompatibleBitmap(hdc, clientW, clientH) : nullptr;
+        zencrop::ScopedDC mem(clientW > 0 && clientH > 0 ? CreateCompatibleDC(hdc) : nullptr);
+        zencrop::ScopedHBITMAP buffer(mem ? CreateCompatibleBitmap(hdc, clientW, clientH) : nullptr);
         if (mem && buffer) {
-            HGDIOBJ oldBitmap = SelectObject(mem, buffer);
-            HFONT oldFont = state && state->font ? (HFONT)SelectObject(mem, state->font) : nullptr;
-            ScreenshotColorPickerDrawContent(hwnd, mem, state);
+            zencrop::ScopedSelectObject oldBitmap(mem.get(), buffer.get());
+            HFONT oldFont = state && state->font ? (HFONT)SelectObject(mem.get(), state->font) : nullptr;
+            ScreenshotColorPickerDrawContent(hwnd, mem.get(), state);
             BitBlt(hdc,
                 ps.rcPaint.left,
                 ps.rcPaint.top,
                 ps.rcPaint.right - ps.rcPaint.left,
                 ps.rcPaint.bottom - ps.rcPaint.top,
-                mem,
+                mem.get(),
                 ps.rcPaint.left,
                 ps.rcPaint.top,
                 SRCCOPY);
-            if (oldFont) SelectObject(mem, oldFont);
-            SelectObject(mem, oldBitmap);
+            if (oldFont) SelectObject(mem.get(), oldFont);
         } else {
             HFONT oldFont = state && state->font ? (HFONT)SelectObject(hdc, state->font) : nullptr;
             ScreenshotColorPickerDrawContent(hwnd, hdc, state);
             if (oldFont) SelectObject(hdc, oldFont);
         }
-        if (buffer) DeleteObject(buffer);
-        if (mem) DeleteDC(mem);
         EndPaint(hwnd, &ps);
         return 0;
     }

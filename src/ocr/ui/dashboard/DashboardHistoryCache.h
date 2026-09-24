@@ -2,7 +2,9 @@
 
 #include "ocr/ui/DashboardModels.h"
 #include "ocr/ui/dashboard/DashboardHistoryModel.h"
-#include "core/WideFormatUtils.h"
+#include "core/WidePathUtils.h"
+#include "core/WideCaseOps.h"
+#include "core/WideCompareOps.h"
 
 #include <set>
 #include <string>

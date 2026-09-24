@@ -2,7 +2,12 @@
 
 #include "image/BitmapCodec.h"
 #include "PageRange.h"
-#include "core/WideFormatUtils.h"
+#include "core/WideFormatLabels.h"
+#include "core/WideFormatPaths.h"
+#include "core/WideFormatOcr.h"
+#include "core/WidePathUtils.h"
+#include "core/WideCaseOps.h"
+#include "core/WideCompareOps.h"
 
 #include <windows.h>
 #include <shlobj.h>

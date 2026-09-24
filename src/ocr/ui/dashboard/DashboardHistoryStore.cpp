@@ -2,7 +2,9 @@
 #include "JsonUtils.h"
 #include "OcrBlockJson.h"
 #include "ocr/batch/BatchOcrTypes.h"
-#include "core/WideFormatUtils.h"
+#include "core/WideFormatNumbers.h"
+#include "core/WideCaseOps.h"
+#include "core/WideTextOps.h"
 #include "core/WideJsonUtils.h"
 
 #include <algorithm>

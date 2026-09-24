@@ -3,9 +3,12 @@
 // JSON traversal, extraction, serialization, and token parsing helpers.
 // Pure, no HWND / Win32 dependencies.
 
+#include "core/WideCaseOps.h"
+#include "core/WideCompareOps.h"
 #include "core/WideTextOps.h"
 
 #include <cwchar>
+#include <format>
 #include <string>
 #include <vector>
 
@@ -340,15 +343,11 @@ inline std::wstring WideJsonFieldString(const wchar_t* key, const std::wstring& 
 }
 
 inline std::wstring WideJsonFieldInt(const wchar_t* key, int value) {
-    wchar_t buf[96] = {};
-    swprintf_s(buf, L"    \"%s\": %d", key ? key : L"", value);
-    return buf;
+    return std::format(L"    \"{}\": {}", key ? key : L"", value);
 }
 
 inline std::wstring WideJsonFieldUnsigned(const wchar_t* key, unsigned value) {
-    wchar_t buf[96] = {};
-    swprintf_s(buf, L"    \"%s\": %u", key ? key : L"", value);
-    return buf;
+    return std::format(L"    \"{}\": {}", key ? key : L"", value);
 }
 
 inline std::wstring WideJsonFieldBool(const wchar_t* key, bool value) {
@@ -372,27 +371,19 @@ inline std::wstring WideJsonFieldStringLiteral(const wchar_t* key, const wchar_t
 }
 
 inline std::wstring WideJsonFieldInt2(const wchar_t* key, int value) {
-    wchar_t buf[128] = {};
-    swprintf_s(buf, L"  \"%s\": %d,\r\n", key ? key : L"", value);
-    return buf;
+    return std::format(L"  \"{}\": {},\r\n", key ? key : L"", value);
 }
 
 inline std::wstring WideJsonFieldUll2(const wchar_t* key, unsigned long long value) {
-    wchar_t buf[160] = {};
-    swprintf_s(buf, L"  \"%s\": %llu,\r\n", key ? key : L"", value);
-    return buf;
+    return std::format(L"  \"{}\": {},\r\n", key ? key : L"", value);
 }
 
 inline std::wstring WideJsonFieldIntCompact(const wchar_t* key, int value) {
-    wchar_t buf[96] = {};
-    swprintf_s(buf, L"\"%s\":%d", key ? key : L"", value);
-    return buf;
+    return std::format(L"\"{}\":{}", key ? key : L"", value);
 }
 
 inline std::wstring WideJsonFieldUllCompact(const wchar_t* key, unsigned long long value) {
-    wchar_t buf[128] = {};
-    swprintf_s(buf, L"\"%s\":%llu", key ? key : L"", value);
-    return buf;
+    return std::format(L"\"{}\":{}", key ? key : L"", value);
 }
 
 inline std::wstring WideJsonObjectSection(

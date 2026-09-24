@@ -5,7 +5,10 @@
 #include <cmath>
 #include <string>
 #include <vector>
-#include "core/WideFormatUtils.h"
+#include "core/WideFormatPrimitives.h"
+#include "core/WideFormatNumbers.h"
+#include "core/WideColorUtils.h"
+#include "core/GdiHandles.h"
 
 namespace {
 
@@ -1213,17 +1216,17 @@ void ScreenshotDrawMagnifierLocal(HDC hdc,
     }
 
     int saved = SaveDC(hdc);
-    HRGN clipRgn = nullptr;
+    zencrop::ScopedHRGN clipRgn;
     if (ellipse) {
-        clipRgn = CreateEllipticRgn(destinationRect.left, destinationRect.top, destinationRect.right, destinationRect.bottom);
+        clipRgn.reset(CreateEllipticRgn(destinationRect.left, destinationRect.top, destinationRect.right, destinationRect.bottom));
     } else if (roundedRadius > 0) {
-        clipRgn = CreateRoundRectRgn(destinationRect.left, destinationRect.top, destinationRect.right, destinationRect.bottom,
-            roundedRadius * 2, roundedRadius * 2);
+        clipRgn.reset(CreateRoundRectRgn(destinationRect.left, destinationRect.top, destinationRect.right, destinationRect.bottom,
+            roundedRadius * 2, roundedRadius * 2));
     } else {
-        clipRgn = CreateRectRgn(destinationRect.left, destinationRect.top, destinationRect.right, destinationRect.bottom);
+        clipRgn.reset(CreateRectRgn(destinationRect.left, destinationRect.top, destinationRect.right, destinationRect.bottom));
     }
     if (clipRgn) {
-        SelectClipRgn(hdc, clipRgn);
+        SelectClipRgn(hdc, clipRgn.get());
     }
 
     const int sourceX = sourceRect.left - sourceOriginX;
@@ -1240,7 +1243,6 @@ void ScreenshotDrawMagnifierLocal(HDC hdc,
         sourcePixels, &bmi, DIB_RGB_COLORS, SRCCOPY);
 
     RestoreDC(hdc, saved);
-    if (clipRgn) DeleteObject(clipRgn);
     SetStretchBltMode(hdc, oldMode);
 
     Gdiplus::Pen pen(ScreenshotArrowColorLocal(color), ScreenshotArrowStrokeWidthLocal(penWidth));
@@ -1502,28 +1504,26 @@ void ScreenshotDrawSerialAnnotationLocal(
     }
     int savedDc = SaveDC(hdc);
     ScreenshotApplyHdcRectRotationLocal(hdc, localRect, angleDegrees);
-    HBRUSH fillBrush = CreateSolidBrush(color);
-    HBRUSH previousBrush = fillBrush ? (HBRUSH)SelectObject(hdc, fillBrush) : nullptr;
-    HPEN serialPen = CreatePen(PS_SOLID, 2, color);
-    HPEN previousPen = serialPen ? (HPEN)SelectObject(hdc, serialPen) : nullptr;
-    Ellipse(hdc, localRect.left, localRect.top, localRect.right, localRect.bottom);
-    if (previousBrush) SelectObject(hdc, previousBrush);
-    if (fillBrush) DeleteObject(fillBrush);
-    if (previousPen) SelectObject(hdc, previousPen);
-    if (serialPen) DeleteObject(serialPen);
+    {
+        zencrop::ScopedHBRUSH fillBrush(CreateSolidBrush(color));
+        zencrop::ScopedSelectObject selectBrush(hdc, fillBrush.get());
+        zencrop::ScopedHPEN serialPen(CreatePen(PS_SOLID, 2, color));
+        zencrop::ScopedSelectObject selectPen(hdc, serialPen.get());
+        Ellipse(hdc, localRect.left, localRect.top, localRect.right, localRect.bottom);
+    }
 
-    HFONT font = CreateFontW(-18, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
-        DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-        CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
-    HFONT oldFont = font ? (HFONT)SelectObject(hdc, font) : nullptr;
-    SetBkMode(hdc, TRANSPARENT);
-    SetTextColor(hdc, RGB(255, 255, 255));
-    std::wstring numStr = ScreenshotSerialNumberToStringLocal(
-        serialNumber > 0 ? serialNumber : 1, serialType);
-    RECT textRc = { localRect.left, localRect.top - 1, localRect.right, localRect.bottom + 1 };
-    DrawTextW(hdc, numStr.c_str(), -1, &textRc, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOCLIP);
-    if (oldFont) SelectObject(hdc, oldFont);
-    if (font) DeleteObject(font);
+    {
+        zencrop::ScopedHFONT font(CreateFontW(-18, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+            CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI"));
+        zencrop::ScopedSelectObject selectFont(hdc, font.get());
+        SetBkMode(hdc, TRANSPARENT);
+        SetTextColor(hdc, RGB(255, 255, 255));
+        std::wstring numStr = ScreenshotSerialNumberToStringLocal(
+            serialNumber > 0 ? serialNumber : 1, serialType);
+        RECT textRc = { localRect.left, localRect.top - 1, localRect.right, localRect.bottom + 1 };
+        DrawTextW(hdc, numStr.c_str(), -1, &textRc, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOCLIP);
+    }
     RestoreDC(hdc, savedDc);
 }
 
@@ -1686,12 +1686,12 @@ RECT ScreenshotDrawTextAnnotationLocal(
     POINT p = { editLocal.left, editLocal.top };
     const std::wstring family =
         !fontFamily.empty() ? fontFamily : std::wstring(L"Microsoft YaHei");
-    HFONT font = CreateFontW(
+    zencrop::ScopedHFONT font(CreateFontW(
         -fontSize, 0, 0, 0, bold ? FW_SEMIBOLD : FW_NORMAL,
         italics ? TRUE : FALSE, FALSE, FALSE,
         DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-        CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, family.c_str());
-    HFONT oldFont = font ? (HFONT)SelectObject(hdc, font) : nullptr;
+        CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, family.c_str()));
+    zencrop::ScopedSelectObject selectFont(hdc, font.get());
     SetBkMode(hdc, TRANSPARENT);
 
     const std::wstring measureText = visibleText.empty() ? L" " : visibleText;
@@ -1783,8 +1783,6 @@ RECT ScreenshotDrawTextAnnotationLocal(
     SetTextColor(hdc, textColor);
     DrawTextW(hdc, visibleText.c_str(), -1, &textRect, textFormat);
     RestoreDC(hdc, savedDc);
-    if (oldFont) SelectObject(hdc, oldFont);
-    if (font) DeleteObject(font);
     return textRect;
 }
 

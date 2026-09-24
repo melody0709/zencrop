@@ -4,7 +4,6 @@
 #include "dashboard/DashboardDialogLayout.h"
 #include "dashboard/DashboardTheme.h"
 #include "Strings.h"
-#include "core/WideFormatUtils.h"
 
 #include <algorithm>
 #include <commctrl.h>

@@ -1,34 +1,33 @@
 #include "ViewportWindow.h"
 #include "AlwaysOnTop.h"
+#include "core/GdiHandles.h"
 
 HRGN ViewportWindow::DuplicateRegion(HRGN region) {
     if (!region) return nullptr;
 
-    HRGN copy = CreateRectRgn(0, 0, 0, 0);
+    zencrop::ScopedHRGN copy(CreateRectRgn(0, 0, 0, 0));
     if (!copy) return nullptr;
 
-    if (CombineRgn(copy, region, nullptr, RGN_COPY) == ERROR) {
-        DeleteObject(copy);
+    if (CombineRgn(copy.get(), region, nullptr, RGN_COPY) == ERROR) {
         return nullptr;
     }
 
-    return copy;
+    return copy.release();
 }
 
 HRGN ViewportWindow::CaptureWindowRegion(HWND hwnd, bool& hadRegion) {
     hadRegion = false;
 
-    HRGN region = CreateRectRgn(0, 0, 0, 0);
+    zencrop::ScopedHRGN region(CreateRectRgn(0, 0, 0, 0));
     if (!region) return nullptr;
 
-    int result = GetWindowRgn(hwnd, region);
+    int result = GetWindowRgn(hwnd, region.get());
     if (result == ERROR) {
-        DeleteObject(region);
         return nullptr;
     }
 
     hadRegion = true;
-    return region;
+    return region.release();
 }
 
 ViewportWindow::ViewportWindow(HWND targetWindow, RECT cropRect, bool pinOnTop)
@@ -44,10 +43,8 @@ ViewportWindow::ViewportWindow(HWND targetWindow, RECT cropRect, bool pinOnTop)
 ViewportWindow::~ViewportWindow() {
     RestoreOriginalState();
 
-    if (m_originalRegion) {
-        DeleteObject(m_originalRegion);
-        m_originalRegion = nullptr;
-    }
+    zencrop::ScopedHRGN orig(m_originalRegion);
+    m_originalRegion = nullptr;
 }
 
 void ViewportWindow::SaveOriginalState() {
@@ -120,29 +117,25 @@ void ViewportWindow::ApplyViewport(RECT cropRect) {
         return;
     }
 
-    HRGN finalRegion = CreateRectRgn(cropInWindowLeft, cropInWindowTop, cropInWindowLeft + cropWidth, cropInWindowTop + cropHeight);
+    zencrop::ScopedHRGN finalRegion(CreateRectRgn(cropInWindowLeft, cropInWindowTop, cropInWindowLeft + cropWidth, cropInWindowTop + cropHeight));
     if (!finalRegion) return;
 
     if (m_hadOriginalRegion && m_originalRegion) {
         int shiftX = (newClientPt.x - currentRect.left) - (oldClientPt.x - oldWindowRect.left);
         int shiftY = (newClientPt.y - currentRect.top) - (oldClientPt.y - oldWindowRect.top);
         
-        HRGN shiftedOriginal = DuplicateRegion(m_originalRegion);
+        zencrop::ScopedHRGN shiftedOriginal(DuplicateRegion(m_originalRegion));
         if (shiftedOriginal) {
-            OffsetRgn(shiftedOriginal, shiftX, shiftY);
-            if (CombineRgn(finalRegion, finalRegion, shiftedOriginal, RGN_AND) == ERROR) {
-                DeleteObject(finalRegion);
-                DeleteObject(shiftedOriginal);
+            OffsetRgn(shiftedOriginal.get(), shiftX, shiftY);
+            if (CombineRgn(finalRegion.get(), finalRegion.get(), shiftedOriginal.get(), RGN_AND) == ERROR) {
                 return;
             }
-            DeleteObject(shiftedOriginal);
         }
     }
 
     RECT regionBounds = {};
-    int regionType = GetRgnBox(finalRegion, &regionBounds);
+    int regionType = GetRgnBox(finalRegion.get(), &regionBounds);
     if (regionType == ERROR || regionType == NULLREGION) {
-        DeleteObject(finalRegion);
         return;
     }
 
@@ -151,10 +144,10 @@ void ViewportWindow::ApplyViewport(RECT cropRect) {
     int newLeft = cropRect.left - regionBounds.left;
     int newTop = cropRect.top - regionBounds.top;
 
-    if (SetWindowRgn(m_targetWindow, finalRegion, TRUE) == 0) {
-        DeleteObject(finalRegion);
+    if (SetWindowRgn(m_targetWindow, finalRegion.get(), TRUE) == 0) {
         return;
     }
+    (void)finalRegion.release();
 
     SetWindowPos(m_targetWindow, nullptr,
         newLeft, newTop, width, height,

@@ -1,6 +1,7 @@
 #include "ScreenshotToolbarText.h"
 
-#include "core/WideFormatUtils.h"
+#include "core/WideCompareOps.h"
+#include "core/WideTextOps.h"
 #include <windows.h>
 
 #include "Strings.h"

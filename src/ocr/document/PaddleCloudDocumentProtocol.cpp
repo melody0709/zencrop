@@ -4,7 +4,9 @@
 #include "OcrBlockJson.h"
 #include "PaddleCloudDocumentNormalizer.h"
 #include "Sha256.h"
-#include "core/WideFormatUtils.h"
+#include "core/WideFormatNumbers.h"
+#include "core/WideJsonUtils.h"
+#include "core/WideCaseOps.h"
 #include "DashboardFileTypes.h"
 
 #include <algorithm>

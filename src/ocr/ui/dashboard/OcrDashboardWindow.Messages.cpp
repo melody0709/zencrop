@@ -17,11 +17,13 @@
 #include "BatchOcrImageLinks.h"
 #include "OcrEngine.h"
 #include "OcrUtils.h"
-#include "Settings.h"
 #include "Strings.h"
 #include "AppMessages.h"
 #include "AlwaysOnTop.h"
-#include "core/WideFormatUtils.h"
+#include "core/WideFormatPrimitives.h"
+#include "core/WideFormatNumbers.h"
+#include "core/WideFormatLabels.h"
+#include "core/GdiHandles.h"
 #include "image/BitmapCodec.h"
 // Stage3 3-A-3: dead ScreenshotUtils include deleted (ocr_ui↛screenshot reverse).
 
@@ -48,9 +50,8 @@ void PaintDashboardSplitterLine(
     };
     if (lineRc.left >= lineRc.right) return;
 
-    HBRUSH brush = CreateSolidBrush(active ? Theme::accent : RGB(220, 220, 220));
-    FillRect(hdc, &lineRc, brush);
-    DeleteObject(brush);
+    zencrop::ScopedHBRUSH brush(CreateSolidBrush(active ? Theme::accent : RGB(220, 220, 220)));
+    FillRect(hdc, &lineRc, brush.get());
 }
 
 }
@@ -260,9 +261,10 @@ LRESULT OcrDashboardWindow::MessageHandler(HWND hwnd, UINT msg, WPARAM wParam, L
         RECT rc;
         GetClientRect(hwnd, &rc);
 
-        HBRUSH bgBrush = CreateSolidBrush(Theme::bgPrimary);
-        FillRect(hdc, &rc, bgBrush);
-        DeleteObject(bgBrush);
+        {
+            zencrop::ScopedHBRUSH bgBrush(CreateSolidBrush(Theme::bgPrimary));
+            FillRect(hdc, &rc, bgBrush.get());
+        }
 
         // The splitter hit children own the divider pixels. WS_CLIPCHILDREN
         // excludes those child rectangles from this paint, so the Dashboard
@@ -1140,20 +1142,20 @@ LRESULT OcrDashboardWindow::MessageHandler(HWND hwnd, UINT msg, WPARAM wParam, L
         if (closeButton && !disabled) {
             bg = pressed ? RGB(150, 32, 24) : (hovered ? RGB(196, 43, 28) : RGB(70, 38, 38));
         }
-        HBRUSH brush = CreateSolidBrush(bg);
-        FillRect(dis->hDC, &dis->rcItem, brush);
-        DeleteObject(brush);
+        {
+            zencrop::ScopedHBRUSH brush(CreateSolidBrush(bg));
+            FillRect(dis->hDC, &dis->rcItem, brush.get());
+        }
 
         // Subtle border
         COLORREF borderColor = activeMode ? Theme::accent : (hovered ? Theme::accent : Theme::border);
         if (closeButton && !disabled) borderColor = hovered ? RGB(230, 82, 66) : RGB(126, 62, 58);
-        HPEN pen = CreatePen(PS_SOLID, 1, borderColor);
-        HPEN oldPen = (HPEN)SelectObject(dis->hDC, pen);
-        HBRUSH oldBrush = (HBRUSH)SelectObject(dis->hDC, GetStockObject(NULL_BRUSH));
-        Rectangle(dis->hDC, dis->rcItem.left, dis->rcItem.top, dis->rcItem.right, dis->rcItem.bottom);
-        SelectObject(dis->hDC, oldPen);
-        SelectObject(dis->hDC, oldBrush);
-        DeleteObject(pen);
+        {
+            zencrop::ScopedHPEN pen(CreatePen(PS_SOLID, 1, borderColor));
+            zencrop::ScopedSelectObject selPen(dis->hDC, pen.get());
+            zencrop::ScopedSelectObject selBrush(dis->hDC, GetStockObject(NULL_BRUSH));
+            Rectangle(dis->hDC, dis->rcItem.left, dis->rcItem.top, dis->rcItem.right, dis->rcItem.bottom);
+        }
 
         if (panelToggle) {
             int glyphW = max(12, Scale(17));
@@ -1161,18 +1163,17 @@ LRESULT OcrDashboardWindow::MessageHandler(HWND hwnd, UINT msg, WPARAM wParam, L
             int left = (dis->rcItem.left + dis->rcItem.right - glyphW) / 2;
             int top = (dis->rcItem.top + dis->rcItem.bottom - glyphH) / 2;
             COLORREF glyphColor = disabled ? Theme::textMuted : Theme::textPrimary;
-            HPEN glyphPen = CreatePen(PS_SOLID, max(1, Scale(1)), glyphColor);
-            HPEN previousPen = (HPEN)SelectObject(dis->hDC, glyphPen);
-            HBRUSH previousBrush = (HBRUSH)SelectObject(dis->hDC, GetStockObject(NULL_BRUSH));
-            Rectangle(dis->hDC, left, top, left + glyphW, top + glyphH);
-            int railX = dis->hwndItem == m_sourcePanelToggleBtn
-                ? left + max(3, glyphW / 3)
-                : left + glyphW - max(3, glyphW / 3);
-            MoveToEx(dis->hDC, railX, top, nullptr);
-            LineTo(dis->hDC, railX, top + glyphH);
-            SelectObject(dis->hDC, previousPen);
-            SelectObject(dis->hDC, previousBrush);
-            DeleteObject(glyphPen);
+            {
+                zencrop::ScopedHPEN glyphPen(CreatePen(PS_SOLID, max(1, Scale(1)), glyphColor));
+                zencrop::ScopedSelectObject selPen(dis->hDC, glyphPen.get());
+                zencrop::ScopedSelectObject selBrush(dis->hDC, GetStockObject(NULL_BRUSH));
+                Rectangle(dis->hDC, left, top, left + glyphW, top + glyphH);
+                int railX = dis->hwndItem == m_sourcePanelToggleBtn
+                    ? left + max(3, glyphW / 3)
+                    : left + glyphW - max(3, glyphW / 3);
+                MoveToEx(dis->hDC, railX, top, nullptr);
+                LineTo(dis->hDC, railX, top + glyphH);
+            }
             // Activity/error badge when Source panel is collapsed.
             if (dis->hwndItem == m_sourcePanelToggleBtn &&
                 !m_resolvedLayout.sourceVisible &&
@@ -1183,15 +1184,11 @@ LRESULT OcrDashboardWindow::MessageHandler(HWND hwnd, UINT msg, WPARAM wParam, L
                 COLORREF badgeColor = m_sourcePanelHasErrorBadge
                     ? Theme::error
                     : Theme::accent;
-                HBRUSH badgeBrush = CreateSolidBrush(badgeColor);
-                HPEN badgePen = CreatePen(PS_SOLID, 1, badgeColor);
-                HPEN oldBadgePen = (HPEN)SelectObject(dis->hDC, badgePen);
-                HBRUSH oldBadgeBrush = (HBRUSH)SelectObject(dis->hDC, badgeBrush);
+                zencrop::ScopedHBRUSH badgeBrush(CreateSolidBrush(badgeColor));
+                zencrop::ScopedHPEN badgePen(CreatePen(PS_SOLID, 1, badgeColor));
+                zencrop::ScopedSelectObject selPen(dis->hDC, badgePen.get());
+                zencrop::ScopedSelectObject selBrush(dis->hDC, badgeBrush.get());
                 Ellipse(dis->hDC, bx, by, bx + badge, by + badge);
-                SelectObject(dis->hDC, oldBadgePen);
-                SelectObject(dis->hDC, oldBadgeBrush);
-                DeleteObject(badgePen);
-                DeleteObject(badgeBrush);
             }
         } else if (windowControlButton) {
             const int glyphW = max(10, Scale(13));
@@ -1199,22 +1196,21 @@ LRESULT OcrDashboardWindow::MessageHandler(HWND hwnd, UINT msg, WPARAM wParam, L
             const int left = (dis->rcItem.left + dis->rcItem.right - glyphW) / 2;
             const int top = (dis->rcItem.top + dis->rcItem.bottom - glyphH) / 2;
             const COLORREF glyphColor = disabled ? Theme::textMuted : Theme::textPrimary;
-            HPEN glyphPen = CreatePen(PS_SOLID, max(1, Scale(1)), glyphColor);
-            HPEN previousPen = (HPEN)SelectObject(dis->hDC, glyphPen);
-            HBRUSH previousBrush = (HBRUSH)SelectObject(dis->hDC, GetStockObject(NULL_BRUSH));
-            if (minimizeButton) {
-                MoveToEx(dis->hDC, left, top + glyphH - 1, nullptr);
-                LineTo(dis->hDC, left + glyphW, top + glyphH - 1);
-            } else if (IsZoomed(m_hwnd)) {
-                const int offset = max(2, Scale(3));
-                Rectangle(dis->hDC, left + offset, top, left + glyphW, top + glyphH - offset);
-                Rectangle(dis->hDC, left, top + offset, left + glyphW - offset, top + glyphH);
-            } else {
-                Rectangle(dis->hDC, left, top, left + glyphW, top + glyphH);
+            {
+                zencrop::ScopedHPEN glyphPen(CreatePen(PS_SOLID, max(1, Scale(1)), glyphColor));
+                zencrop::ScopedSelectObject selPen(dis->hDC, glyphPen.get());
+                zencrop::ScopedSelectObject selBrush(dis->hDC, GetStockObject(NULL_BRUSH));
+                if (minimizeButton) {
+                    MoveToEx(dis->hDC, left, top + glyphH - 1, nullptr);
+                    LineTo(dis->hDC, left + glyphW, top + glyphH - 1);
+                } else if (IsZoomed(m_hwnd)) {
+                    const int offset = max(2, Scale(3));
+                    Rectangle(dis->hDC, left + offset, top, left + glyphW, top + glyphH - offset);
+                    Rectangle(dis->hDC, left, top + offset, left + glyphW - offset, top + glyphH);
+                } else {
+                    Rectangle(dis->hDC, left, top, left + glyphW, top + glyphH);
+                }
             }
-            SelectObject(dis->hDC, previousPen);
-            SelectObject(dis->hDC, previousBrush);
-            DeleteObject(glyphPen);
         } else {
             wchar_t text[64];
             GetWindowTextW(dis->hwndItem, text, 64);
@@ -1371,17 +1367,18 @@ LRESULT CALLBACK OcrDashboardWindow::SplitterTrackerWndProc(HWND hwnd, UINT msg,
         RECT rc = {};
         GetClientRect(hwnd, &rc);
 
-        HBRUSH bg = CreateSolidBrush(Theme::accent);
-        FillRect(hdc, &rc, bg);
-        DeleteObject(bg);
+        {
+            zencrop::ScopedHBRUSH bg(CreateSolidBrush(Theme::accent));
+            FillRect(hdc, &rc, bg.get());
+        }
 
         int center = (rc.right - rc.left) / 2;
-        HPEN pen = CreatePen(PS_SOLID, 1, Theme::accentHover);
-        HPEN oldPen = (HPEN)SelectObject(hdc, pen);
-        MoveToEx(hdc, center, rc.top, nullptr);
-        LineTo(hdc, center, rc.bottom);
-        SelectObject(hdc, oldPen);
-        DeleteObject(pen);
+        {
+            zencrop::ScopedHPEN pen(CreatePen(PS_SOLID, 1, Theme::accentHover));
+            zencrop::ScopedSelectObject selPen(hdc, pen.get());
+            MoveToEx(hdc, center, rc.top, nullptr);
+            LineTo(hdc, center, rc.bottom);
+        }
 
         EndPaint(hwnd, &ps);
         return 0;
@@ -1680,9 +1677,9 @@ LRESULT OcrDashboardWindow::ImageAreaMessageHandler(HWND hwnd, UINT msg, WPARAM 
         int w = rc.right - rc.left;
         int h = rc.bottom - rc.top;
 
-        HDC hdcMem = CreateCompatibleDC(hdc);
-        HBITMAP hBmpMem = CreateCompatibleBitmap(hdc, w, h);
-        HGDIOBJ hOldBmp = SelectObject(hdcMem, hBmpMem);
+        zencrop::ScopedDC hdcMem(CreateCompatibleDC(hdc));
+        zencrop::ScopedHBITMAP hBmpMem(CreateCompatibleBitmap(hdc, w, h));
+        zencrop::ScopedSelectObject selBmp(hdcMem.get(), hBmpMem.get());
 
         // GDI+ drawing
         {
@@ -1973,10 +1970,7 @@ LRESULT OcrDashboardWindow::ImageAreaMessageHandler(HWND hwnd, UINT msg, WPARAM 
         // Canvas no longer draws the active-work strip (Phase 5).
 
         // BitBlt memory buffer to screen
-        BitBlt(hdc, 0, 0, w, h, hdcMem, 0, 0, SRCCOPY);
-        SelectObject(hdcMem, hOldBmp);
-        DeleteObject(hBmpMem);
-        DeleteDC(hdcMem);
+        BitBlt(hdc, 0, 0, w, h, hdcMem.get(), 0, 0, SRCCOPY);
         EndPaint(hwnd, &ps);
         return 0;
     }
@@ -2663,15 +2657,12 @@ LRESULT CALLBACK OcrDashboardWindow::EditSubclassProc(HWND hwnd, UINT msg, WPARA
             int w = rc.right - rc.left;
             int h = rc.bottom - rc.top;
             if (w > 0 && h > 0) {
-                HDC hdcMem = CreateCompatibleDC(hdc);
-                HBITMAP hBmpMem = CreateCompatibleBitmap(hdc, w, h);
-                HGDIOBJ hOldBmp = SelectObject(hdcMem, hBmpMem);
-                CallWindowProcW(origProc, hwnd, WM_PRINTCLIENT, (WPARAM)hdcMem, PRF_CLIENT);
-                self->DrawHistorySeparators(hdcMem, rc);
-                BitBlt(hdc, 0, 0, w, h, hdcMem, 0, 0, SRCCOPY);
-                SelectObject(hdcMem, hOldBmp);
-                DeleteObject(hBmpMem);
-                DeleteDC(hdcMem);
+                zencrop::ScopedDC hdcMem(CreateCompatibleDC(hdc));
+                zencrop::ScopedHBITMAP hBmpMem(CreateCompatibleBitmap(hdc, w, h));
+                zencrop::ScopedSelectObject selBmp(hdcMem.get(), hBmpMem.get());
+                CallWindowProcW(origProc, hwnd, WM_PRINTCLIENT, (WPARAM)hdcMem.get(), PRF_CLIENT);
+                self->DrawHistorySeparators(hdcMem.get(), rc);
+                BitBlt(hdc, 0, 0, w, h, hdcMem.get(), 0, 0, SRCCOPY);
             }
             EndPaint(hwnd, &ps);
             return 0;

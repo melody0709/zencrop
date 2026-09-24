@@ -96,13 +96,16 @@ bool OcrModelDownloadService::Start(
         snapshot_.bundle = bundle;
         snapshot_.statusText = L"Preparing download...";
     }
-    worker_ = std::thread(&OcrModelDownloadService::Run, this, bundle, modelRoot, mirrorPref);
+    worker_ = std::jthread([this, bundle, modelRoot, mirrorPref](std::stop_token st) {
+        Run(st, bundle, modelRoot, mirrorPref);
+    });
     return true;
 }
 
 void OcrModelDownloadService::Cancel()
 {
     cancelRequested_.store(true);
+    worker_.request_stop();
     std::lock_guard<std::mutex> lock(mutex_);
     if (OcrModelDownloadStateIsActive(snapshot_.state)) {
         snapshot_.state = OcrModelDownloadState::Cancelling;
@@ -160,10 +163,15 @@ bool OcrModelDownloadService::WaitForRetry(int milliseconds) const
 }
 
 void OcrModelDownloadService::Run(
+    std::stop_token stopToken,
     OcrModelBundleId bundleId,
     std::wstring modelRoot,
     OcrModelMirrorPreference mirrorPref)
 {
+    if (stopToken.stop_requested()) {
+        SetCancelled();
+        return;
+    }
     try {
         RunImpl(bundleId, std::move(modelRoot), mirrorPref);
     } catch (...) {

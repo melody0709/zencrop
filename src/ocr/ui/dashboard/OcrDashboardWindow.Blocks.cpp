@@ -10,7 +10,13 @@
 #include "core/ClipboardUtils.h"
 #include "Strings.h"
 #include "OcrBlockJson.h"
-#include "core/WideFormatUtils.h"
+#include "core/WideFormatPrimitives.h"
+#include "core/WideFormatNumbers.h"
+#include "core/WideFormatLabels.h"
+#include "core/WideFormatPaths.h"
+#include "core/WideFormatOcr.h"
+#include "core/WideCompareOps.h"
+#include "core/WideTextOps.h"
 #include "core/JsonUtils.h"
 
 #include <algorithm>

@@ -665,7 +665,7 @@ struct SelectionTextAcquirer::State {
 SelectionTextAcquirer::SelectionTextAcquirer(HWND deliveryWindow)
     : state_(std::make_shared<State>(deliveryWindow)) {
     const auto state = state_;
-    worker_ = std::thread([state] {
+    worker_ = std::jthread([state](std::stop_token stopToken) {
         std::unique_ptr<UiaWorkerSlot> healthyUia = CreateUiaWorker();
         std::unique_ptr<UiaWorkerSlot> quarantinedUia;
 
@@ -674,9 +674,9 @@ SelectionTextAcquirer::SelectionTextAcquirer(HWND deliveryWindow)
             {
                 std::unique_lock<std::mutex> lock(state->mutex);
                 state->condition.wait(lock, [&] {
-                    return state->stopping || state->pending.has_value();
+                    return stopToken.stop_requested() || state->stopping || state->pending.has_value();
                 });
-                if (state->stopping && !state->pending) break;
+                if ((stopToken.stop_requested() || state->stopping) && !state->pending) break;
                 snapshot = *state->pending;
                 state->pending.reset();
             }
@@ -903,6 +903,7 @@ void SelectionTextAcquirer::Shutdown() {
     }
     state->condition.notify_all();
     state->clipboard->Shutdown();
+    worker_.request_stop();
     if (worker_.joinable()) {
         if (WaitForSingleObject(state->exitEvent, 1600) == WAIT_OBJECT_0) {
             worker_.join();

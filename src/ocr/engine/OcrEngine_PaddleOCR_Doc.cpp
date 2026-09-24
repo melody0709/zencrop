@@ -12,7 +12,9 @@
 #include <algorithm>
 #include <shlwapi.h>
 #include <mutex>
-#include "core/WideFormatUtils.h"
+#include "core/WideFormatNumbers.h"
+#include "core/WideFormatWin32.h"
+#include "core/WideFormatOcr.h"
 #include "core/WideJsonUtils.h"
 #include "core/NarrowStringUtils.h"
 

@@ -1,6 +1,8 @@
 #include "PageRange.h"
 
-#include "core/WideFormatUtils.h"
+#include "core/WideJsonUtils.h"
+#include "core/WideCaseOps.h"
+#include "core/WideTextOps.h"
 
 namespace {
 

@@ -1,7 +1,10 @@
 #include "BatchOcrManifest.h"
 
 #include "JsonUtils.h"
-#include "core/WideFormatUtils.h"
+#include "core/WideFormatConfig.h"
+#include "core/WideJsonUtils.h"
+#include "core/WidePathUtils.h"
+#include "core/WideCompareOps.h"
 #include "OcrBlockJson.h"
 #include "PageRange.h"
 #include "DashboardFileTypes.h"

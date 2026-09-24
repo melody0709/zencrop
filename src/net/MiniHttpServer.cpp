@@ -4,7 +4,9 @@
 #include <windows.h>
 #include "MiniHttpServer.h"
 #include "core/AppDataPaths.h"
-#include "core/WideFormatUtils.h"
+#include "core/WidePathUtils.h"
+#include "core/WideCaseOps.h"
+#include "core/WideCompareOps.h"
 #include "core/NarrowStringUtils.h"
 #include <shlwapi.h>
 #include <fstream>

@@ -1,6 +1,7 @@
 #pragma once
 
-#include "core/WideFormatUtils.h"
+#include "core/WideFormatPrimitives.h"
+#include "core/WideCompareOps.h"
 #include <windows.h>
 #include <algorithm>
 #include <cmath>

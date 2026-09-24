@@ -12,12 +12,13 @@ void SmartDetectorThread::Start() {
     if (m_running.load()) return;
     m_stop.store(false);
     m_running.store(true);
-    m_thread = std::thread(&SmartDetectorThread::ThreadProc, this);
+    m_thread = std::jthread([this](std::stop_token st) { ThreadProc(st); });
 }
 
 void SmartDetectorThread::Stop() {
     if (!m_running.load()) return;
     m_stop.store(true);
+    m_thread.request_stop();
     m_cv.notify_one();
     if (m_thread.joinable()) {
         m_thread.join();
@@ -29,7 +30,7 @@ void SmartDetectorThread::Stop() {
     m_running.store(false);
 }
 
-void SmartDetectorThread::ThreadProc() {
+void SmartDetectorThread::ThreadProc(std::stop_token stopToken) {
     // STA required for IAccessible COM calls.
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
 
@@ -38,17 +39,19 @@ void SmartDetectorThread::ThreadProc() {
         SmartDetector localDetector;
         localDetector.Initialize();
 
-        while (!m_stop.load()) {
+        while (!m_stop.load() && !stopToken.stop_requested()) {
             Command cmd;
             {
                 std::unique_lock<std::mutex> lock(m_mutex);
-                m_cv.wait(lock, [this] { return m_stop.load() || !m_queue.empty(); });
-                if (m_stop.load()) break;
+                m_cv.wait(lock, [this, &stopToken] {
+                    return m_stop.load() || stopToken.stop_requested() || !m_queue.empty();
+                });
+                if (m_stop.load() || stopToken.stop_requested()) break;
                 cmd = std::move(m_queue.front());
                 m_queue.pop_front();
             }
             ProcessCommand(cmd, localDetector);
-            if (!m_stop.load()) {
+            if (!m_stop.load() && !stopToken.stop_requested()) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(1));
             }
         }

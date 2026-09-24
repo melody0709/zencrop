@@ -1,5 +1,6 @@
 #include "ReparentWindow.h"
-#include "core/WideFormatUtils.h"
+#include "core/WideCompareOps.h"
+#include "core/WideTextOps.h"
 #include <dwmapi.h>
 #include <windowsx.h>
 

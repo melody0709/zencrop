@@ -62,11 +62,11 @@ private:
         RECT clientRect = {};
     };
 
-    void ThreadProc();
+    void ThreadProc(std::stop_token stopToken);
     void ProcessCommand(const Command& cmd, SmartDetector& detector);
     void Enqueue(Command cmd);
 
-    std::thread m_thread;
+    std::jthread m_thread;
     std::mutex m_mutex;
     std::condition_variable m_cv;
     std::deque<Command> m_queue;

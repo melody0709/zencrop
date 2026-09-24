@@ -5,7 +5,9 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
-#include "core/WideFormatUtils.h"
+#include "core/WideFormatPrimitives.h"
+#include "core/WideColorUtils.h"
+#include "core/GdiHandles.h"
 
 namespace {
 const wchar_t* kHoverMagnifierWindowClass = L"ZenCrop.HoverMagnifierWindow";
@@ -186,15 +188,14 @@ bool HoverMagnifierWidget::RenderLayeredWindow(HWND owner, RECT screenRect, RECT
     RenderAtOrigin(m_layeredPixels, m_layeredWidth, m_layeredHeight,
                    m_layeredDc, { 0, 0 }, cropRect);
 
-    HDC hdcScreen = GetDC(nullptr);
+    zencrop::ScopedWindowDC hdcScreen(nullptr, GetDC(nullptr));
     if (!hdcScreen) return false;
 
     POINT ptSrc = { 0, 0 };
     SIZE sizeWnd = { panelW, panelH };
     BLENDFUNCTION blend = { AC_SRC_OVER, 0, 255, AC_SRC_ALPHA };
-    BOOL ok = UpdateLayeredWindow(m_layeredWindow, hdcScreen, &origin, &sizeWnd,
+    BOOL ok = UpdateLayeredWindow(m_layeredWindow, hdcScreen.get(), &origin, &sizeWnd,
                                   m_layeredDc, &ptSrc, 0, &blend, ULW_ALPHA);
-    ReleaseDC(nullptr, hdcScreen);
     if (!ok) {
         return false;
     }
@@ -263,10 +264,11 @@ bool HoverMagnifierWidget::EnsureLayeredBitmap(int width, int height) {
 
     FreeLayeredBitmap();
 
-    HDC hdcScreen = GetDC(nullptr);
-    if (!hdcScreen) return false;
-    m_layeredDc = CreateCompatibleDC(hdcScreen);
-    ReleaseDC(nullptr, hdcScreen);
+    {
+        zencrop::ScopedWindowDC hdcScreen(nullptr, GetDC(nullptr));
+        if (!hdcScreen) return false;
+        m_layeredDc = CreateCompatibleDC(hdcScreen.get());
+    }
     if (!m_layeredDc) return false;
 
     BITMAPINFO bmi = {};
@@ -298,11 +300,9 @@ void HoverMagnifierWidget::FreeLayeredBitmap() {
             SelectObject(m_layeredDc, m_layeredOldBitmap);
             m_layeredOldBitmap = nullptr;
         }
-        if (m_layeredBitmap) {
-            DeleteObject(m_layeredBitmap);
-            m_layeredBitmap = nullptr;
-        }
-        DeleteDC(m_layeredDc);
+        zencrop::ScopedHBITMAP bmp(m_layeredBitmap);
+        m_layeredBitmap = nullptr;
+        zencrop::ScopedDC dc(m_layeredDc);
         m_layeredDc = nullptr;
     }
     m_layeredPixels = nullptr;

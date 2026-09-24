@@ -1,5 +1,5 @@
 #include "PaddleDocRegionGrouping.h"
-#include "core/WideFormatUtils.h"
+#include "core/WideFormatOcr.h"
 
 #include <algorithm>
 #include <climits>

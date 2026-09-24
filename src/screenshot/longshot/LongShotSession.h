@@ -11,6 +11,7 @@
 #include <thread>
 #include <utility>
 #include <vector>
+#include "core/GdiHandles.h"
 
 namespace longshot {
 
@@ -162,21 +163,21 @@ private:
     AsyncSaveResult m_saveResult;
     std::atomic<bool> m_saveCompletionReady{false};
     std::atomic<bool> m_saveCompletionHandled{false};
-    std::thread m_saveThread;
+    std::jthread m_saveThread;
     HWND m_progressWnd = nullptr;
     HWND m_progressCancelBtn = nullptr;
     HWND m_progressBar = nullptr; // Native msctls_progress32 control.
-    HFONT m_progressFont = nullptr; // owned; freed in DestroyProgressWindow
+    zencrop::ScopedHFONT m_progressFont; // owned; freed in DestroyProgressWindow
 
     // Persistent virtual-screen backing surface. Reusing it removes the
     // allocation/deallocation storm from the 100ms capture loop.
-    HDC m_maskDc = nullptr;
-    HBITMAP m_maskDib = nullptr;
+    zencrop::ScopedDC m_maskDc;
+    zencrop::ScopedHBITMAP m_maskDib;
     HGDIOBJ m_maskOld = nullptr;
     void* m_maskBits = nullptr;
     int m_maskW = 0;
     int m_maskH = 0;
-    HFONT m_maskFont = nullptr;
+    zencrop::ScopedHFONT m_maskFont;
     int m_maskFontPx = 0;
     bool EnsureMaskSurface(int width, int height);
     HFONT EnsureMaskFont(int pixelHeight);

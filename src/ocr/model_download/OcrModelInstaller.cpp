@@ -2,7 +2,8 @@
 
 #include "core/AppDataPaths.h"
 #include "core/Sha256.h"
-#include "core/WideFormatUtils.h"
+#include "core/WideFormatWin32.h"
+#include "core/WidePathUtils.h"
 #include "miniz.h"
 
 #include <windows.h>

@@ -1,8 +1,9 @@
 #define WIN32_LEAN_AND_MEAN
 #include "screenshot/OverlayWindow.h"
 
-#include "core/Settings.h"
-#include "core/WideFormatUtils.h"
+#include "core/WideFormatNumbers.h"
+#include "core/WideFormatLabels.h"
+#include "core/WideColorUtils.h"
 #include "screenshot/ToolbarIconRenderer.h"
 #include "screenshot/ScreenshotAnnotationGeometry.h"
 #include "screenshot/ScreenshotAnnotationHelpers.h"

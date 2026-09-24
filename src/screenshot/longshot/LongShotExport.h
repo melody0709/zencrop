@@ -1,7 +1,7 @@
 #pragma once
 
 #include "LongShotImage.h"
-#include "Settings.h"
+enum class ScreenshotFormat : int;
 
 #include <atomic>
 #include <functional>

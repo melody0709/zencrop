@@ -8,7 +8,7 @@
 #include "core/OcrModelRegistry.h"
 #include "PPOcrV6RecBatchPlan.h"
 #include "Settings.h"
-#include "core/WideFormatUtils.h"
+#include "core/WideCaseOps.h"
 #include <algorithm>
 #include <memory>
 

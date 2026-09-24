@@ -1,6 +1,6 @@
 #pragma once
 
-#include "core/Settings.h"
+struct TranslationSettings;
 #include "translation/TranslationTypes.h"
 
 #include <string>

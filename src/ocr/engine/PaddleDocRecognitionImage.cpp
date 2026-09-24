@@ -1,4 +1,5 @@
 #include "PaddleDocRecognitionImage.h"
+#include "core/GdiHandles.h"
 
 #include <algorithm>
 #include <climits>
@@ -78,24 +79,17 @@ Dib32 CropToDib(HBITMAP source, RECT rect) {
     Dib32 result = CreateDib32(width, height, true);
     if (!result.bitmap) return {};
 
-    HDC sourceDc = CreateCompatibleDC(nullptr);
-    HDC targetDc = CreateCompatibleDC(nullptr);
+    zencrop::ScopedDC sourceDc(CreateCompatibleDC(nullptr));
+    zencrop::ScopedDC targetDc(CreateCompatibleDC(nullptr));
     if (!sourceDc || !targetDc) {
-        if (sourceDc) DeleteDC(sourceDc);
-        if (targetDc) DeleteDC(targetDc);
         DeleteObject(result.bitmap);
         return {};
     }
-    HGDIOBJ oldSource = SelectObject(sourceDc, source);
-    HGDIOBJ oldTarget = SelectObject(targetDc, result.bitmap);
-    const BOOL copied = oldSource && oldSource != HGDI_ERROR &&
-        oldTarget && oldTarget != HGDI_ERROR && BitBlt(
+    zencrop::ScopedSelectObject selectSrc(sourceDc, source);
+    zencrop::ScopedSelectObject selectDst(targetDc, result.bitmap);
+    const BOOL copied = BitBlt(
         targetDc, 0, 0, width, height,
         sourceDc, rect.left, rect.top, SRCCOPY);
-    if (oldSource && oldSource != HGDI_ERROR) SelectObject(sourceDc, oldSource);
-    if (oldTarget && oldTarget != HGDI_ERROR) SelectObject(targetDc, oldTarget);
-    DeleteDC(sourceDc);
-    DeleteDC(targetDc);
     if (!copied) {
         DeleteObject(result.bitmap);
         return {};
@@ -354,7 +348,7 @@ HBITMAP ComposePaddleDocRecognitionGroup(
         return result;
     }
 
-    std::vector<HBITMAP> crops;
+    std::vector<zencrop::ScopedHBITMAP> crops;
     std::vector<int> widths;
     std::vector<int> heights;
     crops.reserve(group.regionIndices.size());
@@ -366,10 +360,9 @@ HBITMAP ComposePaddleDocRecognitionGroup(
         HBITMAP crop = CropPaddleDocRecognitionRegion(
             source, regions[index], formula, &cropStats);
         if (!crop) {
-            for (HBITMAP existing : crops) DeleteObject(existing);
             return nullptr;
         }
-        crops.push_back(crop);
+        crops.emplace_back(crop);
         widths.push_back(cropStats.width);
         heights.push_back(cropStats.height);
         stats.polygonApplied |= cropStats.polygonApplied;
@@ -382,10 +375,9 @@ HBITMAP ComposePaddleDocRecognitionGroup(
         stats.width = widths[0];
         stats.height = heights[0];
         stats.sourceRect = regions[group.regionIndices[0]].bbox;
-        return crops[0];
+        return crops[0].release();
     }
     if (group.alignments.size() + 1 != crops.size()) {
-        for (HBITMAP crop : crops) DeleteObject(crop);
         return nullptr;
     }
 
@@ -417,56 +409,41 @@ HBITMAP ComposePaddleDocRecognitionGroup(
     for (int height : heights) {
         totalHeight64 += height;
         if (totalHeight64 > INT_MAX) {
-            for (HBITMAP crop : crops) DeleteObject(crop);
             return nullptr;
         }
     }
     const int totalHeight = static_cast<int>(totalHeight64);
     Dib32 canvas = CreateDib32(mergedWidth, totalHeight, true);
     if (!canvas.bitmap) {
-        for (HBITMAP crop : crops) DeleteObject(crop);
         return nullptr;
     }
+    zencrop::ScopedHBITMAP canvasHolder(canvas.bitmap);
 
-    HDC targetDc = CreateCompatibleDC(nullptr);
+    zencrop::ScopedDC targetDc(CreateCompatibleDC(nullptr));
     if (!targetDc) {
-        DeleteObject(canvas.bitmap);
-        for (HBITMAP crop : crops) DeleteObject(crop);
         return nullptr;
     }
-    HGDIOBJ oldTarget = SelectObject(targetDc, canvas.bitmap);
-    if (!oldTarget || oldTarget == HGDI_ERROR) {
-        DeleteDC(targetDc);
-        DeleteObject(canvas.bitmap);
-        for (HBITMAP crop : crops) DeleteObject(crop);
-        return nullptr;
-    }
+    zencrop::ScopedSelectObject selectTarget(targetDc, canvas.bitmap);
     int yOffset = 0;
     bool copiedAll = true;
     for (size_t index = 0; index < crops.size(); ++index) {
-        HDC sourceDc = CreateCompatibleDC(nullptr);
-        HGDIOBJ oldSource = sourceDc
-            ? SelectObject(sourceDc, crops[index]) : nullptr;
-        if (!sourceDc || !oldSource || oldSource == HGDI_ERROR ||
-            !BitBlt(targetDc, xOffsets[index], yOffset, widths[index], heights[index],
-                sourceDc, 0, 0, SRCCOPY)) {
+        zencrop::ScopedDC sourceDc(CreateCompatibleDC(nullptr));
+        if (sourceDc) {
+            zencrop::ScopedSelectObject selectSource(sourceDc, crops[index].get());
+            if (!BitBlt(targetDc, xOffsets[index], yOffset, widths[index], heights[index],
+                    sourceDc, 0, 0, SRCCOPY)) {
+                copiedAll = false;
+            }
+        } else {
             copiedAll = false;
         }
-        if (sourceDc) {
-            if (oldSource && oldSource != HGDI_ERROR) SelectObject(sourceDc, oldSource);
-            DeleteDC(sourceDc);
-        }
         yOffset += heights[index];
-        DeleteObject(crops[index]);
     }
-    SelectObject(targetDc, oldTarget);
-    DeleteDC(targetDc);
     if (!copiedAll) {
-        DeleteObject(canvas.bitmap);
         return nullptr;
     }
     MakeOpaque(canvas);
     stats.width = mergedWidth;
     stats.height = totalHeight;
-    return canvas.bitmap;
+    return canvasHolder.release();
 }

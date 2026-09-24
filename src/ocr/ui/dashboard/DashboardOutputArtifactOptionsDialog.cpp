@@ -4,7 +4,9 @@
 #include "DashboardFileTypes.h"
 #include "BatchOcrTypes.h"
 #include "PdfRenderOptions.h"
-#include "core/WideFormatUtils.h"
+#include "core/WideFormatNumbers.h"
+#include "core/WideJsonUtils.h"
+#include "core/WideCompareOps.h"
 #include "Strings.h"
 
 #include <windows.h>

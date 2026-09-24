@@ -1,6 +1,6 @@
 #pragma once
 
-#include "core/WideFormatUtils.h"
+#include "core/WideJsonUtils.h"
 #include "screenshot/ScreenshotAnnotationLegacy.h"
 #include "screenshot/annotation/AnnotationMigration.h"
 #include "screenshot/annotation/AnnotationModel.h"

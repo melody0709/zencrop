@@ -3,8 +3,10 @@
 // Wide string path manipulation and file extension helpers.
 // Pure, no Win32 / HWND dependencies.
 
-#include "core/WideTextOps.h"
+#include "core/WideCaseOps.h"
+#include "core/WideCompareOps.h"
 
+#include <format>
 #include <initializer_list>
 #include <string>
 
@@ -200,7 +202,5 @@ inline bool WidePathHasExtensionNoCase(
 // Stable PDF page pause key: jobKey + "#page:" + pageIndex (empty if invalid).
 inline std::wstring WidePdfPagePauseKey(const std::wstring& jobKey, int pageIndex) {
     if (jobKey.empty() || pageIndex <= 0) return L"";
-    wchar_t buf[48] = {};
-    swprintf_s(buf, L"#page:%d", pageIndex);
-    return jobKey + buf;
+    return std::format(L"{}#page:{}", jobKey, pageIndex);
 }

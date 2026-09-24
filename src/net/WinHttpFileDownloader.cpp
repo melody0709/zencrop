@@ -1,6 +1,6 @@
 #include "WinHttpFileDownloader.h"
 
-#include "core/WideFormatUtils.h"
+#include "core/WideFormatWin32.h"
 
 #include <windows.h>
 #include <winhttp.h>

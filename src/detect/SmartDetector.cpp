@@ -1,6 +1,7 @@
 #include "SmartDetector.h"
 #include "Utils.h"
-#include "core/WideFormatUtils.h"
+#include "core/WideCaseOps.h"
+#include "core/WideCompareOps.h"
 #include <dwmapi.h>
 #include <oleauto.h>
 #include <psapi.h>
@@ -217,14 +218,13 @@ void TouchUiaPointThroughOverlay(POINT pt, HWND excludeHwnd) {
 }
 
 void TouchUiaPointThroughOverlayMta(POINT pt, HWND excludeHwnd) {
-    std::thread worker([=]() {
+    std::jthread worker([=]() {
         HRESULT coInit = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
         TouchUiaPointThroughOverlay(pt, excludeHwnd);
         if (SUCCEEDED(coInit)) {
             CoUninitialize();
         }
     });
-    worker.join();
 }
 
 } // namespace

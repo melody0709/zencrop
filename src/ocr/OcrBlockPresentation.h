@@ -10,7 +10,7 @@
 #include <cwctype>
 #include <string>
 #include <vector>
-#include "core/WideFormatUtils.h"
+#include "core/WideTextOps.h"
 
 namespace OcrBlockPresentation {
 

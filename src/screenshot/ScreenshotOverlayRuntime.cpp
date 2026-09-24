@@ -1,4 +1,5 @@
 #include "ScreenshotOverlayRuntime.h"
+#include "core/GdiHandles.h"
 #include <dwmapi.h>
 #include <cmath>
 
@@ -17,13 +18,12 @@ void DrawCursorIfNeededLocal(HDC hdc, const RECT& screenRect) {
     if (!GetIconInfo(cursorInfo.hCursor, &iconInfo)) {
         return;
     }
+    zencrop::ScopedHBITMAP mask(iconInfo.hbmMask);
+    zencrop::ScopedHBITMAP color(iconInfo.hbmColor);
 
     int x = cursorInfo.ptScreenPos.x - (int)iconInfo.xHotspot - screenRect.left;
     int y = cursorInfo.ptScreenPos.y - (int)iconInfo.yHotspot - screenRect.top;
     DrawIconEx(hdc, x, y, cursorInfo.hCursor, 0, 0, 0, nullptr, DI_NORMAL);
-
-    if (iconInfo.hbmMask) DeleteObject(iconInfo.hbmMask);
-    if (iconInfo.hbmColor) DeleteObject(iconInfo.hbmColor);
 }
 
 } // namespace
@@ -84,15 +84,14 @@ void ScreenshotOverlayRuntime::CaptureFrozenFrame(HWND window, RECT screenRect, 
         return;
     }
 
-    HDC hScreen = GetDC(nullptr);
+    zencrop::ScopedWindowDC hScreen(nullptr, GetDC(nullptr));
     if (!hScreen) {
         restoreOverlay();
         return;
     }
 
-    HDC hMem = CreateCompatibleDC(hScreen);
+    zencrop::ScopedDC hMem(CreateCompatibleDC(hScreen.get()));
     if (!hMem) {
-        ReleaseDC(nullptr, hScreen);
         restoreOverlay();
         return;
     }
@@ -106,23 +105,20 @@ void ScreenshotOverlayRuntime::CaptureFrozenFrame(HWND window, RECT screenRect, 
     bmi.bmiHeader.biCompression = BI_RGB;
 
     void* pBits = nullptr;
-    HBITMAP hBitmap = CreateDIBSection(hScreen, &bmi, DIB_RGB_COLORS, &pBits, nullptr, 0);
+    zencrop::ScopedHBITMAP hBitmap(CreateDIBSection(hScreen.get(), &bmi, DIB_RGB_COLORS, &pBits, nullptr, 0));
     if (!hBitmap || !pBits) {
-        if (hBitmap) DeleteObject(hBitmap);
-        DeleteDC(hMem);
-        ReleaseDC(nullptr, hScreen);
         restoreOverlay();
         return;
     }
 
-    HBITMAP hOld = (HBITMAP)SelectObject(hMem, hBitmap);
-    BOOL copied = BitBlt(hMem, 0, 0, width, height, hScreen, screenRect.left, screenRect.top, SRCCOPY | CAPTUREBLT);
-    if (copied && isScreenshotMode && includeCursor) {
-        DrawCursorIfNeededLocal(hMem, screenRect);
+    BOOL copied = FALSE;
+    {
+        zencrop::ScopedSelectObject hOld(hMem.get(), hBitmap.get());
+        copied = BitBlt(hMem.get(), 0, 0, width, height, hScreen.get(), screenRect.left, screenRect.top, SRCCOPY | CAPTUREBLT);
+        if (copied && isScreenshotMode && includeCursor) {
+            DrawCursorIfNeededLocal(hMem.get(), screenRect);
+        }
     }
-    SelectObject(hMem, hOld);
-    DeleteDC(hMem);
-    ReleaseDC(nullptr, hScreen);
 
     if (copied) {
         const unsigned int* pixels = static_cast<const unsigned int*>(pBits);
@@ -132,7 +128,6 @@ void ScreenshotOverlayRuntime::CaptureFrozenFrame(HWND window, RECT screenRect, 
         }
     }
 
-    DeleteObject(hBitmap);
     restoreOverlay();
 }
 
@@ -154,7 +149,7 @@ HBITMAP ScreenshotOverlayRuntime::CreateFrozenCropBitmap(const RECT& rect, RECT 
     int cropH = crop.bottom - crop.top;
     if (cropW <= 0 || cropH <= 0) return nullptr;
 
-    HDC hdc = GetDC(nullptr);
+    zencrop::ScopedWindowDC hdc(nullptr, GetDC(nullptr));
     if (!hdc) return nullptr;
 
     BITMAPINFO bmi = {};
@@ -166,10 +161,8 @@ HBITMAP ScreenshotOverlayRuntime::CreateFrozenCropBitmap(const RECT& rect, RECT 
     bmi.bmiHeader.biCompression = BI_RGB;
 
     void* pBits = nullptr;
-    HBITMAP hBitmap = CreateDIBSection(hdc, &bmi, DIB_RGB_COLORS, &pBits, nullptr, 0);
-    ReleaseDC(nullptr, hdc);
+    zencrop::ScopedHBITMAP hBitmap(CreateDIBSection(hdc.get(), &bmi, DIB_RGB_COLORS, &pBits, nullptr, 0));
     if (!hBitmap || !pBits) {
-        if (hBitmap) DeleteObject(hBitmap);
         return nullptr;
     }
 
@@ -184,7 +177,7 @@ HBITMAP ScreenshotOverlayRuntime::CreateFrozenCropBitmap(const RECT& rect, RECT 
         }
     }
 
-    return hBitmap;
+    return hBitmap.release();
 }
 
 bool ScreenshotOverlayRuntime::HasFrozenFrame(int width, int height) const {

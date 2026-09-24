@@ -1,3 +1,4 @@
+#include "core/Settings.h"
 #include "TranslationPromptComposer.h"
 
 #include <nlohmann/json.hpp>

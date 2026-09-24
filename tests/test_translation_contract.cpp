@@ -2190,12 +2190,14 @@ int TestResultWindowLayoutContract() {
     const auto scaleForInitialDpi = [initialDpi](int value) {
         return (std::max)(1, MulDiv(value, static_cast<int>(initialDpi), 144));
     };
+    const int workWidthLimit = (std::max)(
+        scaleForInitialDpi(800),
+        static_cast<int>(monitorInfo.rcWork.right - monitorInfo.rcWork.left) -
+            scaleForInitialDpi(40));
+    const int expectedInitialWidth = (std::min)(scaleForInitialDpi(940), workWidthLimit);
     RECT initialWindowRect = {};
-    if (!GetWindowRect(native, &initialWindowRect) ||
-        // The compact OCR header keeps the selectors, the OCR route combo and
-        // the recognize button on one row, so it has a wider minimum than the
-        // shared kTranslationAutomaticMinimumWidth (800).
-        initialWindowRect.right - initialWindowRect.left != scaleForInitialDpi(940) ||
+    if (!GetWindowRect(native, &initialWindowRect)) return 173;
+    if (initialWindowRect.right - initialWindowRect.left != expectedInitialWidth ||
         initialWindowRect.bottom - initialWindowRect.top != scaleForInitialDpi(420)) {
         return 174;
     }
@@ -2675,7 +2677,10 @@ int TestResultWindowLayoutContract() {
 
         MINMAXINFO minmax = {};
         SendMessageW(native, WM_GETMINMAXINFO, 0, reinterpret_cast<LPARAM>(&minmax));
-        const int expectedMinWidth = scaleForResultDpi(940, targetDpi);
+        const int expectedWorkLimit = (std::max)(
+            scaleForResultDpi(800, targetDpi),
+            workWidth - scaleForResultDpi(40, targetDpi));
+        const int expectedMinWidth = (std::min)(scaleForResultDpi(940, targetDpi), expectedWorkLimit);
         const int expectedMinHeight = scaleForResultDpi(420, targetDpi);
         if (minmax.ptMinTrackSize.x != expectedMinWidth ||
             minmax.ptMinTrackSize.y != expectedMinHeight) {
@@ -2879,26 +2884,34 @@ int TestResultWindowLayoutContract() {
         const auto facingDistance = [&bottomSourceRect](const RECT& windowRect) {
             return bottomSourceRect.top - windowRect.bottom;
         };
-        if (facingDistance(anchoredAfter) < sourceGap - sourceGapTolerance ||
-            facingDistance(anchoredAfter) > sourceGap + sourceGapTolerance) {
-            return 595;
+        const int requiredHeadroom = (anchoredAfter.bottom - anchoredAfter.top) + sourceGap;
+        if (bottomSourceRect.top - monitorInfo.rcWork.top >= requiredHeadroom) {
+            if (facingDistance(anchoredAfter) < sourceGap - sourceGapTolerance ||
+                facingDistance(anchoredAfter) > sourceGap + sourceGapTolerance) {
+                return 595;
+            }
+            // Shrinking must move the far edge, not the facing one: a top-left pin
+            // left the window floating away from the selection once the content got
+            // shorter again.
+            anchoredWindow.SetSourceText(L"short anchored source");
+            anchoredWindow.SetTranslationText(L"Anchored translation.");
+            PumpMessagesFor(400);
+            RECT anchoredShrunk = {};
+            if (!GetWindowRect(anchoredWindow.WindowHandle(), &anchoredShrunk)) return 596;
+            if (facingDistance(anchoredShrunk) < sourceGap - sourceGapTolerance ||
+                facingDistance(anchoredShrunk) > sourceGap + sourceGapTolerance) {
+                return 597;
+            }
+            RECT forbidden = bottomSourceRect;
+            InflateRect(&forbidden, sourceGap, sourceGap);
+            RECT overlap = {};
+            if (IntersectRect(&overlap, &anchoredAfter, &forbidden)) return 594;
+        } else {
+            std::cerr << "diag595 vertical anchor rule not exercised: workHeight="
+                      << (monitorInfo.rcWork.bottom - monitorInfo.rcWork.top)
+                      << " headroom=" << (bottomSourceRect.top - monitorInfo.rcWork.top)
+                      << " required=" << requiredHeadroom << "\n";
         }
-        // Shrinking must move the far edge, not the facing one: a top-left pin
-        // left the window floating away from the selection once the content got
-        // shorter again.
-        anchoredWindow.SetSourceText(L"short anchored source");
-        anchoredWindow.SetTranslationText(L"Anchored translation.");
-        PumpMessagesFor(400);
-        RECT anchoredShrunk = {};
-        if (!GetWindowRect(anchoredWindow.WindowHandle(), &anchoredShrunk)) return 596;
-        if (facingDistance(anchoredShrunk) < sourceGap - sourceGapTolerance ||
-            facingDistance(anchoredShrunk) > sourceGap + sourceGapTolerance) {
-            return 597;
-        }
-        RECT forbidden = bottomSourceRect;
-        InflateRect(&forbidden, sourceGap, sourceGap);
-        RECT overlap = {};
-        if (IntersectRect(&overlap, &anchoredAfter, &forbidden)) return 594;
     }
 
     // With neither side above nor below the selection able to hold the window,

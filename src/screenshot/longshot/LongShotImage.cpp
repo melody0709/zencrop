@@ -1,5 +1,6 @@
 #include "LongShotImage.h"
 #include "screenshot/ScreenshotUtils.h"
+#include "core/GdiHandles.h"
 
 #include <algorithm>
 #include <cstring>
@@ -52,10 +53,9 @@ bool LockDib(HBITMAP bmp, DibView& out) {
     } catch (const std::bad_alloc&) {
         return false;
     }
-    HDC screen = GetDC(nullptr);
+    zencrop::ScopedWindowDC screen(nullptr, GetDC(nullptr));
     if (!screen) return false;
     const int got = GetDIBits(screen, bmp, 0, out.height, out.owned.data(), &bmi, DIB_RGB_COLORS);
-    ReleaseDC(nullptr, screen);
     if (got != out.height) return false;
     out.stride = out.width * 4;
     out.bits = out.owned.data();
@@ -74,17 +74,15 @@ HBITMAP CreateDib(int width, int height, void** outBits) {
     bmi.bmiHeader.biPlanes = 1;
     bmi.bmiHeader.biBitCount = 32;
     bmi.bmiHeader.biCompression = BI_RGB;
-    HDC screen = GetDC(nullptr);
+    zencrop::ScopedWindowDC screen(nullptr, GetDC(nullptr));
     if (!screen) return nullptr;
     void* bits = nullptr;
-    HBITMAP dib = CreateDIBSection(screen, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0);
-    ReleaseDC(nullptr, screen);
+    zencrop::ScopedHBITMAP dib(CreateDIBSection(screen, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0));
     if (!dib || !bits) {
-        if (dib) DeleteObject(dib);
         return nullptr;
     }
     if (outBits) *outBits = bits;
-    return dib;
+    return dib.release();
 }
 
 HBITMAP CreateDibFromPixels(int width, int height, const BYTE* pixels) {
@@ -149,35 +147,23 @@ bool BlitMainAxisRange(
         return false;
     }
 
-    HDC screen = GetDC(nullptr);
+    zencrop::ScopedWindowDC screen(nullptr, GetDC(nullptr));
     if (!screen) return false;
-    HDC destinationDc = CreateCompatibleDC(screen);
-    HDC sourceDc = CreateCompatibleDC(screen);
+    zencrop::ScopedDC destinationDc(CreateCompatibleDC(screen));
+    zencrop::ScopedDC sourceDc(CreateCompatibleDC(screen));
     if (!destinationDc || !sourceDc) {
-        if (destinationDc) DeleteDC(destinationDc);
-        if (sourceDc) DeleteDC(sourceDc);
-        ReleaseDC(nullptr, screen);
         return false;
     }
 
-    HGDIOBJ oldDestination = SelectObject(destinationDc, destination);
-    HGDIOBJ oldSource = SelectObject(sourceDc, source);
-    bool copied = false;
-    if (oldDestination && oldDestination != HGDI_ERROR && oldSource && oldSource != HGDI_ERROR) {
-        if (direction == Direction::Vertical) {
-            copied = BitBlt(destinationDc, 0, destinationMainStart, crossLen, mainLen,
-                sourceDc, 0, sourceMainStart, SRCCOPY) != FALSE;
-        } else {
-            copied = BitBlt(destinationDc, destinationMainStart, 0, mainLen, crossLen,
-                sourceDc, sourceMainStart, 0, SRCCOPY) != FALSE;
-        }
+    zencrop::ScopedSelectObject selectDest(destinationDc, destination);
+    zencrop::ScopedSelectObject selectSrc(sourceDc, source);
+    if (direction == Direction::Vertical) {
+        return BitBlt(destinationDc, 0, destinationMainStart, crossLen, mainLen,
+            sourceDc, 0, sourceMainStart, SRCCOPY) != FALSE;
+    } else {
+        return BitBlt(destinationDc, destinationMainStart, 0, mainLen, crossLen,
+            sourceDc, sourceMainStart, 0, SRCCOPY) != FALSE;
     }
-    if (oldDestination && oldDestination != HGDI_ERROR) SelectObject(destinationDc, oldDestination);
-    if (oldSource && oldSource != HGDI_ERROR) SelectObject(sourceDc, oldSource);
-    DeleteDC(destinationDc);
-    DeleteDC(sourceDc);
-    ReleaseDC(nullptr, screen);
-    return copied;
 }
 
 HBITMAP CreateTileDib(Direction direction, int crossLen, int capacityMain) {
@@ -398,11 +384,11 @@ void LongShotImage::CoalesceAdjacentTiles() {
 }
 
 StitchCode LongShotImage::AddFirstFrame(HBITMAP frame, Direction dir) {
+    zencrop::ScopedHBITMAP frameHolder(frame);
     FreeTiles();
     if (!frame) return StitchCode::InternalError;
     const auto size = Screenshot::GetBitmapSize(frame);
     if (size.width <= 0 || size.height <= 0) {
-        DeleteObject(frame);
         return StitchCode::InternalError;
     }
 
@@ -411,11 +397,9 @@ StitchCode LongShotImage::AddFirstFrame(HBITMAP frame, Direction dir) {
     const int crossLen = dir == Direction::Vertical ? size.width : size.height;
     m_crossSize = crossLen;
     if (!AddStripFromFrame(frame, 0, mainLen, 0, crossLen)) {
-        DeleteObject(frame);
         FreeTiles();
         return StitchCode::InternalError;
     }
-    DeleteObject(frame);
     m_contactOffset = 0;
     m_minMain = 0;
     m_maxMain = mainLen;
@@ -431,10 +415,10 @@ StitchCode LongShotImage::AddFrameAt(
     int crossLen,
     int sourceMainStart,
     std::optional<int> rawFrameStart) {
+    zencrop::ScopedHBITMAP frameHolder(frame);
     m_lastAddAccepted = false;
     if (!frame || contactMainLen <= 0 || crossLen <= 0 || !m_hasBounds ||
         m_crossSize <= 0 || crossLen != m_crossSize) {
-        if (frame) DeleteObject(frame);
         return StitchCode::InternalError;
     }
 
@@ -443,14 +427,12 @@ StitchCode LongShotImage::AddFrameAt(
     const int sourceCross = m_dir == Direction::Vertical ? sourceSize.width : sourceSize.height;
     if (sourceMain <= 0 || sourceCross != crossLen || sourceMainStart < 0 ||
         sourceMainStart > sourceMain || contactMainLen > sourceMain - sourceMainStart) {
-        DeleteObject(frame);
         return StitchCode::InternalError;
     }
 
     const long long contactEnd64 = static_cast<long long>(contactStart) + contactMainLen;
     if (contactEnd64 > (std::numeric_limits<int>::max)() ||
         contactEnd64 < (std::numeric_limits<int>::min)()) {
-        DeleteObject(frame);
         return StitchCode::InternalError;
     }
     const int contactEnd = static_cast<int>(contactEnd64);
@@ -475,7 +457,6 @@ StitchCode LongShotImage::AddFrameAt(
     if (!extendsHead && !extendsTail) {
         // Code 2 represents a completely covered frame. It commits
         // the feature contact but deliberately does not repaint its tiles.
-        DeleteObject(frame);
         m_contactOffset = newRawContact;
         m_lastAddAccepted = true;
         return StitchCode::AcceptedNoExpand;
@@ -483,7 +464,7 @@ StitchCode LongShotImage::AddFrameAt(
 
     struct PendingOverwrite {
         std::size_t tileIndex = 0;
-        HBITMAP backup = nullptr;
+        zencrop::ScopedHBITMAP backup;
         int tileMainStart = 0;
         int frameMainStart = 0;
         int mainLen = 0;
@@ -492,13 +473,9 @@ StitchCode LongShotImage::AddFrameAt(
     try {
         overwrites.reserve(oldTileCount);
     } catch (const std::bad_alloc&) {
-        DeleteObject(frame);
         return StitchCode::InternalError;
     }
     auto discardOverwrites = [&]() {
-        for (const auto& pending : overwrites) {
-            if (pending.backup) DeleteObject(pending.backup);
-        }
         overwrites.clear();
     };
 
@@ -517,7 +494,6 @@ StitchCode LongShotImage::AddFrameAt(
             if (!tile.bitmap || tile.mainLen <= 0 || tile.crossLen != crossLen ||
                 tileEnd64 > (std::numeric_limits<int>::max)()) {
                 discardOverwrites();
-                DeleteObject(frame);
                 return StitchCode::InternalError;
             }
             const int tileStart = tile.offset;
@@ -529,21 +505,17 @@ StitchCode LongShotImage::AddFrameAt(
             const int writeLen = writeEnd - writeStart;
             const int tileMainStart = tile.dataStart + (writeStart - tileStart);
             const int frameMainStart = sourceMainStart + (writeStart - contactStart);
-            HBITMAP backup = CreateTileDib(m_dir, crossLen, writeLen);
+            zencrop::ScopedHBITMAP backup(CreateTileDib(m_dir, crossLen, writeLen));
             if (!backup || !BlitMainAxisRange(
                     backup, 0, tile.bitmap, tileMainStart, writeLen, crossLen, m_dir)) {
-                if (backup) DeleteObject(backup);
                 discardOverwrites();
-                DeleteObject(frame);
                 return StitchCode::InternalError;
             }
             try {
                 overwrites.push_back(
-                    { index, backup, tileMainStart, frameMainStart, writeLen });
+                    { index, std::move(backup), tileMainStart, frameMainStart, writeLen });
             } catch (const std::bad_alloc&) {
-                DeleteObject(backup);
                 discardOverwrites();
-                DeleteObject(frame);
                 return StitchCode::InternalError;
             }
         }
@@ -556,7 +528,6 @@ StitchCode LongShotImage::AddFrameAt(
             if (!AddStripFromFrame(frame, sourceMainStart, leadingLen, contactStart, crossLen)) {
                 rollback();
                 discardOverwrites();
-                DeleteObject(frame);
                 return StitchCode::InternalError;
             }
         }
@@ -569,7 +540,6 @@ StitchCode LongShotImage::AddFrameAt(
             if (!AddStripFromFrame(frame, sourceStart, trailingLen, trailingStart, crossLen)) {
                 rollback();
                 discardOverwrites();
-                DeleteObject(frame);
                 return StitchCode::InternalError;
             }
         }
@@ -595,12 +565,10 @@ StitchCode LongShotImage::AddFrameAt(
             }
             rollback();
             discardOverwrites();
-            DeleteObject(frame);
             return StitchCode::InternalError;
         }
     }
     discardOverwrites();
-    DeleteObject(frame);
 
     m_contactOffset = newRawContact;
     m_lastAddAccepted = true;
@@ -713,32 +681,26 @@ HBITMAP LongShotImage::RenderPreview(
     }
 
     void* previewBits = nullptr;
-    HBITMAP preview = CreateDib(previewWidth, previewHeight, &previewBits);
+    zencrop::ScopedHBITMAP preview(CreateDib(previewWidth, previewHeight, &previewBits));
     if (!preview || !previewBits) {
-        if (preview) DeleteObject(preview);
         return nullptr;
     }
     auto* previewPixels = static_cast<DWORD*>(previewBits);
     std::fill_n(previewPixels,
         static_cast<std::size_t>(previewWidth) * previewHeight, 0xff181818u);
 
-    HDC screen = GetDC(nullptr);
-    HDC destinationDc = screen ? CreateCompatibleDC(screen) : nullptr;
-    HDC sourceDc = screen ? CreateCompatibleDC(screen) : nullptr;
-    if (!screen || !destinationDc || !sourceDc) {
-        if (sourceDc) DeleteDC(sourceDc);
-        if (destinationDc) DeleteDC(destinationDc);
-        if (screen) ReleaseDC(nullptr, screen);
-        DeleteObject(preview);
+    zencrop::ScopedWindowDC screen(nullptr, GetDC(nullptr));
+    if (!screen) return nullptr;
+    zencrop::ScopedDC destinationDc(CreateCompatibleDC(screen));
+    zencrop::ScopedDC sourceDc(CreateCompatibleDC(screen));
+    if (!destinationDc || !sourceDc) {
         return nullptr;
     }
 
-    HGDIOBJ oldDestination = SelectObject(destinationDc, preview);
-    bool rendered = oldDestination && oldDestination != HGDI_ERROR;
-    if (rendered) {
-        SetStretchBltMode(destinationDc, HALFTONE);
-        SetBrushOrgEx(destinationDc, 0, 0, nullptr);
-    }
+    zencrop::ScopedSelectObject selectDest(destinationDc, preview);
+    bool rendered = true;
+    SetStretchBltMode(destinationDc, HALFTONE);
+    SetBrushOrgEx(destinationDc, 0, 0, nullptr);
 
     const int previewMain = m_dir == Direction::Vertical ? previewHeight : previewWidth;
     for (const Tile& tile : m_tiles) {
@@ -770,11 +732,7 @@ HBITMAP LongShotImage::RenderPreview(
             (std::min)(destinationEnd, previewMain));
         if (destinationStart >= previewMain || destinationEnd <= destinationStart) continue;
 
-        HGDIOBJ oldSource = SelectObject(sourceDc, tile.bitmap);
-        if (!oldSource || oldSource == HGDI_ERROR) {
-            rendered = false;
-            break;
-        }
+        zencrop::ScopedSelectObject selectSrc(sourceDc, tile.bitmap);
         if (m_dir == Direction::Vertical) {
             rendered = StretchBlt(
                 destinationDc,
@@ -790,17 +748,9 @@ HBITMAP LongShotImage::RenderPreview(
                 tile.dataStart, 0, tile.mainLen, tile.crossLen,
                 SRCCOPY) != FALSE;
         }
-        SelectObject(sourceDc, oldSource);
     }
 
-    if (oldDestination && oldDestination != HGDI_ERROR) {
-        SelectObject(destinationDc, oldDestination);
-    }
-    DeleteDC(sourceDc);
-    DeleteDC(destinationDc);
-    ReleaseDC(nullptr, screen);
     if (!rendered) {
-        DeleteObject(preview);
         return nullptr;
     }
 
@@ -814,7 +764,7 @@ HBITMAP LongShotImage::RenderPreview(
 
     if (outWidth) *outWidth = previewWidth;
     if (outHeight) *outHeight = previewHeight;
-    return preview;
+    return preview.release();
 }
 
 bool LongShotImage::CropMainAxis(int start, int end) {

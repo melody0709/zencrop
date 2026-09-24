@@ -1,7 +1,11 @@
+#include "core/Settings.h"
 #include "ScreenshotUtils.h"
 #include "core/ClipboardUtils.h"
-#include "core/WideFormatUtils.h"
+#include "core/WideFormatPrimitives.h"
+#include "core/WidePathUtils.h"
+#include "core/WideCompareOps.h"
 #include "core/Utils.h"
+#include "core/GdiHandles.h"
 #include "image/BitmapCodec.h"
 #include "AppMessages.h"
 #include <gdiplus.h>
@@ -25,13 +29,12 @@ static void DrawCursorIfNeeded(HDC hdc, const RECT& screenRect) {
     if (!GetIconInfo(cursorInfo.hCursor, &iconInfo)) {
         return;
     }
+    zencrop::ScopedHBITMAP mask(iconInfo.hbmMask);
+    zencrop::ScopedHBITMAP color(iconInfo.hbmColor);
 
     int x = cursorInfo.ptScreenPos.x - (int)iconInfo.xHotspot - screenRect.left;
     int y = cursorInfo.ptScreenPos.y - (int)iconInfo.yHotspot - screenRect.top;
     DrawIconEx(hdc, x, y, cursorInfo.hCursor, 0, 0, 0, nullptr, DI_NORMAL);
-
-    if (iconInfo.hbmMask) DeleteObject(iconInfo.hbmMask);
-    if (iconInfo.hbmColor) DeleteObject(iconInfo.hbmColor);
 }
 
 BitmapSize GetBitmapSize(HBITMAP hBitmap) {
@@ -59,9 +62,9 @@ bool BitmapHasTransparentPixels(HBITMAP hBitmap) {
     bmi.bmiHeader.biCompression = BI_RGB;
 
     std::vector<DWORD> pixels((size_t)size.width * size.height);
-    HDC hdc = GetDC(nullptr);
-    int lines = GetDIBits(hdc, hBitmap, 0, size.height, pixels.data(), &bmi, DIB_RGB_COLORS);
-    ReleaseDC(nullptr, hdc);
+    zencrop::ScopedWindowDC hdc(nullptr, GetDC(nullptr));
+    if (!hdc) return false;
+    int lines = GetDIBits(hdc.get(), hBitmap, 0, size.height, pixels.data(), &bmi, DIB_RGB_COLORS);
     if (lines == 0) return false;
 
     for (DWORD pixel : pixels) {
@@ -77,14 +80,11 @@ HBITMAP CaptureScreenRect(const RECT& rect, bool includeCursor) {
     int height = rect.bottom - rect.top;
     if (width <= 0 || height <= 0) return nullptr;
 
-    HDC hScreen = GetDC(nullptr);
+    zencrop::ScopedWindowDC hScreen(nullptr, GetDC(nullptr));
     if (!hScreen) return nullptr;
 
-    HDC hMem = CreateCompatibleDC(hScreen);
-    if (!hMem) {
-        ReleaseDC(nullptr, hScreen);
-        return nullptr;
-    }
+    zencrop::ScopedDC hMem(CreateCompatibleDC(hScreen.get()));
+    if (!hMem) return nullptr;
 
     BITMAPINFO bmi = {};
     bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
@@ -95,29 +95,20 @@ HBITMAP CaptureScreenRect(const RECT& rect, bool includeCursor) {
     bmi.bmiHeader.biCompression = BI_RGB;
 
     void* bits = nullptr;
-    HBITMAP hBitmap = CreateDIBSection(hScreen, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0);
-    if (!hBitmap || !bits) {
-        if (hBitmap) DeleteObject(hBitmap);
-        DeleteDC(hMem);
-        ReleaseDC(nullptr, hScreen);
-        return nullptr;
+    zencrop::ScopedHBITMAP hBitmap(CreateDIBSection(hScreen.get(), &bmi, DIB_RGB_COLORS, &bits, nullptr, 0));
+    if (!hBitmap || !bits) return nullptr;
+
+    BOOL copied = FALSE;
+    {
+        zencrop::ScopedSelectObject old(hMem.get(), hBitmap.get());
+        copied = BitBlt(hMem.get(), 0, 0, width, height, hScreen.get(), rect.left, rect.top, SRCCOPY | CAPTUREBLT);
+        if (copied && includeCursor) {
+            DrawCursorIfNeeded(hMem.get(), rect);
+        }
     }
 
-    HBITMAP old = (HBITMAP)SelectObject(hMem, hBitmap);
-    BOOL copied = BitBlt(hMem, 0, 0, width, height, hScreen, rect.left, rect.top, SRCCOPY | CAPTUREBLT);
-    if (copied && includeCursor) {
-        DrawCursorIfNeeded(hMem, rect);
-    }
-    SelectObject(hMem, old);
-    DeleteDC(hMem);
-    ReleaseDC(nullptr, hScreen);
-
-    if (!copied) {
-        DeleteObject(hBitmap);
-        return nullptr;
-    }
-
-    return hBitmap;
+    if (!copied) return nullptr;
+    return hBitmap.release();
 }
 
 

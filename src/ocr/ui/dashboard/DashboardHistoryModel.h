@@ -8,7 +8,9 @@
 #include <cwctype>
 #include <vector>
 #include "core/WideMarkdownUtils.h"
-#include "core/WideFormatUtils.h"
+#include "core/WideFormatPaths.h"
+#include "core/WideCaseOps.h"
+#include "core/WideCompareOps.h"
 // DashboardItemKey lives in DashboardModels.h (already included).
 
 // Stage 1 D-C-4: history items + selection mirror, backed by repository for disk.

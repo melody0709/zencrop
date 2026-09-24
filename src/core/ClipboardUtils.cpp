@@ -1,9 +1,11 @@
 #include "core/ClipboardUtils.h"
+#include "core/GdiHandles.h"
 
 #include <gdiplus.h>
 #include <shellapi.h>
 #include <shlobj.h>
 
+#include <format>
 #include <limits>
 #include <string>
 #include <vector>
@@ -43,10 +45,9 @@ bool GetBitmapPixelsTopDown(HBITMAP hBitmap, BitmapSize size, std::vector<DWORD>
     bmi.bmiHeader.biBitCount = 32;
     bmi.bmiHeader.biCompression = BI_RGB;
 
-    HDC hdc = GetDC(nullptr);
+    zencrop::ScopedWindowDC hdc(nullptr, GetDC(nullptr));
     if (!hdc) return false;
-    int lines = GetDIBits(hdc, hBitmap, 0, size.height, pixels.data(), &bmi, DIB_RGB_COLORS);
-    ReleaseDC(nullptr, hdc);
+    int lines = GetDIBits(hdc.get(), hBitmap, 0, size.height, pixels.data(), &bmi, DIB_RGB_COLORS);
     return lines == size.height;
 }
 
@@ -245,9 +246,6 @@ HBITMAP CreateBitmapFromTopDownPixels(const std::vector<DWORD>& pixelsTopDown, B
     if (size.width <= 0 || size.height <= 0) return nullptr;
     if (pixelsTopDown.size() != (size_t)size.width * (size_t)size.height) return nullptr;
 
-    HDC hdc = GetDC(nullptr);
-    if (!hdc) return nullptr;
-
     BITMAPINFO bmi = {};
     bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
     bmi.bmiHeader.biWidth = size.width;
@@ -257,15 +255,18 @@ HBITMAP CreateBitmapFromTopDownPixels(const std::vector<DWORD>& pixelsTopDown, B
     bmi.bmiHeader.biCompression = BI_RGB;
 
     void* bits = nullptr;
-    HBITMAP hBitmap = CreateDIBSection(hdc, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0);
-    ReleaseDC(nullptr, hdc);
+    zencrop::ScopedHBITMAP hBitmap;
+    {
+        zencrop::ScopedWindowDC hdc(nullptr, GetDC(nullptr));
+        if (!hdc) return nullptr;
+        hBitmap.reset(CreateDIBSection(hdc.get(), &bmi, DIB_RGB_COLORS, &bits, nullptr, 0));
+    }
     if (!hBitmap || !bits) {
-        if (hBitmap) DeleteObject(hBitmap);
         return nullptr;
     }
 
     memcpy(bits, pixelsTopDown.data(), pixelsTopDown.size() * sizeof(DWORD));
-    return hBitmap;
+    return hBitmap.release();
 }
 
 std::wstring ClipboardTempDir()
@@ -391,8 +392,8 @@ std::wstring BuildClipboardTempFilePath(const std::wstring& extension)
     DWORD pid = GetCurrentProcessId();
 
     for (int attempt = 0; attempt < 100; ++attempt) {
-        wchar_t stem[128] = {};
-        swprintf_s(stem, L"ZenCrop_clip_%04u%02u%02u_%02u%02u%02u_%03u_%lu_%d",
+        const std::wstring stem = std::format(
+            L"ZenCrop_clip_{:04d}{:02d}{:02d}_{:02d}{:02d}{:02d}_{:03d}_{}_{}",
             st.wYear, st.wMonth, st.wDay,
             st.wHour, st.wMinute, st.wSecond, st.wMilliseconds,
             pid, attempt);
@@ -452,10 +453,9 @@ bool CopyBitmapToClipboard(HWND owner, HBITMAP hBitmap, const std::wstring& file
 
     std::wstring tempFile = fileDropPath;
     if (tempFile.empty()) {
-        HBITMAP normalizedBitmap = CreateBitmapFromTopDownPixels(pixelsTopDown, size);
+        zencrop::ScopedHBITMAP normalizedBitmap(CreateBitmapFromTopDownPixels(pixelsTopDown, size));
         if (normalizedBitmap) {
-            SaveClipboardTempPngFile(normalizedBitmap, tempFile);
-            DeleteObject(normalizedBitmap);
+            SaveClipboardTempPngFile(normalizedBitmap.get(), tempFile);
         }
     }
 

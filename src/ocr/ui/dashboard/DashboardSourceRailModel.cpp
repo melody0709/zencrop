@@ -1,6 +1,11 @@
 #include "ocr/ui/dashboard/DashboardSourceRailModel.h"
 #include "DashboardFileTypes.h"
-#include "core/WideFormatUtils.h"
+#include "core/WideFormatPrimitives.h"
+#include "core/WideFormatNumbers.h"
+#include "core/WideFormatLabels.h"
+#include "core/WideFormatPaths.h"
+#include "core/WideJsonUtils.h"
+#include "core/WidePathUtils.h"
 
 #include <algorithm>
 #include <windows.h>

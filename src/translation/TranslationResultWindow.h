@@ -4,6 +4,7 @@
 #include "TranslationTypes.h"
 
 #include <windows.h>
+#include "core/GdiHandles.h"
 
 #include <atomic>
 #include <cstdint>
@@ -158,11 +159,11 @@ private:
     HWND minimizeButton_ = nullptr;
     HWND closeButton_ = nullptr;
     HWND pinToolTip_ = nullptr;
-    HFONT font_ = nullptr;
-    HFONT compactFont_ = nullptr;
-    HFONT titleFont_ = nullptr;
-    HFONT textFont_ = nullptr;
-    HFONT sourceTextFont_ = nullptr;
+    zencrop::ScopedHFONT font_;
+    zencrop::ScopedHFONT compactFont_;
+    zencrop::ScopedHFONT titleFont_;
+    zencrop::ScopedHFONT textFont_;
+    zencrop::ScopedHFONT sourceTextFont_;
     UINT layoutDpi_ = 0;
     TranslationSourceMode sourceMode_ = TranslationSourceMode::OcrImage;
     RECT sourceRect_ = {};

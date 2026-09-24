@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <charconv>
+#include <format>
 #include <limits>
 #include <string_view>
 #include <unordered_map>
@@ -205,20 +206,16 @@ std::wstring MakeSelectionRequestToken() {
     GUID id = {};
     if (FAILED(CoCreateGuid(&id))) {
         const uint64_t tick = GetTickCount64();
-        wchar_t fallback[33] = {};
-        swprintf_s(fallback, L"%016llx%016llx",
+        return std::format(L"{:016x}{:016x}",
             static_cast<unsigned long long>(tick),
             static_cast<unsigned long long>(
                 reinterpret_cast<uintptr_t>(&id) ^ tick));
-        return fallback;
     }
-    wchar_t token[33] = {};
-    swprintf_s(token,
-        L"%08x%04x%04x%02x%02x%02x%02x%02x%02x%02x%02x",
+    return std::format(
+        L"{:08x}{:04x}{:04x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
         id.Data1, id.Data2, id.Data3,
         id.Data4[0], id.Data4[1], id.Data4[2], id.Data4[3],
         id.Data4[4], id.Data4[5], id.Data4[6], id.Data4[7]);
-    return token;
 }
 
 std::wstring BuildCodeSelectionMarkdown(

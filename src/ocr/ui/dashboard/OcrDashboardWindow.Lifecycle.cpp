@@ -7,9 +7,8 @@
 #include "dashboard/DashboardOleDropTarget.h"
 #include "translation/TranslationCoordinator.h"
 #include "AppMessages.h"
-#include "Settings.h"
 #include "Strings.h"
-#include "core/WideFormatUtils.h"
+#include "core/WidePathUtils.h"
 
 #include <dwmapi.h>
 #include <shellapi.h>

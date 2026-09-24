@@ -2,8 +2,16 @@
 
 #include "OcrUtils.h"
 #include "image/BitmapCodec.h"
+#include "core/GdiHandles.h"
 #include "DashboardFileTypes.h"
-#include "core/WideFormatUtils.h"
+#include "core/WideFormatPrimitives.h"
+#include "core/WideFormatLabels.h"
+#include "core/WideFormatPaths.h"
+#include "core/WideFormatOcr.h"
+#include "core/WidePathUtils.h"
+#include "core/WideCaseOps.h"
+#include "core/WideCompareOps.h"
+#include "core/WideTextOps.h"
 
 #include <windows.h>
 #include <shlobj.h>
@@ -236,13 +244,13 @@ bool WriteEmbeddedAsset(
     ImageCodec::EncodeOptions encodeOptions;
     encodeOptions.quality = quality;
     std::wstring encodeError;
+    zencrop::ScopedHBITMAP bitmapHolder(bitmap);
     const bool saved = ImageCodec::SaveHBitmapToFile(
-        bitmap,
+        bitmapHolder.get(),
         tempPath,
         EmbeddedAssetCodecFormat(forcedFormat),
         encodeOptions,
         &encodeError);
-    DeleteObject(bitmap);
     if (!saved) {
         DeleteFileW(tempPath.c_str());
         error = encodeError.empty() ? L"Failed to encode OCR image asset." : encodeError;
@@ -340,25 +348,21 @@ HBITMAP CropBitmapForAsset(HBITMAP source, const RECT& rect) {
     const int width = rect.right - rect.left;
     const int height = rect.bottom - rect.top;
     if (!source || width <= 0 || height <= 0) return nullptr;
-    HDC screen = GetDC(nullptr);
-    HDC sourceDc = CreateCompatibleDC(screen);
-    HDC targetDc = CreateCompatibleDC(screen);
-    HBITMAP target = CreateCompatibleBitmap(screen, width, height);
-    HGDIOBJ oldSource = SelectObject(sourceDc, source);
-    HGDIOBJ oldTarget = SelectObject(targetDc, target);
-    const bool copied = BitBlt(
-        targetDc, 0, 0, width, height,
-        sourceDc, rect.left, rect.top, SRCCOPY) != FALSE;
-    SelectObject(targetDc, oldTarget);
-    SelectObject(sourceDc, oldSource);
-    DeleteDC(targetDc);
-    DeleteDC(sourceDc);
-    ReleaseDC(nullptr, screen);
-    if (!copied) {
-        DeleteObject(target);
-        return nullptr;
+    zencrop::ScopedWindowDC screen(nullptr, GetDC(nullptr));
+    zencrop::ScopedDC sourceDc(CreateCompatibleDC(screen.get()));
+    zencrop::ScopedDC targetDc(CreateCompatibleDC(screen.get()));
+    zencrop::ScopedHBITMAP target(CreateCompatibleBitmap(screen.get(), width, height));
+    if (!target) return nullptr;
+    bool copied = false;
+    {
+        zencrop::ScopedSelectObject oldSource(sourceDc.get(), source);
+        zencrop::ScopedSelectObject oldTarget(targetDc.get(), target.get());
+        copied = BitBlt(
+            targetDc.get(), 0, 0, width, height,
+            sourceDc.get(), rect.left, rect.top, SRCCOPY) != FALSE;
     }
-    return target;
+    if (!copied) return nullptr;
+    return target.release();
 }
 
 bool ReplaceAllExact(
@@ -421,7 +425,7 @@ BatchOcrImageLinkRewriteResult MaterializeOcrEmbeddedAssets(
 
     const OcrOutputArtifactOptions options =
         NormalizeOcrOutputArtifactOptions(sourceOptions);
-    HBITMAP canonicalBitmap = nullptr;
+    zencrop::ScopedHBITMAP canonicalBitmap;
     BITMAP canonicalInfo = {};
     const bool needsCanonical = std::any_of(
         specs.begin(), specs.end(), [](const OcrEmbeddedAssetSpec& spec) {
@@ -429,15 +433,15 @@ BatchOcrImageLinkRewriteResult MaterializeOcrEmbeddedAssets(
         });
     if (needsCanonical) {
         std::wstring decodeError;
-        canonicalBitmap = ImageCodec::LoadHBitmapFromFile(
-            canonicalSourceImagePath, &decodeError);
+        canonicalBitmap.reset(ImageCodec::LoadHBitmapFromFile(
+            canonicalSourceImagePath, &decodeError));
         if (!canonicalBitmap) {
             result.error = decodeError.empty()
                 ? L"Failed to load canonical OCR image for embedded assets."
                 : decodeError;
             return result;
         }
-        GetObject(canonicalBitmap, sizeof(canonicalInfo), &canonicalInfo);
+        GetObject(canonicalBitmap.get(), sizeof(canonicalInfo), &canonicalInfo);
     }
 
     struct StagedAsset {
@@ -468,10 +472,7 @@ BatchOcrImageLinkRewriteResult MaterializeOcrEmbeddedAssets(
                     MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
             }
         }
-        if (canonicalBitmap) {
-            DeleteObject(canonicalBitmap);
-            canonicalBitmap = nullptr;
-        }
+        canonicalBitmap.reset();
     };
 
     for (size_t index = 0; index < specs.size(); ++index) {
@@ -546,7 +547,7 @@ BatchOcrImageLinkRewriteResult MaterializeOcrEmbeddedAssets(
                 fail(L"OCR embedded asset crop is outside the canonical image.");
                 return result;
             }
-            HBITMAP crop = CropBitmapForAsset(canonicalBitmap, rect);
+            zencrop::ScopedHBITMAP crop(CropBitmapForAsset(canonicalBitmap.get(), rect));
             if (!crop) {
                 fail(L"Failed to crop OCR embedded asset from canonical pixels.");
                 return result;
@@ -554,38 +555,35 @@ BatchOcrImageLinkRewriteResult MaterializeOcrEmbeddedAssets(
             ImageCodec::EncodeOptions encodeOptions;
             encodeOptions.quality = options.embeddedAssetQuality;
             encoded = ImageCodec::SaveHBitmapToFile(
-                crop,
+                crop.get(),
                 item.candidatePath,
                 EmbeddedAssetCodecFormat(format),
                 encodeOptions,
                 &encodeError);
-            DeleteObject(crop);
         } else if (options.embeddedAssetFormat == PdfRenderImageFormat::Auto &&
                    format == ProviderFormat(spec)) {
             encoded = WriteBytesFile(
                 item.candidatePath, spec.providerBytes, encodeError);
             if (encoded) {
-                HBITMAP validationBitmap = ImageCodec::LoadHBitmapFromFile(
-                    item.candidatePath, &encodeError);
-                encoded = validationBitmap != nullptr;
-                if (validationBitmap) DeleteObject(validationBitmap);
+                zencrop::ScopedHBITMAP validationBitmap(ImageCodec::LoadHBitmapFromFile(
+                    item.candidatePath, &encodeError));
+                encoded = validationBitmap.get() != nullptr;
             }
         } else {
             const std::wstring providerInput = item.candidatePath + L".provider" +
                 PdfRenderImageFormatExtension(ProviderFormat(spec));
             if (WriteBytesFile(providerInput, spec.providerBytes, encodeError)) {
-                HBITMAP providerBitmap = ImageCodec::LoadHBitmapFromFile(
-                    providerInput, &encodeError);
+                zencrop::ScopedHBITMAP providerBitmap(ImageCodec::LoadHBitmapFromFile(
+                    providerInput, &encodeError));
                 if (providerBitmap) {
                     ImageCodec::EncodeOptions encodeOptions;
                     encodeOptions.quality = options.embeddedAssetQuality;
                     encoded = ImageCodec::SaveHBitmapToFile(
-                        providerBitmap,
+                        providerBitmap.get(),
                         item.candidatePath,
                         EmbeddedAssetCodecFormat(format),
                         encodeOptions,
                         &encodeError);
-                    DeleteObject(providerBitmap);
                 }
             }
             DeleteFileW(providerInput.c_str());
@@ -631,7 +629,7 @@ BatchOcrImageLinkRewriteResult MaterializeOcrEmbeddedAssets(
         item.published = true;
     }
 
-    if (canonicalBitmap) DeleteObject(canonicalBitmap);
+    canonicalBitmap.reset();
     for (auto& item : staged) {
         ReplaceAllExact(result.markdown, item.placeholder, item.markdownReference);
         result.assets.push_back(item.markdownReference);

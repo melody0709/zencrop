@@ -2,7 +2,8 @@
 
 #include "LlmModelPolicy.h"
 #include "TranslationTypes.h"
-#include "core/Settings.h"
+struct TranslationSettings;
+struct TranslationPromptProfile;
 
 #include <string>
 

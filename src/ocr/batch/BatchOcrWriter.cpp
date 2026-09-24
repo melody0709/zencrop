@@ -5,7 +5,10 @@
 #include "JsonUtils.h"
 #include "OcrBlockJson.h"
 #include "core/Sha256.h"
-#include "core/WideFormatUtils.h"
+#include "core/WideFormatNumbers.h"
+#include "core/WideFormatLabels.h"
+#include "core/WideFormatPaths.h"
+#include "core/WidePathUtils.h"
 #include "DashboardFileTypes.h"
 
 #include <windows.h>

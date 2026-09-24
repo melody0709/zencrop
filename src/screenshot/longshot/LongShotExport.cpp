@@ -1,3 +1,4 @@
+#include "core/Settings.h"
 #include "LongShotExport.h"
 
 #include "screenshot/ScreenshotUtils.h"

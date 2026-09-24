@@ -1,3 +1,4 @@
+#include "core/Settings.h"
 #include "TranslationSettingsCodec.h"
 #include "core/WideJsonUtils.h"
 #include "translation/TranslationProviderCatalog.h"

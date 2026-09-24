@@ -7,6 +7,8 @@
 
 #include <algorithm>
 #include <mutex>
+#include <optional>
+#include "core/GdiHandles.h"
 
 namespace selection {
 namespace {
@@ -130,22 +132,19 @@ void SelectionTranslationToastWindow::PositionAndShow() {
         (std::min)(ScaleForDpi(430, dpi), availableWidth));
     const int minWidth = (std::min)(ScaleForDpi(220, dpi), maxWidth);
 
-    HFONT font = CreateFontW(-ScaleForDpi(15, dpi), 0, 0, 0, FW_NORMAL,
+    zencrop::ScopedHFONT font(CreateFontW(-ScaleForDpi(15, dpi), 0, 0, 0, FW_NORMAL,
         FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
         CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
         DEFAULT_PITCH | FF_DONTCARE,
-        S::IsChinese() ? L"Microsoft YaHei UI" : L"Segoe UI");
-    HDC screen = GetDC(nullptr);
+        S::IsChinese() ? L"Microsoft YaHei UI" : L"Segoe UI"));
+    zencrop::ScopedWindowDC screen(nullptr, GetDC(nullptr));
     RECT measured = {0, 0,
         (std::max)(1, maxWidth - paddingX * 2), 0};
-    HGDIOBJ oldFont = screen && font ? SelectObject(screen, font) : nullptr;
-    if (screen) {
-        DrawTextW(screen, message_.c_str(), -1, &measured,
+    if (screen && font) {
+        zencrop::ScopedSelectObject selectFont(screen.get(), font.get());
+        DrawTextW(screen.get(), message_.c_str(), -1, &measured,
             DT_CALCRECT | DT_WORDBREAK | DT_NOPREFIX);
     }
-    if (screen && oldFont) SelectObject(screen, oldFont);
-    if (screen) ReleaseDC(nullptr, screen);
-    if (font) DeleteObject(font);
 
     const int measuredWidth = static_cast<int>(
         measured.right - measured.left);
@@ -181,45 +180,43 @@ void SelectionTranslationToastWindow::Paint() {
     const int height = client.bottom - client.top;
     const UINT dpi = GetDpiForWindow(window_);
 
-    HDC memory = CreateCompatibleDC(target);
-    HBITMAP bitmap = CreateCompatibleBitmap(target, width, height);
-    HGDIOBJ oldBitmap = memory && bitmap ? SelectObject(memory, bitmap) : nullptr;
-    HDC draw = memory && bitmap ? memory : target;
+    zencrop::ScopedDC memory(CreateCompatibleDC(target));
+    zencrop::ScopedHBITMAP bitmap(CreateCompatibleBitmap(target, width, height));
+    std::optional<zencrop::ScopedSelectObject> oldBitmap;
+    if (memory && bitmap) {
+        oldBitmap.emplace(memory.get(), bitmap.get());
+    }
+    HDC draw = memory && bitmap ? memory.get() : target;
 
     const ToastColors colors = ColorsFor(kind_);
-    HBRUSH background = CreateSolidBrush(colors.background);
-    HPEN border = CreatePen(PS_SOLID, ScaleForDpi(1, dpi), colors.border);
-    HGDIOBJ oldBrush = SelectObject(draw, background);
-    HGDIOBJ oldPen = SelectObject(draw, border);
-    const int radius = ScaleForDpi(6, dpi);
-    RoundRect(draw, 0, 0, width, height, radius * 2, radius * 2);
-    SelectObject(draw, oldPen);
-    SelectObject(draw, oldBrush);
-    DeleteObject(border);
-    DeleteObject(background);
+    {
+        zencrop::ScopedHBRUSH background(CreateSolidBrush(colors.background));
+        zencrop::ScopedHPEN border(CreatePen(PS_SOLID, ScaleForDpi(1, dpi), colors.border));
+        zencrop::ScopedSelectObject selectBrush(draw, background.get());
+        zencrop::ScopedSelectObject selectPen(draw, border.get());
+        const int radius = ScaleForDpi(6, dpi);
+        RoundRect(draw, 0, 0, width, height, radius * 2, radius * 2);
+    }
 
-    HFONT font = CreateFontW(-ScaleForDpi(15, dpi), 0, 0, 0, FW_NORMAL,
-        FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
-        CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
-        DEFAULT_PITCH | FF_DONTCARE,
-        S::IsChinese() ? L"Microsoft YaHei UI" : L"Segoe UI");
-    HGDIOBJ oldFont = font ? SelectObject(draw, font) : nullptr;
-    SetBkMode(draw, TRANSPARENT);
-    SetTextColor(draw, colors.text);
-    const int paddingX = ScaleForDpi(16, dpi);
-    const int paddingY = ScaleForDpi(10, dpi);
-    RECT textRect = {paddingX, paddingY, width - paddingX, height - paddingY};
-    DrawTextW(draw, message_.c_str(), -1, &textRect,
-        DT_LEFT | DT_VCENTER | DT_WORDBREAK | DT_NOPREFIX);
-    if (oldFont) SelectObject(draw, oldFont);
-    if (font) DeleteObject(font);
+    {
+        zencrop::ScopedHFONT font(CreateFontW(-ScaleForDpi(15, dpi), 0, 0, 0, FW_NORMAL,
+            FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+            CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+            DEFAULT_PITCH | FF_DONTCARE,
+            S::IsChinese() ? L"Microsoft YaHei UI" : L"Segoe UI"));
+        zencrop::ScopedSelectObject selectFont(draw, font.get());
+        SetBkMode(draw, TRANSPARENT);
+        SetTextColor(draw, colors.text);
+        const int paddingX = ScaleForDpi(16, dpi);
+        const int paddingY = ScaleForDpi(10, dpi);
+        RECT textRect = {paddingX, paddingY, width - paddingX, height - paddingY};
+        DrawTextW(draw, message_.c_str(), -1, &textRect,
+            DT_LEFT | DT_VCENTER | DT_WORDBREAK | DT_NOPREFIX);
+    }
 
     if (memory && bitmap) {
-        BitBlt(target, 0, 0, width, height, memory, 0, 0, SRCCOPY);
-        SelectObject(memory, oldBitmap);
+        BitBlt(target, 0, 0, width, height, memory.get(), 0, 0, SRCCOPY);
     }
-    if (bitmap) DeleteObject(bitmap);
-    if (memory) DeleteDC(memory);
     EndPaint(window_, &paint);
 }
 

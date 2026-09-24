@@ -5,7 +5,7 @@
 #include <gdiplus.h>
 #include <algorithm>
 #include <cmath>
-#include "core/WideFormatUtils.h"
+#include "core/WideColorUtils.h"
 
 // File-local constant mirroring the one in OverlayWindowScreenshot.inl.
 // Both are static (internal linkage), so no ODR conflict across TUs.

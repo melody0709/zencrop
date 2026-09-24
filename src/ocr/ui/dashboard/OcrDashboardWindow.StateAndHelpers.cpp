@@ -12,9 +12,15 @@
 #include "dashboard/DashboardOutputArtifactOptionsDialog.h"
 #include "image/BitmapCodec.h"
 #include "Strings.h"
-#include "Settings.h"
 #include "OcrUtils.h"
-#include "core/WideFormatUtils.h"
+#include "core/WideFormatPrimitives.h"
+#include "core/WideFormatNumbers.h"
+#include "core/WideFormatLabels.h"
+#include "core/WideFormatOcr.h"
+#include "core/WideColorUtils.h"
+#include "core/WideJsonUtils.h"
+#include "core/WideCompareOps.h"
+#include "core/GdiHandles.h"
 #include "AppMessages.h"
 
 #include <atomic>
@@ -859,28 +865,25 @@ void OcrDashboardWindow::RefreshFontMetrics() {
     m_sourceMetaFontMetrics = {};
     m_editFontMetrics = {};
 
-    HDC hdc = CreateCompatibleDC(nullptr);
+    zencrop::ScopedDC hdc(CreateCompatibleDC(nullptr));
     if (!hdc) return;
 
-    const auto measure = [hdc](HFONT font, DashboardFontMetrics& target) {
+    const auto measure = [rawHdc = hdc.get()](HFONT font, DashboardFontMetrics& target) {
         if (!font) return;
-        HGDIOBJ previous = SelectObject(hdc, font);
-        if (!previous || previous == HGDI_ERROR) return;
+        zencrop::ScopedSelectObject selectFont(rawHdc, font);
 
         TEXTMETRICW tm = {};
-        if (GetTextMetricsW(hdc, &tm)) {
+        if (GetTextMetricsW(rawHdc, &tm)) {
             target.height = max(0, tm.tmHeight);
             target.ascent = max(0, tm.tmAscent);
             target.descent = max(0, tm.tmDescent);
         }
-        SelectObject(hdc, previous);
     };
 
     measure(m_hUiFont, m_uiFontMetrics);
     measure(m_hSourceTitleFont, m_sourceTitleFontMetrics);
     measure(m_hSourceMetaFont, m_sourceMetaFontMetrics);
     measure(m_hEditFont, m_editFontMetrics);
-    DeleteDC(hdc);
 }
 
 void OcrDashboardWindow::ApplyControlDpiSettings() {
@@ -1451,13 +1454,12 @@ bool DrawImageThumbnail(
 }
 
 void DrawThumbnailPlaceholder(HDC hdc, const RECT& rc, COLORREF borderColor, COLORREF textColor) {
-    HBRUSH bgBrush = CreateSolidBrush(Theme::bgInput);
-    FillRect(hdc, &rc, bgBrush);
-    DeleteObject(bgBrush);
+    zencrop::ScopedHBRUSH bgBrush(CreateSolidBrush(Theme::bgInput));
+    FillRect(hdc, &rc, bgBrush.get());
 
-    HPEN pen = CreatePen(PS_SOLID, 1, borderColor);
-    HPEN oldPen = (HPEN)SelectObject(hdc, pen);
-    HBRUSH oldBrush = (HBRUSH)SelectObject(hdc, GetStockObject(NULL_BRUSH));
+    zencrop::ScopedHPEN pen(CreatePen(PS_SOLID, 1, borderColor));
+    zencrop::ScopedSelectObject selectPen(hdc, pen.get());
+    zencrop::ScopedSelectObject selectBrush(hdc, GetStockObject(NULL_BRUSH));
     Rectangle(hdc, rc.left, rc.top, rc.right, rc.bottom);
 
     int w = rc.right - rc.left;
@@ -1472,10 +1474,6 @@ void DrawThumbnailPlaceholder(HDC hdc, const RECT& rc, COLORREF borderColor, COL
     MoveToEx(hdc, icon.left + 3, icon.bottom - 4, nullptr);
     LineTo(hdc, icon.left + (icon.right - icon.left) / 2, icon.top + 5);
     LineTo(hdc, icon.right - 3, icon.bottom - 4);
-
-    SelectObject(hdc, oldBrush);
-    SelectObject(hdc, oldPen);
-    DeleteObject(pen);
 
     SetBkMode(hdc, TRANSPARENT);
     SetTextColor(hdc, textColor);

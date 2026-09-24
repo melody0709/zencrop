@@ -916,14 +916,14 @@ struct ClipboardCopyTransaction::State {
 ClipboardCopyTransaction::ClipboardCopyTransaction()
     : state_(std::make_shared<State>()) {
     const auto state = state_;
-    worker_ = std::thread([state] {
+    worker_ = std::jthread([state](std::stop_token stopToken) {
         const HRESULT oleResult = OleInitialize(nullptr);
         const bool oleReady = SUCCEEDED(oleResult) || oleResult == S_FALSE;
         bool platformReady = oleReady && state->stopEvent &&
             state->workEvent && state->exitEvent;
         HWND listenerWindow = oleReady ? CreateClipboardListenerWindow() : nullptr;
         const HANDLE handles[] = {state->stopEvent, state->workEvent};
-        while (platformReady && !StopRequested(state->stopEvent)) {
+        while (platformReady && !StopRequested(state->stopEvent) && !stopToken.stop_requested()) {
             const DWORD wait = MsgWaitForMultipleObjectsEx(
                 2, handles, INFINITE, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
             if (wait == WAIT_OBJECT_0) break;
@@ -1037,7 +1037,7 @@ void ClipboardCopyTransaction::Cancel() {
 
 void ClipboardCopyTransaction::Shutdown() {
     std::shared_ptr<State> state;
-    std::thread worker;
+    std::jthread worker;
     {
         std::lock_guard<std::mutex> lock(lifecycleMutex_);
         if (!state_) return;
@@ -1055,6 +1055,7 @@ void ClipboardCopyTransaction::Shutdown() {
             state->current->cancelled.store(true, std::memory_order_release);
         }
     }
+    worker.request_stop();
     SetEvent(state->stopEvent);
     SetEvent(state->workEvent);
     if (worker.joinable()) {

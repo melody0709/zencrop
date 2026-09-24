@@ -9,7 +9,13 @@
 #include "ocr/DashboardPreviewSecurity.h"
 #include "DashboardFileTypes.h"
 #include "core/Base64.h"
-#include "core/WideFormatUtils.h"
+#include "core/WideFormatNumbers.h"
+#include "core/WideFormatLabels.h"
+#include "core/WideJsonUtils.h"
+#include "core/WidePathUtils.h"
+#include "core/WideCaseOps.h"
+#include "core/WideCompareOps.h"
+#include "core/WideTextOps.h"
 #include "AppMessages.h"
 
 #include <unknwn.h>

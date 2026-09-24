@@ -5,7 +5,7 @@
 #include "OcrUtils.h"
 #include "OcrPaddleVlJson.h"
 #include "core/NarrowStringUtils.h"
-#include "core/WideFormatUtils.h"
+#include "core/WideFormatWin32.h"
 
 namespace {
 struct LlamaRequestScope {

@@ -5,7 +5,9 @@
 #include "JsonUtils.h"
 #include "HttpTransport.h"
 #include "OcrUtils.h"
-#include "core/WideFormatUtils.h"
+#include "core/WideFormatNumbers.h"
+#include "core/WideJsonUtils.h"
+#include "core/WideTextOps.h"
 
 #include <algorithm>
 #include <cwctype>

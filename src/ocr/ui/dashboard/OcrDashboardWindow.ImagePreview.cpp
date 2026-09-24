@@ -13,9 +13,10 @@
 #include "dashboard/DashboardResultProjection.h"
 #include "ocr/OcrDocumentAlignment.h"
 #include "core/ClipboardUtils.h"
-#include "Settings.h"
 #include "Strings.h"
-#include "core/WideFormatUtils.h"
+#include "core/WideFormatNumbers.h"
+#include "core/WideFormatLabels.h"
+#include "core/WideFormatOcr.h"
 
 #include <gdiplus.h>
 #include <shellapi.h>

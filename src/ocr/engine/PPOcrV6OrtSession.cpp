@@ -3,7 +3,7 @@
 #include "BitmapUtils.h"
 #include "PPOcrV6CtcDecode.h"
 #include "core/NarrowStringUtils.h"
-#include "core/WideFormatUtils.h"
+#include "core/WideFormatNumbers.h"
 
 #include <windows.h>
 #include <gdiplus.h>

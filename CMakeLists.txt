@@ -127,15 +127,26 @@ add_library(zencrop_core STATIC
     src/core/AppDataPaths.h src/core/AppDataPaths.cpp
     src/core/StartupRegistration.h src/core/StartupRegistration.cpp
     src/core/Settings.h src/core/Settings.cpp
+    src/core/ResourceIds.h
     src/core/SettingsHotkeyDraft.h
     src/core/Sha256.h src/core/Sha256.cpp
     src/core/ClipboardUtils.h src/core/ClipboardUtils.cpp
     src/core/HttpTransport.h
     src/core/AppMessages.h
+    src/core/GdiHandles.h
     src/core/WideTextOps.h
+    src/core/WideCaseOps.h
+    src/core/WideCompareOps.h
     src/core/WidePathUtils.h
     src/core/WideColorUtils.h
     src/core/WideFormatUtils.h
+    src/core/WideFormatPrimitives.h
+    src/core/WideFormatNumbers.h
+    src/core/WideFormatLabels.h
+    src/core/WideFormatPaths.h
+    src/core/WideFormatWin32.h
+    src/core/WideFormatOcr.h
+    src/core/WideFormatConfig.h
     src/core/WideJsonUtils.h
     src/core/WideMarkdownUtils.h
     src/core/WideStringUtils.h

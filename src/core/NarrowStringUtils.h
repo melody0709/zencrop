@@ -5,46 +5,37 @@
 // Keep format strings and argument order identical to historical sprintf_s sites.
 
 #include <cstdio>
+#include <format>
 #include <string>
 
 // Generic single-int debug: "[Tag] text %d\n"
 inline std::string NarrowFormatDebugInt(const char* prefix, int value)
 {
-    char buf[256] = {};
-    sprintf_s(buf, "%s%d\n", prefix ? prefix : "", value);
-    return buf;
+    return std::format("{}{}\n", prefix ? prefix : "", value);
 }
 
 // Generic single-unsigned-long debug: "[Tag] text %lu\n"
 inline std::string NarrowFormatDebugULong(const char* prefix, unsigned long value)
 {
-    char buf[256] = {};
-    sprintf_s(buf, "%s%lu\n", prefix ? prefix : "", value);
-    return buf;
+    return std::format("{}{}\n", prefix ? prefix : "", value);
 }
 
 // Generic single-size_t debug: "[Tag] text %zu\n"
 inline std::string NarrowFormatDebugSize(const char* prefix, size_t value)
 {
-    char buf[256] = {};
-    sprintf_s(buf, "%s%zu\n", prefix ? prefix : "", value);
-    return buf;
+    return std::format("{}{}\n", prefix ? prefix : "", value);
 }
 
 // Generic string message: "[Tag] text %s\n"
 inline std::string NarrowFormatDebugCStr(const char* prefix, const char* msg)
 {
-    char buf[512] = {};
-    sprintf_s(buf, "%s%s\n", prefix ? prefix : "", msg ? msg : "unknown");
-    return buf;
+    return std::format("{}{}\n", prefix ? prefix : "", msg ? msg : "unknown");
 }
 
 // LayoutEngine CreateSession failed.
 inline std::string NarrowFormatLayoutCreateSessionFailed(const char* msg)
 {
-    char buf[512] = {};
-    sprintf_s(buf, "[LayoutEngine] CreateSession failed: %s\n", msg ? msg : "unknown");
-    return buf;
+    return std::format("[LayoutEngine] CreateSession failed: {}\n", msg ? msg : "unknown");
 }
 
 // LayoutEngine ONNX loaded summary.
@@ -60,80 +51,58 @@ inline std::string NarrowFormatLayoutOnnxLoaded(
 // LayoutEngine input name line.
 inline std::string NarrowFormatLayoutInput(size_t index, const char* name)
 {
-    char buf[512] = {};
-    sprintf_s(buf, "[LayoutEngine]   Input %zu: %s\n", index, name ? name : "");
-    return buf;
+    return std::format("[LayoutEngine]   Input {}: {}\n", index, name ? name : "");
 }
 
 // LayoutEngine output name/type/rank line.
 inline std::string NarrowFormatLayoutOutput(
     size_t index, const char* name, int type, size_t rank)
 {
-    char buf[512] = {};
-    sprintf_s(buf, "[LayoutEngine]   Output %zu: %s type=%d rank=%zu\n",
-        index, name ? name : "", type, rank);
-    return buf;
+    return std::format("[LayoutEngine]   Output {}: {} type={} rank={}\n", index, name ? name : "", type, rank);
 }
 
 // LayoutEngine tile reconciliation.
 inline std::string NarrowFormatLayoutTileReconciliation(size_t before, size_t after)
 {
-    char buf[256] = {};
-    sprintf_s(buf, "[LayoutEngine] Tile reconciliation: %zu -> %zu regions\n", before, after);
-    return buf;
+    return std::format("[LayoutEngine] Tile reconciliation: {} -> {} regions\n", before, after);
 }
 
 // LayoutEngine tile fusion.
 inline std::string NarrowFormatLayoutTileFusion(
     size_t full, size_t tile, size_t accepted, size_t finalCount)
 {
-    char buf[320] = {};
-    sprintf_s(buf, "[LayoutEngine] Tile fusion: full=%zu tile=%zu accepted=%zu final=%zu\n",
-        full, tile, accepted, finalCount);
-    return buf;
+    return std::format("[LayoutEngine] Tile fusion: full={} tile={} accepted={} final={}\n", full, tile, accepted, finalCount);
 }
 
 // LayoutEngine after dedup.
 inline std::string NarrowFormatLayoutAfterDedup(size_t count)
 {
-    char buf[256] = {};
-    sprintf_s(buf, "[LayoutEngine] After dedup: %zu regions\n", count);
-    return buf;
+    return std::format("[LayoutEngine] After dedup: {} regions\n", count);
 }
 
 // LayoutEngine PP-DocLayoutV3 detect done.
 inline std::string NarrowFormatLayoutDetectDone(size_t count)
 {
-    char buf[256] = {};
-    sprintf_s(buf, "[LayoutEngine] PP-DocLayoutV3 detect done: %zu regions\n", count);
-    return buf;
+    return std::format("[LayoutEngine] PP-DocLayoutV3 detect done: {} regions\n", count);
 }
 
 // LayoutEngine tiled raw regions.
 inline std::string NarrowFormatLayoutTiledRaw(size_t regions, int tiles)
 {
-    char buf[256] = {};
-    sprintf_s(buf, "[LayoutEngine] Tiled raw regions: %zu from %d tiles\n", regions, tiles);
-    return buf;
+    return std::format("[LayoutEngine] Tiled raw regions: {} from {} tiles\n", regions, tiles);
 }
 
 // LayoutEngine full stats.
 inline std::string NarrowFormatLayoutFullStats(
     int width, int height, float aspect, float scaleH, float scaleW, size_t regions)
 {
-    char buf[384] = {};
-    sprintf_s(buf,
-        "[LayoutEngine] Full stats: size=%dx%d aspect=%.3f scaleH=%.4f scaleW=%.4f regions=%zu\n",
-        width, height, aspect, scaleH, scaleW, regions);
-    return buf;
+    return std::format("[LayoutEngine] Full stats: size={}x{} aspect={:.3f} scaleH={:.4f} scaleW={:.4f} regions={}\n", width, height, aspect, scaleH, scaleW, regions);
 }
 
 // LayoutEngine tiled stats.
 inline std::string NarrowFormatLayoutTiledStats(size_t full, size_t tile)
 {
-    char buf[256] = {};
-    sprintf_s(buf, "[LayoutEngine] Tiled stats: full=%zu tile=%zu\n", full, tile);
-    return buf;
+    return std::format("[LayoutEngine] Tiled stats: full={} tile={}\n", full, tile);
 }
 
 // LayoutEngine family-change warning (fixed string helper).
@@ -145,74 +114,55 @@ inline const char* NarrowLayoutFamilyChangedWarning()
 // LlamaServer CreateJobObject failed.
 inline std::string NarrowFormatLlamaCreateJobFailed(unsigned long err)
 {
-    char buf[256] = {};
-    sprintf_s(buf, "[LlamaServer] CreateJobObject failed: %lu\n", err);
-    return buf;
+    return std::format("[LlamaServer] CreateJobObject failed: {}\n", err);
 }
 
 // LlamaServer SetInformationJobObject failed.
 inline std::string NarrowFormatLlamaSetJobInfoFailed(unsigned long err)
 {
-    char buf[256] = {};
-    sprintf_s(buf, "[LlamaServer] SetInformationJobObject failed: %lu\n", err);
-    return buf;
+    return std::format("[LlamaServer] SetInformationJobObject failed: {}\n", err);
 }
 
 // LlamaServer CreateProcess failed.
 inline std::string NarrowFormatLlamaCreateProcessFailed(unsigned long err)
 {
-    char buf[256] = {};
-    sprintf_s(buf, "[LlamaServer] CreateProcess failed: %lu\n", err);
-    return buf;
+    return std::format("[LlamaServer] CreateProcess failed: {}\n", err);
 }
 
 // LlamaServer AssignProcessToJobObject failed.
 inline std::string NarrowFormatLlamaAssignJobFailed(unsigned long err)
 {
-    char buf[256] = {};
-    sprintf_s(buf, "[LlamaServer] AssignProcessToJobObject failed: %lu\n", err);
-    return buf;
+    return std::format("[LlamaServer] AssignProcessToJobObject failed: {}\n", err);
 }
 
 // LlamaServer ready on port.
 inline std::string NarrowFormatLlamaServerReady(int port)
 {
-    char buf[256] = {};
-    sprintf_s(buf, "[LlamaServer] Server ready on port %d\n", port);
-    return buf;
+    return std::format("[LlamaServer] Server ready on port {}\n", port);
 }
 
 // MiniHttp started on port.
 inline std::string NarrowFormatMiniHttpStarted(int port)
 {
-    char buf[256] = {};
-    sprintf_s(buf, "[MiniHttp] Started on port %d\n", port);
-    return buf;
+    return std::format("[MiniHttp] Started on port {}\n", port);
 }
 
 // Hotkey register failed.
 inline std::string NarrowFormatHotkeyRegisterFailed(int id)
 {
-    char buf[256] = {};
-    sprintf_s(buf, "[Hotkey] Failed to register hotkey id=%d\n", id);
-    return buf;
+    return std::format("[Hotkey] Failed to register hotkey id={}\n", id);
 }
 
 // OCR result received.
 inline std::string NarrowFormatOcrResultReceived(int success, size_t textLen, size_t errLen)
 {
-    char buf[256] = {};
-    sprintf_s(buf, "[OCR] Result received: success=%d, textLen=%zu, errLen=%zu\n",
-        success, textLen, errLen);
-    return buf;
+    return std::format("[OCR] Result received: success={}, textLen={}, errLen={}\n", success, textLen, errLen);
 }
 
 // HTTP WinHttpCrackUrl failed.
 inline std::string NarrowFormatHttpCrackUrlFailed(unsigned long err)
 {
-    char buf[256] = {};
-    sprintf_s(buf, "[HTTP] WinHttpCrackUrl failed: %lu\n", err);
-    return buf;
+    return std::format("[HTTP] WinHttpCrackUrl failed: {}\n", err);
 }
 
 // HTTP host/path/https/port.
@@ -228,97 +178,73 @@ inline std::string NarrowFormatHttpHostPath(
 // HTTP WinHttpOpen failed.
 inline std::string NarrowFormatHttpOpenFailed(unsigned long err)
 {
-    char buf[256] = {};
-    sprintf_s(buf, "[HTTP] WinHttpOpen failed: %lu\n", err);
-    return buf;
+    return std::format("[HTTP] WinHttpOpen failed: {}\n", err);
 }
 
 // HTTP WinHttpConnect failed.
 inline std::string NarrowFormatHttpConnectFailed(unsigned long err)
 {
-    char buf[256] = {};
-    sprintf_s(buf, "[HTTP] WinHttpConnect failed: %lu\n", err);
-    return buf;
+    return std::format("[HTTP] WinHttpConnect failed: {}\n", err);
 }
 
 // HTTP WinHttpOpenRequest failed.
 inline std::string NarrowFormatHttpOpenRequestFailed(unsigned long err)
 {
-    char buf[256] = {};
-    sprintf_s(buf, "[HTTP] WinHttpOpenRequest failed: %lu\n", err);
-    return buf;
+    return std::format("[HTTP] WinHttpOpenRequest failed: {}\n", err);
 }
 
 // HTTP header count.
 inline std::string NarrowFormatHttpHeaderCount(size_t count)
 {
-    char buf[128] = {};
-    sprintf_s(buf, "[HTTP] Header count: %zu\n", count);
-    return buf;
+    return std::format("[HTTP] Header count: {}\n", count);
 }
 
 // HTTP body size.
 inline std::string NarrowFormatHttpBodySize(size_t bytes)
 {
-    char buf[128] = {};
-    sprintf_s(buf, "[HTTP] Body size: %zu bytes\n", bytes);
-    return buf;
+    return std::format("[HTTP] Body size: {} bytes\n", bytes);
 }
 
 // HTTP WinHttpSendRequest failed.
 inline std::string NarrowFormatHttpSendFailed(unsigned long err)
 {
-    char buf[256] = {};
-    sprintf_s(buf, "[HTTP] WinHttpSendRequest failed: %lu\n", err);
-    return buf;
+    return std::format("[HTTP] WinHttpSendRequest failed: {}\n", err);
 }
 
 // HTTP WinHttpReceiveResponse failed.
 inline std::string NarrowFormatHttpReceiveFailed(unsigned long err)
 {
-    char buf[256] = {};
-    sprintf_s(buf, "[HTTP] WinHttpReceiveResponse failed: %lu\n", err);
-    return buf;
+    return std::format("[HTTP] WinHttpReceiveResponse failed: {}\n", err);
 }
 
 // HTTP status code.
 inline std::string NarrowFormatHttpStatusCode(int status)
 {
-    char buf[128] = {};
-    sprintf_s(buf, "[HTTP] Status code: %d\n", status);
-    return buf;
+    return std::format("[HTTP] Status code: {}\n", status);
 }
 
 // HTTP response body size.
 inline std::string NarrowFormatHttpResponseBodySize(size_t bytes)
 {
-    char buf[128] = {};
-    sprintf_s(buf, "[HTTP] Response body size: %zu bytes\n", bytes);
-    return buf;
+    return std::format("[HTTP] Response body size: {} bytes\n", bytes);
 }
 
 // Generic percent-encoded byte for URL encode paths.
 inline std::string NarrowFormatPercentHexByte(unsigned char value)
 {
-    char buf[8] = {};
-    sprintf_s(buf, "%%%02X", value);
-    return buf;
+    return std::format("%{:02X}", value);
 }
 
 // LayoutEngine generic warning prefix helper.
 inline std::string NarrowFormatLayoutWarn(const char* msg)
 {
-    char buf[512] = {};
-    sprintf_s(buf, "[LayoutEngine] WARNING: %s\n", msg ? msg : "");
-    return buf;
+    return std::format("[LayoutEngine] WARNING: {}\n", msg ? msg : "");
 }
 
 // LayoutEngine region count with free label.
 inline std::string NarrowFormatLayoutRegionsLabeled(const char* label, size_t count)
 {
-    char buf[320] = {};
-    sprintf_s(buf, "[LayoutEngine] %s: %zu regions\n", label ? label : "", count);
-    return buf;
+    return std::format("[LayoutEngine] {}: {} regions\n", label ? label : "", count);
 }
 
 // LayoutEngine detect image stats.
@@ -337,11 +263,7 @@ inline std::string NarrowFormatLayoutQueryRow(
     size_t index, int cls, float score,
     float x0, float y0, float x1, float y1, int order)
 {
-    char buf[320] = {};
-    sprintf_s(buf,
-        "[LayoutEngine] query[%zu] cls=%d score=%.4f box=[%.1f,%.1f,%.1f,%.1f] order=%d\n",
-        index, cls, score, x0, y0, x1, y1, order);
-    return buf;
+    return std::format("[LayoutEngine] query[{}] cls={} score={:.4f} box=[{:.1f},{:.1f},{:.1f},{:.1f}] order={}\n", index, cls, score, x0, y0, x1, y1, order);
 }
 
 // LayoutEngine postprocess stats line.
@@ -350,13 +272,9 @@ inline std::string NarrowFormatLayoutPostprocessStats(
     size_t classModeKept, size_t polygonFallbacks, size_t overlapKept,
     size_t finalCount, size_t exactScoreTies, int v3PolygonDegraded)
 {
-    char buf[512] = {};
-    sprintf_s(buf,
-        "[LayoutEngine] postprocess raw=%zu score=%zu nms=%zu image=%zu class=%zu polygonFallback=%zu overlap=%zu final=%zu ties=%zu degraded=%d\n",
-        raw, scorePassed, nmsKept, imageAreaKept,
+    return std::format("[LayoutEngine] postprocess raw={} score={} nms={} image={} class={} polygonFallback={} overlap={} final={} ties={} degraded={}\n", raw, scorePassed, nmsKept, imageAreaKept,
         classModeKept, polygonFallbacks, overlapKept,
         finalCount, exactScoreTies, v3PolygonDegraded);
-    return buf;
 }
 
 // ---------------------------------------------------------------------------
@@ -415,26 +333,19 @@ inline const char* NarrowOcrImageIsBase64()
 // OCR saved images scoped.
 inline std::string NarrowFormatOcrSavedImagesScoped(int imageCount)
 {
-    char buf[256] = {};
-    sprintf_s(buf, "[OCR] Saved %d images (scoped layoutParsingResults)\n", imageCount);
-    return buf;
+    return std::format("[OCR] Saved {} images (scoped layoutParsingResults)\n", imageCount);
 }
 
 // OCR saved images.
 inline std::string NarrowFormatOcrSavedImages(int imageCount)
 {
-    char buf[128] = {};
-    sprintf_s(buf, "[OCR] Saved %d images\n", imageCount);
-    return buf;
+    return std::format("[OCR] Saved {} images\n", imageCount);
 }
 
 // OCR async API model/body.
 inline std::string NarrowFormatOcrAsyncApiModel(const char* model, size_t bodyBytes)
 {
-    char buf[320] = {};
-    sprintf_s(buf, "[OCR] Async API model=%s body=%zu bytes\n",
-        model ? model : "", bodyBytes);
-    return buf;
+    return std::format("[OCR] Async API model={} body={} bytes\n", model ? model : "", bodyBytes);
 }
 
 // OCR async job submitted (fixed).
@@ -446,92 +357,68 @@ inline const char* NarrowOcrAsyncJobSubmitted()
 // OCR exception.
 inline std::string NarrowFormatOcrException(const char* msg)
 {
-    char buf[512] = {};
-    sprintf_s(buf, "[OCR] Exception: %s\n", msg ? msg : "unknown");
-    return buf;
+    return std::format("[OCR] Exception: {}\n", msg ? msg : "unknown");
 }
 
 // PaddleDoc layout detected regions.
 inline std::string NarrowFormatPaddleDocLayoutDetected(size_t regions)
 {
-    char buf[256] = {};
-    sprintf_s(buf, "[PaddleDoc] Layout detected %zu original regions\n", regions);
-    return buf;
+    return std::format("[PaddleDoc] Layout detected {} original regions\n", regions);
 }
 
 // PaddleDoc exception.
 inline std::string NarrowFormatPaddleDocException(const char* msg)
 {
-    char buf[512] = {};
-    sprintf_s(buf, "[PaddleDoc] Exception: %s\n", msg ? msg : "unknown");
-    return buf;
+    return std::format("[PaddleDoc] Exception: {}\n", msg ? msg : "unknown");
 }
 
 // PaddleLocal exception.
 inline std::string NarrowFormatPaddleLocalException(const char* msg)
 {
-    char buf[512] = {};
-    sprintf_s(buf, "[PaddleLocal] Exception: %s\n", msg ? msg : "unknown");
-    return buf;
+    return std::format("[PaddleLocal] Exception: {}\n", msg ? msg : "unknown");
 }
 
 // PPOCRv6 loaded model.
 inline std::string NarrowFormatPpocrv6LoadedModel(
     const char* which, const char* input, const char* output)
 {
-    char buf[512] = {};
-    sprintf_s(buf, "[PPOCRv6] Loaded %s model. input=%s output=%s\n",
-        which ? which : "", input ? input : "", output ? output : "");
-    return buf;
+    return std::format("[PPOCRv6] Loaded {} model. input={} output={}\n", which ? which : "", input ? input : "", output ? output : "");
 }
 
 // PPOCRv6 OpenCV DBPostProcess failed.
 inline std::string NarrowFormatPpocrv6DbPostFailed(const char* msg)
 {
-    char buf[512] = {};
-    sprintf_s(buf, "[PPOCRv6] OpenCV DBPostProcess failed: %s\n", msg ? msg : "unknown");
-    return buf;
+    return std::format("[PPOCRv6] OpenCV DBPostProcess failed: {}\n", msg ? msg : "unknown");
 }
 
 // PPOCRv6 OpenCV crop failed.
 inline std::string NarrowFormatPpocrv6CropFailed(const char* msg)
 {
-    char buf[512] = {};
-    sprintf_s(buf, "[PPOCRv6] OpenCV crop failed: %s\n", msg ? msg : "unknown");
-    return buf;
+    return std::format("[PPOCRv6] OpenCV crop failed: {}\n", msg ? msg : "unknown");
 }
 
 // PPOCRv6 det boxes.
 inline std::string NarrowFormatPpocrv6DetBoxes(size_t boxes, size_t dims)
 {
-    char buf[256] = {};
-    sprintf_s(buf, "[PPOCRv6] det boxes=%zu output_shape_dims=%zu\n", boxes, dims);
-    return buf;
+    return std::format("[PPOCRv6] det boxes={} output_shape_dims={}\n", boxes, dims);
 }
 
 // PPOCRv6 recognition batch count mismatch.
 inline std::string NarrowFormatPpocrv6RecBatchMismatch(size_t inputs, size_t results)
 {
-    char buf[256] = {};
-    sprintf_s(buf, "[PPOCRv6] recognition batch count mismatch inputs=%zu results=%zu\n",
-        inputs, results);
-    return buf;
+    return std::format("[PPOCRv6] recognition batch count mismatch inputs={} results={}\n", inputs, results);
 }
 
 // PPOCRv6 dropped invalid box lines.
 inline std::string NarrowFormatPpocrv6DroppedInvalidBoxes(int count)
 {
-    char buf[256] = {};
-    sprintf_s(buf, "[PPOCRv6] dropped %d accepted line(s) with invalid box geometry\n", count);
-    return buf;
+    return std::format("[PPOCRv6] dropped {} accepted line(s) with invalid box geometry\n", count);
 }
 
 // PPOCRv6 exception.
 inline std::string NarrowFormatPpocrv6Exception(const char* msg)
 {
-    char buf[512] = {};
-    sprintf_s(buf, "[PPOCRv6] Exception: %s\n", msg ? msg : "unknown");
-    return buf;
+    return std::format("[PPOCRv6] Exception: {}\n", msg ? msg : "unknown");
 }
 
 // Generic tag + wide string: "[Tag] text %ls\n"
@@ -546,9 +433,7 @@ inline std::string NarrowFormatDebugWStr(const char* prefix, const wchar_t* msg)
 inline std::string NarrowFormatDebugIntSize(
     const char* prefix, int a, size_t b)
 {
-    char buf[256] = {};
-    sprintf_s(buf, "%s%d %zu\n", prefix ? prefix : "", a, b);
-    return buf;
+    return std::format("{}{} {}\n", prefix ? prefix : "", a, b);
 }
 
 // ---------------------------------------------------------------------------
@@ -559,13 +444,9 @@ inline std::string NarrowFormatDebugIntSize(
 inline std::string NarrowFormatOcrCloudUploadImage(
     const char* contentType, size_t bytes, int usedPngFallback)
 {
-    char buf[320] = {};
-    sprintf_s(buf,
-        "[OCR] Cloud upload image: %s, %zu bytes%s\n",
-        contentType ? contentType : "",
+    return std::format("[OCR] Cloud upload image: {}, {} bytes{}\n", contentType ? contentType : "",
         bytes,
         usedPngFallback ? " (JPEG encode fallback)" : "");
-    return buf;
 }
 
 // Shared server probe summary (PaddleLocal / PaddleDoc).
@@ -686,11 +567,7 @@ inline std::string NarrowFormatPpocrv6Variant(
 inline std::string NarrowFormatPpocrv6RecPlan(
     size_t inputs, size_t batches, int batchSize, long long paddedUnits)
 {
-    char buf[320] = {};
-    sprintf_s(buf,
-        "[PPOCRv6] rec plan: inputs=%zu batches=%zu batchSize=%d paddedWidthUnits=%lld\n",
-        inputs, batches, batchSize, paddedUnits);
-    return buf;
+    return std::format("[PPOCRv6] rec plan: inputs={} batches={} batchSize={} paddedWidthUnits={}\n", inputs, batches, batchSize, paddedUnits);
 }
 
 // PPOCRv6 final stats (assemble failed path uses acceptedBlocks=0).
@@ -699,15 +576,8 @@ inline std::string NarrowFormatPpocrv6FinalStats(
     int cropSkipped, int batchFallback, int singleFailed, int geometryDropped,
     int assembleFailed)
 {
-    char buf[384] = {};
-    if (assembleFailed) {
-        sprintf_s(buf,
-            "[PPOCRv6] det boxes=%zu rec inputs=%d accepted blocks=0 crop skipped=%d batch fallback=%d single failed=%d geometry dropped=%d (assemble failed)\n",
-            detBoxes, recInputs, cropSkipped, batchFallback, singleFailed, geometryDropped);
-    } else {
-        sprintf_s(buf,
-            "[PPOCRv6] det boxes=%zu rec inputs=%d accepted blocks=%zu crop skipped=%d batch fallback=%d single failed=%d geometry dropped=%d\n",
-            detBoxes, recInputs, acceptedBlocks, cropSkipped, batchFallback, singleFailed, geometryDropped);
-    }
-    return buf;
+    return std::format(
+        "[PPOCRv6] det boxes={} rec inputs={} accepted blocks={} crop skipped={} batch fallback={} single failed={} geometry dropped={}{}\n",
+        detBoxes, recInputs, acceptedBlocks, cropSkipped, batchFallback, singleFailed, geometryDropped,
+        assembleFailed ? " (assemble failed)" : "");
 }

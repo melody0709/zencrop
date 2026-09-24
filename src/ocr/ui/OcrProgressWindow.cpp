@@ -1,7 +1,8 @@
 #include "OcrProgressWindow.h"
 #include "Strings.h"
 #include "AppMessages.h"
-#include "core/WideFormatUtils.h"
+#include "core/WideFormatPrimitives.h"
+#include "core/GdiHandles.h"
 #include <gdiplus.h>
 #include <dwmapi.h>
 #include <stdio.h>
@@ -31,8 +32,6 @@ OcrProgressWindow::~OcrProgressWindow() {
         DestroyWindow(m_hwnd);
         m_hwnd = nullptr;
     }
-    if (m_hUiFont) { DeleteObject(m_hUiFont); m_hUiFont = nullptr; }
-    if (m_hMonoFont) { DeleteObject(m_hMonoFont); m_hMonoFont = nullptr; }
 }
 
 void OcrProgressWindow::RegisterWindowClass() {
@@ -91,15 +90,12 @@ void OcrProgressWindow::EnsureFonts() {
     // 字体大小变化时重建（与 OcrResultWindow 一致，来自 OcrSettings.ocrFontSize）
     if (m_hUiFont && m_fontSize == m_lastFontSize) return;
 
-    if (m_hUiFont) { DeleteObject(m_hUiFont); m_hUiFont = nullptr; }
-    if (m_hMonoFont) { DeleteObject(m_hMonoFont); m_hMonoFont = nullptr; }
-
-    m_hUiFont = CreateFontW(-m_fontSize, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
+    m_hUiFont.reset(CreateFontW(-m_fontSize, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
         DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-        CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
-    m_hMonoFont = CreateFontW(-m_fontSize, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+        CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI"));
+    m_hMonoFont.reset(CreateFontW(-m_fontSize, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
         DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-        CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_MODERN, L"Consolas");
+        CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_MODERN, L"Consolas"));
     m_lastFontSize = m_fontSize;
 }
 
@@ -210,40 +206,40 @@ void OcrProgressWindow::PaintContent(HWND hwnd) {
     int h = rc.bottom - rc.top;
 
     // 双缓冲
-    HDC hdcMem = CreateCompatibleDC(hdc);
-    HBITMAP bmpMem = CreateCompatibleBitmap(hdc, w, h);
-    HBITMAP oldBmp = (HBITMAP)SelectObject(hdcMem, bmpMem);
+    zencrop::ScopedDC hdcMem(CreateCompatibleDC(hdc));
+    zencrop::ScopedHBITMAP bmpMem(CreateCompatibleBitmap(hdc, w, h));
+    zencrop::ScopedSelectObject selBmp(hdcMem.get(), bmpMem.get());
 
     // 背景
-    HBRUSH bgBrush = CreateSolidBrush(BgColor);
-    FillRect(hdcMem, &rc, bgBrush);
-    DeleteObject(bgBrush);
+    {
+        zencrop::ScopedHBRUSH bgBrush(CreateSolidBrush(BgColor));
+        FillRect(hdcMem.get(), &rc, bgBrush.get());
+    }
 
     // 细边框
-    HPEN borderPen = CreatePen(PS_SOLID, 1, AccentColor);
-    HPEN oldPen = (HPEN)SelectObject(hdcMem, borderPen);
-    HBRUSH oldBrush = (HBRUSH)SelectObject(hdcMem, GetStockObject(NULL_BRUSH));
-    Rectangle(hdcMem, rc.left, rc.top, rc.right - 1, rc.bottom - 1);
-    SelectObject(hdcMem, oldBrush);
-    SelectObject(hdcMem, oldPen);
-    DeleteObject(borderPen);
+    {
+        zencrop::ScopedHPEN borderPen(CreatePen(PS_SOLID, 1, AccentColor));
+        zencrop::ScopedSelectObject selBorderPen(hdcMem.get(), borderPen.get());
+        zencrop::ScopedSelectObject selNullBrush(hdcMem.get(), GetStockObject(NULL_BRUSH));
+        Rectangle(hdcMem.get(), rc.left, rc.top, rc.right - 1, rc.bottom - 1);
+    }
 
-    SetBkMode(hdcMem, TRANSPARENT);
+    SetBkMode(hdcMem.get(), TRANSPARENT);
 
     // 第一行：OCR 中 · {label}（与 Dashboard ActiveWorkStrip 保持一致的文案）
     bool zh = S::IsChinese();
     std::wstring line1 = (zh ? L"OCR \u4E2D" : L"OCR") + std::wstring(L" \u00B7 ") + m_label;
-    HFONT oldFont = (HFONT)SelectObject(hdcMem, m_hUiFont);
-    SetTextColor(hdcMem, TextColor);
+    HFONT oldFont = (HFONT)SelectObject(hdcMem.get(), m_hUiFont);
+    SetTextColor(hdcMem.get(), TextColor);
     RECT line1Rect = { 16, 12, w - 16, 12 + 20 };
-    DrawTextW(hdcMem, line1.c_str(), -1, &line1Rect, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+    DrawTextW(hdcMem.get(), line1.c_str(), -1, &line1Rect, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
 
     // 第二行：elapsed time（等宽字体，StatusColor）
     std::wstring elapsed = FormatElapsed();
-    SelectObject(hdcMem, m_hMonoFont);
-    SetTextColor(hdcMem, StatusColor);
+    SelectObject(hdcMem.get(), m_hMonoFont);
+    SetTextColor(hdcMem.get(), StatusColor);
     RECT line2Rect = { 16, 36, w - 16, 36 + 20 };
-    DrawTextW(hdcMem, elapsed.c_str(), -1, &line2Rect, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+    DrawTextW(hdcMem.get(), elapsed.c_str(), -1, &line2Rect, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
 
     // 底部 indeterminate motion bar（与 Dashboard ActiveWorkStrip 一致风格）
     int barY = h - 8;
@@ -252,10 +248,11 @@ void OcrProgressWindow::PaintContent(HWND hwnd) {
     int barX = 16;
 
     // 背景轨道
-    HBRUSH trackBrush = CreateSolidBrush(RGB(50, 50, 50));
-    RECT trackRect = { barX, barY, barX + barW, barY + barH };
-    FillRect(hdcMem, &trackRect, trackBrush);
-    DeleteObject(trackBrush);
+    {
+        zencrop::ScopedHBRUSH trackBrush(CreateSolidBrush(RGB(50, 50, 50)));
+        RECT trackRect = { barX, barY, barX + barW, barY + barH };
+        FillRect(hdcMem.get(), &trackRect, trackBrush.get());
+    }
 
     // 移动光带（用 GetTickCount / 12 实现位移）
     int motionSpan = 60;
@@ -266,19 +263,15 @@ void OcrProgressWindow::PaintContent(HWND hwnd) {
     if (slidingEnd > barX + barW) slidingEnd = barX + barW;
 
     if (slidingEnd > slidingX) {
-        HBRUSH slidingBrush = CreateSolidBrush(AccentColor);
+        zencrop::ScopedHBRUSH slidingBrush(CreateSolidBrush(AccentColor));
         RECT slidingRect = { slidingX, barY, slidingEnd, barY + barH };
-        FillRect(hdcMem, &slidingRect, slidingBrush);
-        DeleteObject(slidingBrush);
+        FillRect(hdcMem.get(), &slidingRect, slidingBrush.get());
     }
 
-    SelectObject(hdcMem, oldFont);
+    SelectObject(hdcMem.get(), oldFont);
 
     // 提交到屏幕
-    BitBlt(hdc, 0, 0, w, h, hdcMem, 0, 0, SRCCOPY);
-    SelectObject(hdcMem, oldBmp);
-    DeleteObject(bmpMem);
-    DeleteDC(hdcMem);
+    BitBlt(hdc, 0, 0, w, h, hdcMem.get(), 0, 0, SRCCOPY);
 
     EndPaint(hwnd, &ps);
 }
