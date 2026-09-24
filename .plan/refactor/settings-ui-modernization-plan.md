@@ -1,9 +1,9 @@
 # ZenCrop 设置界面现代化重构方案
 
-> **参考项目**：`VoxType` (`D:\GITHUB_melody0709\VoxType`)  
-> **目标**：减少设置项增改的重复布线、改善空间与跨屏 DPI 表现；提交时只合并实际修改的字段，不覆盖设置窗口外的更新。  
-> **前置条件**：遵守既定 C++23 架构重构 P0–P6 顺序；设置 UI 施工不借用或跳过其阶段闸门。  
-> **文档位置**：`.plan/refactor/settings-ui-modernization-plan.md`  
+> **参考项目**：`VoxType` (`D:\GITHUB_melody0709\VoxType`)<br>
+> **目标**：减少设置项增改的重复布线、改善空间与跨屏 DPI 表现；提交时只合并实际修改的字段，不覆盖设置窗口外的更新。<br>
+> **前置条件（已满足）**：C++23 架构重构 P0–P6 已于 2026-09-23 全部完成并交付 v3.0.0；本方案从该交付基线之后开始，不重开架构阶段，也不以架构工序为借口延后设置 UI。<br>
+> **文档位置**：`.plan/refactor/settings-ui-modernization-plan.md`
 
 ---
 
@@ -29,13 +29,13 @@ ZenCrop 当前的设置界面继承自传统的 Win32 `PropertySheetW` 属性页
 ### 痛点 1：多点修改地狱（单项新增改动 7~9 处）
 
 在现有架构下，若要在某个页面增加一项简单设置（例如在截图设置中增加一个开关）：
-1. 在 `src/core/Settings.h` 中搜寻未占用的数值分配 `#define IDC_xxx`；
+1. 在 `src/core/ResourceIds.h` 中搜寻未占用的数值分配 `#define IDC_xxx`；
 2. 在对应结构体（如 `ScreenshotSettings`）中增加字段；
 3. 编辑 `src/resources.rc` 中的 `DIALOGEX` 模板，以 DLU 为单位硬编码绝对坐标；若在中间插入，必须手动逐行累加下方所有控件的 Y 坐标；
 4. 在 `src/core/Strings.h` 与 `Strings.cpp` 中定义并实现多语言字符串函数；
 5. 在 `src/core/Settings.cpp` 的 `Load...Settings()` 中手写 JSON 解析；
 6. 在 `src/core/Settings.cpp` 的 `Save...Settings()` 中手写 JSON 组装写出；
-7. 在 `src/core/SettingsDialog.cpp` 的 `WM_INITDIALOG` 中调用 `CheckDlgButton` / `SetDlgItemText`；
+7. 在 `src/ocr/ui/SettingsDialog.cpp` 的 `WM_INITDIALOG` 中调用 `CheckDlgButton` / `SetDlgItemText`；
 8. 在 `WM_COMMAND` 中监听控件变更消息并触发 `PropSheet_Changed`；
 9. 在 `WM_NOTIFY` (`PSN_APPLY`) 中提取控件状态写回结构体；
 10. 在相关的联动函数（如 `UpdateXxxControls()`）中手写 `EnableWindow`。
@@ -58,16 +58,15 @@ ZenCrop 当前的设置界面继承自传统的 Win32 `PropertySheetW` 属性页
 - 应用虽已声明 `PerMonitorV2`（见 `src/app.manifest:16-17`），标准 Win32 控件有系统层面的缩放兜底；
 - 但**自绘与子类化控件**（如颜色预览块 `IDC_ZC_COLOR_PREVIEW`、`IDC_AOT_COLOR_PREVIEW`，以及动态创建的 `HotkeyEdit`）坐标与字体未建立统一的重排管线，跨屏拖拽（如 100% 拖至 175%）时容易出现黑边、对齐偏差或截断。
 
-### 痛点 4：L0 Core 严重分层违规
+### 痛点 4：单文件承载全部六页并直连下层实现
 
-- `src/core/SettingsDialog.cpp`（2025 行）被放置在 **L0 Core**。
-- 但其内部直接依赖了：
-  - `#include "ocr/ui/OcrModelDownloadDialog.h"` (L4)
-  - `#include "translation/TranslationSettingsPage.h"` (L3)
-  - `#include "OcrEngine_PaddleOCR_Local.h"` (L2)
-  - `#include "LlamaServerManager.h"` (L1)
-  - `#include "HttpTransport.h"` (L1)
-- 违反项目《AGENTS.md》中“L0 Core 出边必须为 0”的硬约束，是当前全仓 59 条倒置边（`moduleInversionEdges`）的核心成因之一。
+- `src/ocr/ui/SettingsDialog.cpp`（2028 行）已在架构 P1 从 L0 迁至 **L4 `zencrop_ui`**；全仓倒置边（`moduleInversionEdges`）当时已从 59 归零，本文件不再是分层违规来源。
+- 但它仍把六个 Tab、OCR 引擎/本地大模型服务与翻译页耦合在一个 TU 内，直接 include 了：
+  - `translation/TranslationSettingsPage.h`（L3）
+  - `OcrEngine_PaddleOCR_Local.h`（L2）
+  - `LlamaServerManager.h`、`HttpTransport.h`（L1）
+  - `ocr/ui/OcrModelDownloadDialog.h`（L4，同层）
+- 这才是“多点修改地狱”与跨屏 DPI 缺陷的共同根源：新增或搬迁设置项必须同时改动这条 2000 行文件里的初始化、事件与保存三处逻辑。本方案要按页拆开这些责任，而不是修复一条已不存在的 L0 出边。
 
 ---
 
@@ -89,7 +88,7 @@ ZenCrop 当前的设置界面继承自传统的 Win32 `PropertySheetW` 属性页
    - 动态显隐（`VisibleWhen`）自动回收高度空白，彻底消除 OCR 模式切换出现的大面积空洞；
    - `WM_DPICHANGED` 触发控件重排，不销毁 HWND；焦点、选择区与 IME 组合态须实测，不把“必然无损”作为 API 保证。
 7. **严守架构守卫与 CMake 门禁**：
-   - UI 宿主文件位于 L5 `src/`；不为规避守卫而提前建通用框架或未经登记的新目录。每个施工切片都跑相关构建与测试。
+   - 设置 UI 新增源码进入已登记的 L4 `src/ocr/ui/` 并编入既有 `zencrop_ui` 静态库；不为规避守卫而提前建通用框架或未经登记的新目录。每个施工切片都跑相关构建与测试。
 
 ---
 
@@ -97,29 +96,29 @@ ZenCrop 当前的设置界面继承自传统的 Win32 `PropertySheetW` 属性页
 
 为了杜绝破坏 `build.bat` 门禁与 `scripts/check_architecture.ps1` 校验，必须遵守以下三项硬约束：
 
-### 1. 前置条件：按既定 P0–P6 顺序推进
+### 1. 前置条件：架构 P0–P6 已完成（不要重开、不要重跑）
 
-根据 `.plan/refactor/00-HANDOFF.md` §4：
-- 当前 `CMakeLists.txt` 中 `CMAKE_CXX_STANDARD` 仍为 **20**；
-- 先按交接文档完成 P0（`CMAKE_CXX_STANDARD 23`、`NOMINMAX`、`zencrop_build_flags`、完整构建与 `-Stage P0`）。当前工作区尚无本轮回滚锚点；Git 写操作需用户明确授权。
-- `.plan/refactor/00-HANDOFF.md` 要求后续按 P1→P6 顺序实施。本方案的设置 UI 切片在 P6 验收后开始；若要把旧 UI 从 L0 移出作为 P1 的一部分，只做**行为保持的所有权搬迁**，不在架构阶段混入新窗口和保存语义。更改这个顺序须先正式调整架构计划与闸门。
+根据 `.plan/refactor/00-HANDOFF.md` §0/§1 与 `.plan/refactor/rollback-anchors.md`：
+- P0–P6 已于 2026-09-23 全部完成并交付 **v3.0.0**；`CMakeLists.txt` 已是 `CMAKE_CXX_STANDARD 23`，基线 `cxxStandardDeclared=23`、`moduleInversionEdges=0`、`testsCompilingProductCpp=0`。
+- 本方案的设置 UI 切片从该交付基线**直接开始**，不需要（也不得）再走一遍 P0→P6；不得以“架构阶段未完成”为由推迟或改写本方案。
+- 旧 `SettingsDialog.cpp` 已在 P1 行为保持地迁至 `src/ocr/ui/SettingsDialog.cpp`，该搬迁已完成；后续只替换其实现，删除它不计作本 UI 阶段的额外架构收益。
+- Git 写操作（分支/提交/tag）默认仍需用户明确授权；每个切片开工前把当时的 HEAD 记入 `.plan/refactor/rollback-anchors.md`。
 
 ### 2. 源码目录与层级归属
 
-根据 `check_architecture.ps1` 的 `LayerMap`：
-```powershell
-$script:LayerMap = @{
-    'src/core' = 0; ...; 'src/ocr/ui' = 4; 'src' = 5
-}
-```
-- **硬禁止**：切勿新增未经登记的 `src/ocr/ui/settings/` 或 `src/translation/ui/settings/` 目录，否则将直接触发 `$script:HardZeroKeys` 中的 `undeclaredSourceDirs`，导致 `ARC-NEWDIR` 规则立即 HARD FAIL。
-- 新设置宿主和按需拆出的页面实现放在 **`src/` 根目录（L5 App 层）**。先交付一页可用的纵向切片，再决定是否按责任拆出专用 TU；不预先建立 `ISettingsTab`、`LayoutCursor`、`SettingsFormBuilder` 等通用层。
-- L5 允许依赖下层，但这不自动证明“零新增倒置边”：每一切片都以守卫实测。旧 `SettingsDialog.cpp` 若已在架构 P1 搬迁，后续只替换其实现，不再把删除它计作 UI 阶段的额外架构收益。
+根据 `check_architecture.ps1` 的 `LayerMap`，产品目录层级为 `'src/core' = 0 … 'src/ocr/ui' = 4; 'src' = 5`：
+- **硬禁止**：切勿新增未经登记的 `src/ocr/ui/settings/` 或 `src/translation/ui/settings/` 目录，否则将直接触发 `$script:HardZeroKeys` 中的 `undeclaredSourceDirs`，导致 `ARC-NEWDIR` 立即 HARD FAIL。新页面文件直接放在已登记的 `src/ocr/ui/` 下，不新建子目录。
+- 新设置宿主和按需拆出的页面实现放在 **`src/ocr/ui/`（L4）并编入既有 `zencrop_ui` 静态库**。两条依据：① `docs/01_architecture/01_ZENCROP_DEV_GUIDE.md` 明确 L4 UI = `zencrop_ui`（`src/ocr/ui/`），承载 “Dashboard, history, **settings**, and progress UI dialogs”，而 L5 只是 `src/main.cpp` 的 thin shell；② `add_executable(ZenCrop)` 受 `productTargetSourceCount` 棘轮限制（见 §3.3），新增 `.cpp` 只能进静态库。
+- `zencrop_ui` 已 PUBLIC 链接 `zencrop_translate`（L3）、`zencrop_ocr`（L2）、`zencrop_platform`（L1）、`zencrop_core`（L0），旧设置文件也已 include 这些层，故不引入新的依赖类别。但必须遵守：**不得新增 L4→L5 反向 include**（会抬高 `moduleInversionEdges` 棘轮，目前为 0）；任何确实新增的跨层 include 类别都要先在守卫与 `AGENTS.md` 中登记。
+- **硬禁止跨域头文件包含（ARC-FORBIDDEN）**：特别显式提醒，`ocr_ui_to_screenshot` 属于 `scripts/check_architecture.ps1` 中的 HARD 0 `ARC-FORBIDDEN` 规则。L4 设置界面的 Screenshot Tab **严禁** include `src/screenshot/` 下的任何头文件（所有截图配置数据结构均在 L0 `Settings.h` 中的 `ScreenshotSettings`，快速保存目录的选择通过 Windows 原生 COM `IFileOpenDialog` 接口实现，绝不穿透到 L3）。
+- 先交付一页可用的纵向切片，再决定是否按责任拆出专用 TU；不预先建立 `ISettingsTab`、`LayoutCursor`、`SettingsFormBuilder` 等通用层。
+- 每一切片都以守卫实测，不以“别处也这样”为由新增反向 include。
 
 ### 3. CMakeLists.txt 纳入与测试隔离
 
-- `ZenCrop` 采用显式字面量源文件列表。新增的 `.cpp` 必须精确追加到 `CMakeLists.txt` 的 `add_executable(ZenCrop ...)` 中。
-- 复用现有测试目标并链接已有库；不为布局小逻辑新建独立 test executable，也不把产品 `.cpp` 再列入测试源文件。架构 P3 完成后 `testsCompilingProductCpp` 应为 0，不再引用旧基线 92 作为可接受状态。
+- `ZenCrop` 采用显式字面量源文件列表，且 `add_executable(ZenCrop ...)` **只允许 `src/main.cpp`（+ `src/resources.rc`）**：`productTargetSourceCount` 是 `ARC-RATCHET` 指标，基线为 1，P5/P6 阶段闸门也钉死为 1；往 exe 目标追加任何 `.cpp` 会同时触发 `ARC-RATCHET` FAIL 与 `-Stage P5/P6` FAIL。
+- 因此新增的 `.cpp` 必须精确追加到**对应分层静态库**的源列表（本方案为 `add_library(zencrop_ui ...)`），**禁止**加入 `add_executable(ZenCrop ...)`。不要为此新建静态库：`ARC-SMOKE` 要求每个静态库都配套 `EXCLUDE_FROM_ALL` 的 `smoke_<lib>` 目标，新建库属于构建契约改动。
+- 复用现有测试目标并链接已有库；不为布局小逻辑新建独立 test executable，也不把产品 `.cpp` 再列入测试源文件。架构 P3 已完成，`testsCompilingProductCpp` 为 0，不再引用旧基线 92 作为可接受状态。
 
 ---
 
@@ -150,8 +149,8 @@ struct SettingsDraft {
 
 1. 在同一把设置写锁内读取最新 `settings.json`；保留未识别的顶层数据及受更新版 schema 保护的翻译段。
 2. 对每个待改字段比较“当前磁盘值”和草稿基线值。若当前值既不同于基线、也不同于待提交值，返回字段冲突，保持窗口打开；用户可重新加载或显式决定覆盖，**不得静默整域覆盖**。
-3. 把无冲突的字段补丁应用到最新值；用合并后的当前热键与复制兜底状态做跨页校验，再序列化并**一次**原子替换配置文件。没有 JSON 字段变化时不重写文件。
-4. 只有写入成功后，才更新受影响的运行时字段、热键注册、AOT 与 OCR 服务状态；不得执行 `GetSharedSettings() = draft.shared` 或把某一域的旧快照整份赋回。
+3. 把无冲突的字段补丁应用到最新值；用合并后的当前热键与复制兜底状态做跨页校验，再序列化并**一次**原子替换配置文件，更新 `GetSharedSettings()`。没有 JSON 字段变化时不重写文件。
+4. **严格保证 L0 纯度**：`CommitSettingsPatch` 在 `Settings.cpp`（L0）内仅执行三方比对合并、跨页校验（热键冲突、Ctrl+C 保全）、JSON 原子写盘及 `GetSharedSettings()` 内存更新。热键重新注册、AOT 边框状态刷新、Llama 进程启停等运行时副作用，严禁写入 L0，必须在 L0 写盘成功后由 L4 设置窗口统一调度与触发；不得执行 `GetSharedSettings() = draft.shared` 或把某一域的旧快照整份赋回。
 
 例如 Screenshot 页只改保存格式时，补丁不会携带标注画笔字段：
 
@@ -202,7 +201,7 @@ sequenceDiagram
 - **语言**：用户改下拉框可即时预览，但只在 JSON 成功提交后更新已应用基线；提交失败或取消时恢复上一次成功应用的布尔语言状态。
 - **翻译服务商与提示词子窗**：保持现有独立确认/保存边界。子窗关闭后，从已保存配置刷新外层草稿中**未被外层编辑**的子窗拥有字段及其基线；已被外层编辑的同一字段保留原基线和待编辑值，让外层应用时检测冲突。外层其他字段不动。凭据修改不承诺跟外层“取消”一起撤销。
 - **翻译子窗的写入实现**：服务商列表、提示词列表与活动项按语义字段提交；现有子窗内整份 `SaveTranslationSettings(merged)` 也需迁入同一冲突/合并入口，不能只修外层主窗口。凭据写入失败后的现有恢复逻辑保留。
-- **OCR 文档与 PP-OCRv6 子窗**：按本方案的独立提交意图，迁出 `SettingsDialog.cpp` 中只读写静态 `g_ocrSettings` 的回调；子窗 OK 必须通过同一字段补丁入口保存其拥有的 OCR 字段，失败则不关闭。返回主窗后只刷新未被外层编辑的子窗字段；同一字段已有外层编辑则保留原基线，待外层应用时报冲突。主窗其他 OCR 编辑不动，子窗 Cancel 不写盘。
+- **OCR 文档与 PP-OCRv6 子窗**：`IDD_OCR_DOC_OPTIONS` 与 `IDD_OCR_PPOCRV6_OPTIONS` 属于纯配置参数抽屉，应直接传入外层草稿的 `ocrPending` 引用。子窗 OK 仅将子窗中的控件状态同步更新到内存中的 `ocrPending` 并标记草稿置脏，子窗 Cancel 则丢弃子窗修改；最终由主窗口的“应用/确定”统一切入写盘与回滚。这样彻底避免破坏主窗的取消语义，并杜绝不必要的单字段伪冲突。
 - **模型下载**：网络和文件 I/O 立即生效，不属于设置取消范围；下载成功后只把返回的模型路径更新到当前草稿，路径仍须由主窗应用才持久化。子窗确认、下载等独立提交边界应在按钮附近用简短状态文案告知用户。
 
 ---
@@ -240,15 +239,15 @@ sequenceDiagram
 ### 3. Always On Top Tab (窗口置顶)
 - 显示高亮边框：复选框。
 - 自定义颜色：复选框 + 颜色拾取色块。
-- 边框不透明度：滑块 (10%~100%)。
+- 边框不透明度：滑块 (1%~100%)。
 - 边框厚度：滑块 (1~20px)。
 - 平滑圆角：复选框。
-- 边框内缩：滑块 (0~10px)。
+- 边框内缩：滑块 (0~20px)。
 - **原有快捷键**：
   - 窗口置顶 (Always On Top)：默认 `Alt+T`
 
 ### 4. OCR Tab (文字识别 - 补齐全部等价项)
-- 识别结果展示字号：滑块/数值 (8~32px)。
+- 识别结果展示字号：数值输入框 (8~32px)。
 - 结果窗口置顶：复选框。
 - **引擎模式切换下拉框**（4 种模式，完全对齐）：
   1. `Local (Windows OCR)`（系统离线 OCR）
@@ -259,11 +258,12 @@ sequenceDiagram
   - OCR 语言下拉框 (`IDC_OCR_LANGUAGE`：全部已安装语言、简体中文、英文、繁体中文、日语、韩语）。
 - **PaddleOCR Cloud 专属选项**（模式 2 时呈现）：
   - API URL 输入框、Token 密钥框（掩码）、超时滑块、连通性测试按钮；
+  - Task 下拉框 (`IDC_PADDLE_TASK`)；
   - **图表识别开关** (`IDC_PADDLE_CHART_RECOGNITION` 复选框)。
 - **PaddleOCR-VL 1.6 Local 专属选项**（模式 3 时呈现）：
   - 模型根目录（文本框 + 文件夹浏览）；
   - Prompt 选项下拉框（纯文本 OCR、表格识别 Markdown、公式识别 LaTeX、图表识别、印章识别、Spotting）；
-  - 服务端口（指定端口/自动分配复选框）、空闲退出超时（分钟）、服务测试按钮；
+  - 服务端口（`IDC_PADDLE_LOCAL_PORT` 文本框 + 相邻 `(auto)` 提示文本，**不是复选框**；同一控件在 PP-OCRv6 模式下改标签复用为 Threads）、空闲退出超时（分钟）、服务测试按钮；
   - 文档解析总开关 +「文档高级选项...」按钮（打开既有子弹窗 `IDD_OCR_DOC_OPTIONS`）。
 - **PP-OCRv6 Local 专属选项**（模式 4 时呈现）：
   - 模型根目录（文本框 + 文件夹浏览）；
@@ -274,11 +274,11 @@ sequenceDiagram
 - **备用引擎路由**：备用识别路由下拉框、备用服务空闲超时。
 - **原有 2 个快捷键**：
   - 区域文字识别 (OCR)：默认 `Shift+X`
-  - 备用文字识别 (OCR Alt)：新安装默认 `Alt+Shift+X`。不能只改 `GetDefaultHotkeys()`：当前 `LoadHotkeySettings()` 会在旧配置缺少 `ocrAlt` 键时取默认值，必须区分“新安装无配置”和“既有配置缺字段”，确保升级不擅自启用快捷键；显式空值保持为空。
+  - 备用文字识别 (OCR Alt)：新安装默认 `Alt+Shift+X`。不能只改 `GetDefaultHotkeys()`：现实现是“`settings.json` 或 `hotkeys` 段不存在 → 返回整套默认值；段存在但缺 `ocrAlt` 键 → 保留默认值”，两条路径都会套用新默认。实施时必须显式区分：仅在**配置文件或 `hotkeys` 段不存在**（新安装）时套用 `Alt+Shift+X`；段存在但缺 `ocrAlt` 键时强制置空，与显式空值一样不启用。
 
 ### 5. Screenshot Tab (截图标注)
 - 图像保存格式：下拉框（PNG, JPEG, BMP, WebP, AVIF）。
-- JPEG 压缩质量：滑块 (10%~100%)。
+- JPEG 压缩质量：滑块 (1%~100%)。
 - 快速保存目录：输入框 + `IFileOpenDialog` 浏览按钮。
 - 辅助选项：截图包含鼠标指针、启用取色器。
 - 长截图参数：启动动作下拉框、反向滚动自动裁剪。
@@ -286,7 +286,7 @@ sequenceDiagram
   - 屏幕截图 (Screenshot)：默认 `Shift+Alt+S`
 
 ### 6. Translate Tab (划词翻译)
-- 划词翻译全局使能：复选框。
+- 划词翻译全局使能：对应字段 `translation.enabled`（默认 true，被 `TranslationCoordinator` 当闸门），但**当前 UI 无此控件**（`IDC_TRANSLATE_ENABLED` 是未引用残留 ID，托盘菜单也无开关）。迁移默认不新增该开关；若要新增，须作为独立行为变更登记并单独测试。
 - 模拟复制兜底：Ctrl+C 保全开关。
 - 默认语言对：源语言下拉框、目标语言下拉框。
 - 关联 OCR 引擎路由：下拉框。
@@ -317,7 +317,7 @@ sequenceDiagram
 | 单行控件 | 首选 380–540 DIP | 以客户区剩余宽度伸缩，路径框优先吃满宽度 |
 | 普通行 | 约 30 DIP 高、44 DIP 步进 | 多行标签和路径/按钮组合按实际高度增加 |
 
-窗口尺寸算法保留原方案的 `CalculateWindowBounds` 思路，但分清两个入口：
+窗口尺寸算法分清两个入口（首次打开 vs 跨屏 DPI）：
 
 ```text
 首次打开：用 860×680 DIP 计算首选尺寸 → 限制到目标 rcWork → 居中。
@@ -326,11 +326,16 @@ sequenceDiagram
 窗口手动缩放：尊重用户尺寸，只保证最小可操作客户区和可见的底部按钮。
 ```
 
-窗口变矮时，仅内容区滚动；底部“应用/确定/取消”始终在客户区内，并能通过键盘抵达。窗口变窄时按实际**客户区宽度**计算行布局：足够宽用标签/控件双列，窄屏改为标签在上、控件在下，长路径/按钮组合可伸缩或换行。不能保留固定的 `kInlineButtonX=590 DIP`：1366px 宽屏在 200% 下可用逻辑宽度不足 700 DIP，会直接裁掉按钮。
+窗口变矮时，仅内容区滚动；底部“应用/确定/取消”始终在客户区内，并能通过键盘抵达。窗口变窄时按实际**客户区宽度**计算行布局：足够宽用标签/控件双列，窄屏改为标签在上、控件在下，长路径/按钮组合可伸缩或换行。不能使用固定绝对 X 坐标定位行内按钮：1366px 宽屏在 200% 下可用逻辑宽度不足 700 DIP，固定坐标会直接裁掉按钮。
 
 ### 2. 尺寸验收
 
 至少覆盖 1366×768 @ 150%/200%、1920×1080 @ 100%/150%、双屏不同 DPI、左/上任务栏与负坐标显示器。逐项确认六页无水平截断，长路径可编辑，底部按钮可见且可操作；滚动时焦点控件能自动进入可视区，窗口从一块屏拖到另一块屏不跳回中央。
+
+### 3. 窗口与页面容器选型架构
+
+- **层级拓扑**：顶层主窗口 (`SettingsWindow`) -> 原生标签控件 (`WC_TABCONTROL`) -> 6 个无边框子窗口容器（各 Tab 独立 HWND，窗口样式 `WS_CHILD | WS_CLIPCHILDREN | WS_VSCROLL`） -> 页面内功能控件。
+- **状态与滚动隔离**：每个 Tab 拥有独立的子窗口 HWND 容器，各功能控件作为子窗口容器的子控件创建。每个 Tab 维持完全独立的纵向滚动位置（`GetScrollInfo` / `SetScrollInfo`）与独立的按页 DPI Relayout；切换 Tab 时只需 `ShowWindow(SW_SHOW)` 激活当前页容器并 `ShowWindow(SW_HIDE)` 隐藏其余 5 个容器。切换迅速、零闪烁，且杜绝了跨页滚动位置串扰与焦点污染。
 
 ---
 
@@ -434,7 +439,7 @@ sequenceDiagram
 
 | 阶段 | 核心交付 | 阶段退出判据 |
 | :--- | :--- | :--- |
-| 架构前置 | 既定 P0–P6 完成；必要时在 P1 行为保持地搬迁旧 UI | 各阶段 `check_architecture.ps1 -Stage` 通过，产品可构建 |
+| 架构前置 | 已完成：P0–P6 交付 v3.0.0，旧 UI 已随 P1 迁入 `src/ocr/ui/` | 无需重跑；直接进入 UI-A |
 | UI-A 保存语义 | 字段补丁、单次 JSON 写入、冲突/失败反馈 | 同域异字段不丢更新，同字段冲突不静默覆盖 |
 | UI-B 宿主试点 | 新窗口 + General 页 + 工作区钳位 | 语言/开机自启与 DPI/取消路径可用，旧窗口可对照 |
 | UI-C 简单页面 | ZenCrop、AOT、Screenshot 与快捷键 | 页面字段、热键、色块、滚动与 DPI 回归通过 |
@@ -442,11 +447,11 @@ sequenceDiagram
 | UI-E Translate | 主页面与既有管理子窗 | provider/prompt/凭据及外层并发编辑回归通过 |
 | UI-F 切换清理 | 默认入口切换、移除旧页与模板 | 六页验收矩阵、构建、相关测试和架构守卫全绿 |
 
-原方案的 **19–25 天**可保留为最早的 UI 草估参考，但它未包含字段级冲突提交、子窗写入改造和架构 P0–P6；UI-A 完成后按实际改造量重新估算，不把该数字当作施工承诺。
+原方案的 **19–25 天**可保留为最早的 UI 草估参考，但它未包含字段级冲突提交与子窗写入改造；架构 P0–P6 已完成、不计入本方案工期。UI-A 完成后按实际改造量重新估算，不把该数字当作施工承诺。
 
-### 0. 架构前置（不是本方案 UI Phase 0）
+### 0. 架构前置（已完成，不是本方案 UI Phase 0）
 
-先遵守 `.plan/refactor/00-HANDOFF.md` 完成既定 P0→P6 阶段与回滚锚点。当前 `CMAKE_CXX_STANDARD` 仍为 20；P0 未闭环前不改 `src/`。P1 如需迁走 L0 的旧设置 UI，只做行为保持搬迁并运行对应闸门。设置 UI 现代化的工期不与架构阶段混算；原“19–25 天”只作为未经新风险校准的草估。
+P0–P6 已于 2026-09-23 交付 v3.0.0（见 `.plan/refactor/00-HANDOFF.md` 与 `rollback-anchors.md`），无需重跑，也不得以此推迟本方案。旧 L0 设置 UI 已随 P1 行为保持地迁至 `src/ocr/ui/SettingsDialog.cpp`。设置 UI 现代化的工期不与架构阶段混算；原“19–25 天”只作为未经新风险校准的草估。
 
 ### 1. UI-A：保存语义先行
 
@@ -454,7 +459,7 @@ sequenceDiagram
 
 ### 2. UI-B：一页可用的宿主切片
 
-新增 L5 设置窗口与 General 页，保留旧 PropertySheet 作为开发期对照。验证语言预览/取消/应用、开机自启注册失败反馈、首开居中与跨屏不跳位。新窗口在六页功能齐全前不得成为默认入口；开发开关如 `ZENCROP_NEW_SETTINGS=1` 仅用于人工比对，最终发布切换前移除双实现或明确限期。
+新增 L4 `zencrop_ui` 设置窗口与 General 页，保留旧 PropertySheet 作为开发期对照。验证语言预览/取消/应用、开机自启注册失败反馈、首开居中与跨屏不跳位。新窗口在六页功能齐全前不得成为默认入口；开发开关如 `ZENCROP_NEW_SETTINGS=1` 仅用于人工比对，最终发布切换前移除双实现或明确限期。
 
 ### 3. UI-C：其余简单页面
 
@@ -462,7 +467,7 @@ sequenceDiagram
 
 ### 4. UI-D：OCR 页面与独立子窗
 
-迁移四种引擎模式、语言、云端图表识别、本地与 PP-OCRv6 参数、备用路由和快捷键。把两个 OCR 子窗回调从旧 `SettingsDialog.cpp` 迁出，按 §4 在子窗 OK 时实际提交字段，并刷新外层基线；模式切换回收隐藏行空白。单独验证新安装、旧配置缺 `ocrAlt`、显式禁用三种快捷键情况；同时验证 Llama 服务状态只在成功提交后变化。
+迁移四种引擎模式、语言、云端图表识别、本地与 PP-OCRv6 参数、备用路由和快捷键。把两个 OCR 子窗从旧 `SettingsDialog.cpp` 迁出改造为纯参数抽屉，直接操作主草稿 `ocrPending`，子窗 OK 只更新内存并置脏、Cancel 丢弃；最终由主窗“应用/确定”统一写盘与回滚；模式切换回收隐藏行空白。单独验证新安装、旧配置缺 `ocrAlt`、显式禁用三种快捷键情况；同时验证 Llama 服务状态只在成功提交后变化。
 
 ### 5. UI-E：Translate 页面与独立管理窗
 
@@ -472,4 +477,4 @@ sequenceDiagram
 
 六页功能及 §6 的显示器矩阵、键盘/IME、Apply/OK/Cancel、子窗独立提交、配置失败回归全部通过后再切默认入口。确认 `tests/test_translation_contract.cpp` 等旧 `SettingsHotkeyDraft.h` 使用者已迁移，随后删除不再引用的旧页、头文件及对应 `.rc` 模板；只下调实际下降的架构基线。运行 `cmd.exe /d /c build.bat`、直接相关既有测试、守卫与 `git diff --check`；发布打包/升级矩阵只在正式发布验收时执行。
 
-本方案不修改 `AGENTS.md`：仍使用已登记的 L5 与既有 C++23、守卫和构建契约。只有实施中确实改变稳定架构契约（例如新增源码目录、层级或构建门禁规则）时，才同步更新 `AGENTS.md`、开发指南与守卫。
+本方案不修改 `AGENTS.md`：仍使用已登记的 L4 `zencrop_ui` 与既有 C++23、守卫和构建契约。只有实施中确实改变稳定架构契约（例如新增源码目录、层级或构建门禁规则）时，才同步更新 `AGENTS.md`、开发指南与守卫。

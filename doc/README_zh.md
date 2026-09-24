@@ -1,8 +1,13 @@
-# ZenCrop v3.0.0
+# ZenCrop v3.1.0
 
 [English](../README.md)
 
 ZenCrop 是对 [PowerToys Crop And Lock](https://github.com/microsoft/PowerToys/tree/main/src/modules/CropAndLock/) 的独立、**增强型**重构实现，并融合了丰富的截图标注、长截图、多引擎 OCR 和 OCR 工作台。
+
+## v3.1.0 更新重点
+
+- **设置界面现代化重构**: 现代原生设置宿主与子容器解耦架构，字段级原子草稿提交与安全冲突检测，Per-Monitor DPI v2 自适应栅格，完整对齐 6 大 Tab 功能等价。
+- **版本全面升级**: 应用、安装包与文档统一升级至 `v3.1.0`。
 
 ## v3.0.0 更新重点
 
