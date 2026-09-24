@@ -32,6 +32,7 @@ public:
     }
 
     void reset(H handle = nullptr) noexcept {
+        if (m_handle == handle) return;
         if (m_handle) {
             ::DeleteObject(m_handle);
         }
@@ -82,6 +83,7 @@ public:
     }
 
     void reset(HDC hdc = nullptr) noexcept {
+        if (m_hdc == hdc) return;
         if (m_hdc) {
             ::DeleteDC(m_hdc);
         }
@@ -129,6 +131,7 @@ public:
     }
 
     void reset(HWND hwnd = nullptr, HDC hdc = nullptr) noexcept {
+        if (m_hwnd == hwnd && m_hdc == hdc) return;
         if (m_hdc) {
             ::ReleaseDC(m_hwnd, m_hdc);
         }
@@ -184,6 +187,9 @@ public:
         }
         return *this;
     }
+
+    [[nodiscard]] HGDIOBJ old() const noexcept { return m_old; }
+    [[nodiscard]] bool valid() const noexcept { return m_old != nullptr && m_old != HGDI_ERROR; }
 
 private:
     HDC m_hdc = nullptr;

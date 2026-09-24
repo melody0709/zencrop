@@ -3,6 +3,7 @@
 #include "core/WideFormatUtils.h"
 #include "core/WideJsonUtils.h"
 #include "core/NarrowStringUtils.h"
+#include "core/GdiHandles.h"
 
 #include <iostream>
 
@@ -825,6 +826,66 @@ int main() {
     Expect(WideFormatGroupId(4) == L"group_4", "group id");
     Expect(WideFormatGroupsFailedSuffix(3) == L"3 group(s) failed.", "groups failed suffix");
     Expect(WideFormatHistoryPinHeader(1) == L"\U0001F4CC #1  |  ", "history pin header");
+
+    // GdiHandles RAII and self-reset contract.
+    {
+        // ScopedHBRUSH
+        HBRUSH rawBrush = CreateSolidBrush(RGB(10, 20, 30));
+        Expect(rawBrush != nullptr, "gdi create raw brush");
+        zencrop::ScopedHBRUSH brush(rawBrush);
+        Expect(brush.get() == rawBrush, "gdi scoped brush get");
+        Expect(static_cast<bool>(brush), "gdi scoped brush bool");
+        Expect(brush == rawBrush, "gdi scoped brush implicit conversion");
+
+        // Self-reset protection
+        brush.reset(brush.get());
+        Expect(brush.get() == rawBrush, "gdi scoped brush self-reset");
+
+        // Move construction
+        zencrop::ScopedHBRUSH movedBrush(std::move(brush));
+        Expect(movedBrush.get() == rawBrush, "gdi move construct get");
+        Expect(brush.get() == nullptr, "gdi move construct source null");
+
+        // Move assignment
+        zencrop::ScopedHBRUSH assignedBrush;
+        assignedBrush = std::move(movedBrush);
+        Expect(assignedBrush.get() == rawBrush, "gdi move assign get");
+        Expect(movedBrush.get() == nullptr, "gdi move assign source null");
+
+        // Release
+        HBRUSH detached = assignedBrush.release();
+        Expect(detached == rawBrush, "gdi release handle");
+        Expect(assignedBrush.get() == nullptr, "gdi released is null");
+        DeleteObject(detached);
+
+        // ScopedHPEN
+        HPEN rawPen = CreatePen(PS_SOLID, 2, RGB(40, 50, 60));
+        zencrop::ScopedHPEN pen(rawPen);
+        pen.reset(pen.get());
+        Expect(pen.get() == rawPen, "gdi pen self-reset");
+
+        // ScopedDC
+        zencrop::ScopedDC memDc(CreateCompatibleDC(nullptr));
+        Expect(memDc.get() != nullptr, "gdi scoped dc valid");
+        HDC rawDc = memDc.get();
+        memDc.reset(memDc.get());
+        Expect(memDc.get() == rawDc, "gdi dc self-reset");
+
+        // ScopedSelectObject
+        {
+            zencrop::ScopedSelectObject selPen(memDc.get(), pen.get());
+            Expect(selPen.valid(), "gdi select object valid");
+            Expect(selPen.old() != nullptr, "gdi select object old valid");
+        }
+
+        // ScopedWindowDC
+        zencrop::ScopedWindowDC screenDc(nullptr, GetDC(nullptr));
+        Expect(screenDc.get() != nullptr, "gdi scoped window dc valid");
+        HWND rawWnd = screenDc.hwnd();
+        HDC rawWinDc = screenDc.get();
+        screenDc.reset(rawWnd, rawWinDc);
+        Expect(screenDc.get() == rawWinDc, "gdi window dc self-reset");
+    }
 
     if (g_fail) { std::cerr << g_fail << " failures\n"; return 1; }
     std::cout << "ALL PASSED\n";

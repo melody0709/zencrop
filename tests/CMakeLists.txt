@@ -214,6 +214,7 @@ zencrop_add_simple_hermetic(test_dashboard_file_types
 # OWN-74: pure WideStringUtils contract (header-only).
 zencrop_add_simple_hermetic(test_wide_string_utils_contract
     INCLUDES ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/src/core
+    LIBS zencrop_build_flags zencrop_core gdi32 user32
 )
 
 zencrop_add_simple_hermetic(test_translation_contract
