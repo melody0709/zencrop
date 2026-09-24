@@ -567,7 +567,7 @@ function Invoke-Measure([string]$RepoRoot) {
 
     $gdiRegex = [regex]'\b(DeleteObject|DeleteDC|ReleaseDC)\s*\('
     $gdiManualReleases = 0
-    $printfRegex = [regex]'\b(swprintf_s|sprintf_s|snprintf|sprintf|wsprintfW|wsprintfA)\s*\('
+    $printfRegex = [regex]'\b(swprintf_s|sprintf_s|snprintf|sprintf|wsprintfW|wsprintfA|StringCchPrintfW|StringCchPrintfA|StringCchPrintf)\s*\('
     $printfOccurrences = 0
     $jthreadRegex = [regex]'\bstd::jthread\b'
     $jthreadAdoption = 0
@@ -852,6 +852,8 @@ function New-SyntheticRepo([string]$Path) {
     }
     # push extern declarations over their ceiling
     & $write 'src\core\Externs.h' "extern int a;`nextern int b;`nextern int c;`nextern int d;`nextern int e;`n"
+    # synthetic gdi manual release, legacy printf, and jthread
+    & $write 'src\core\LegacyOps.cpp' "void legacy() { DeleteObject(0); char b[16]; sprintf_s(b, `"%d`", 1); std::jthread t; }`n"
 
     & $write 'CMakeLists.txt' @'
 project(Synthetic)
