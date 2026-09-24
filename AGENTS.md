@@ -1,13 +1,13 @@
 # ZenCrop 日常维护规则
 
-架构重构 Stage 0–4 与 R5 已完成。默认处理独立 feature/bug；不要为普通任务读取或回写 EXECUTION、GOAL、ADR、KPI 或历史施工记录，也不要自行重开架构 Stage。
+架构重构 Stage 0–4、R5 及 C++23 稳定化重构（P0–P6）已全部完成，版本已升级至 **v3.0.0**。默认处理独立 feature/bug；不要为普通任务读取或回写 EXECUTION、GOAL、ADR、KPI 或历史施工记录，也不要自行重开架构 Stage。
 
-## 实施中的 C++23 架构重构（开工前必读）
+## 已落地的 C++23 架构规范与守卫（日常维护守则）
 
-- 入口文档：**`.plan/refactor/00-HANDOFF.md`** —— 现状、硬禁止清单、第一步、每阶段判据、命令备忘、已知陷阱。
-- 方案书：`.plan/refactor/zencrop-cxx23-architecture-plan.md`（§10 实施前缺口审查、§11 工具链清点）。
+- 架构归档：**`.plan/refactor/00-HANDOFF.md`** —— 重构验收记录、硬禁止清单、已知陷阱。
+- 方案归档：`.plan/refactor/zencrop-cxx23-architecture-plan.md`（方案书与基线设计）。
 - 阶段闸门：`scripts/check_architecture.ps1 -Stage P0…P6`；守卫已挂在 `build.bat`，**每次构建都跑**。
-- 回滚锚点：`.plan/refactor/rollback-anchors.md`（当前工作区未提交，实施前必须先提交一次）。
+- 回滚锚点：`.plan/refactor/rollback-anchors.md`（全阶段原子提交记录与锚点）。
 - **本机环境铁律与历史事故**：`.workbuddy/memory/MEMORY.md`（shell `>>` 会截断已存在文件、`.git` 原子写不可靠、
   生成目录只允许删本次自己新建的文件等）——这些属于会真实造成损坏的约束，动手前务必读。
 

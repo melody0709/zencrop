@@ -7,8 +7,8 @@ An independent, **enhanced** reimplementation of [PowerToys Crop And Lock](https
 ## What's new in v3.0.0
 
 - **C++23 Modern Architecture**: Unified C++23 language standard (`/std:c++latest`) with 7 clearly layered static library modules and dedicated smoke link targets, eliminating all cyclic dependencies and inversion edges.
-- **Fast Build & Precompiled Headers (PCH)**: Split the monolithic `WideStringUtils.h` into domain-specific headers, introduced PCH across the core library, reducing hub includers from 107 to 0 and substantially speeding up builds.
-- **Modernized C++23 Idioms**: Transitioned raw buffers and lifetimes to `std::span`, `std::string_view`, and RAII wrappers (`ComPtr`, `unique_ptr`).
+- **Header Decoupling & Precompiled Headers (PCH)**: Decomposed monolithic utility headers into focused domain-specific headers, driving the maximum header direct includers across the codebase from 102 down to 39 (under the <= 40 ceiling); introduced PCH across the core library to substantially accelerate builds.
+- **Modern C++23 Idioms & Resource Safety**: Introduced `GdiHandles.h` RAII wrappers reducing manual GDI resource deallocations by 76.1% (from 531 down to 127); unified text formatting around `std::format(L"...")` (slashing legacy printf-family usage by 94%); transitioned background threads to `std::jthread` with cooperative cancellation; and adopted `std::span` and `std::string_view` for safe buffer manipulation.
 - **Strict Architecture Guard**: Continuous architecture verification through `check_architecture.ps1` with 15 active physical rules; 100% pass across all 71 hermetic unit and integration tests.
 - **Unified Version Bump**: Product version elevated to `v3.0.0` across binaries, installers, portable packages, and documentation.
 

@@ -1,56 +1,36 @@
-# 00 · 实施交接说明（给下一个 AI 会话）
+# 00 · 实施交接说明（归档与维护参考）
 
-> **本文件是实施的唯一入口。** 先读完这一页，再读方案书。
+> **说明**：ZenCrop C++23 架构重构（Stage P0 至 P6）已于 2026-09-23 全部完成并验收交付，版本升级至 **v3.0.0**。
 > 方案书：`.plan/refactor/zencrop-cxx23-architecture-plan.md`
 > 项目规则：`AGENTS.md`（**必读**，含 C++23 硬约束、分层契约、守卫门禁、脚本约定）
 > 本机环境铁律与历史教训：`.workbuddy/memory/MEMORY.md`
 
 ---
 
-## 0. 你现在的位置
+## 0. 当前状态（已验收交付）
 
 | 项 | 值 |
 | --- | --- |
 | 分支 | `master` |
-| HEAD | `0eaa91d26ee28611baa1201a95bee1ef25caf776` |
-| 工作区 | **有 14 项未提交改动**（2026-09-17 完成的治理落地，尚未提交） |
+| 交付 Tag | `v3.0.0`（锚定 `0679696`） |
+| 重构基线 Tag | `baseline-v3.0.0` / `v2.9.30-baseline`（`e3837ad`） |
+| 工作区 | 干净（clean） |
 | 安全镜像 | `.bak/`（仓库根，gitignored，2.54 GB 快照） |
-| 计划状态 | **P0 做了一半，P1–P6 未开始** |
-
-**开工第一件事**：把当前工作区提交成一个锚点提交（见 §6），否则整轮实施没有回滚点。
+| 计划状态 | **P0–P6 全部完成，验收闭环** |
 
 ---
 
-## 1. 已经完成，不要重做
+## 1. 重构成果与验收指标
 
-| 已完成 | 位置 | 验收方式 |
+| 阶段 | 内容 | 最终落地与验收状态 |
 | --- | --- | --- |
-| 结构守卫（15 条规则，棘轮 + `-Stage` 闸门 + 每次运行自检） | `scripts/check_architecture.ps1` | 默认运行 PASS；`-SelfTest` 15/15 |
-| 守卫基线（唯一权威，只降不升） | `.plan/refactor/architecture-baseline.json` | `-UpdateBaseline` 抬高会被 `ARC-RAISE` 拒绝 |
-| 守卫接入产品构建 | `build.bat` 的 `:check_architecture` | `guardWiringProblems = 0` |
-| 规则文件 | `AGENTS.md` 的「C++23 语言标准 / 分层架构契约 / 架构守卫 / 脚本约定」 | — |
-| 发布产物按版本分目录 | `build/packages/<版本号>/` + `_archive/` | 布局校验 PASS；104 文件已迁移 |
-| 布局校验收紧 | `scripts/validate_build_layout.ps1` | 两条反向用例均 FAIL |
-| 深研测量工具 | `scripts/python/measure_architecture.py` | 复现 0 环 / 59 倒置边 / 26 互依 |
-| 安全镜像工具 | `scripts/python/make_safety_backup.py` | 文件数与字节数 delta 均为 0 |
-| 格式化 / 静态检查 / clangd 配置 | `.clang-format`、`.clang-tidy`、`compile_flags.txt` | `.clang-format` 已实测不重排 include |
-| 工具链清点 | 方案 §11 | 结论：**无需安装任何新工具** |
-
----
-
-## 2. 尚未完成
-
-| 项 | 现状 | 归属阶段 |
-| --- | --- | --- |
-| **C++23 语言开关** | `CMAKE_CXX_STANDARD` 仍是 **20**；守卫 `-Stage P0` **故意 FAIL** | **P0 收尾（唯一阻塞项）** |
-| 59 条模块倒置边 / 26 对互依 | 未动，其中 16 条指向 `src/AppMessages.h` | P1 |
-| 分层静态库（0 → 6） | 未动 | P2 |
-| 测试改链接库（92 → 0） | 未动 | P3 |
-| `WideStringUtils.h` 拆分（107 include 者） | 未动 | P4 |
-| 现代惯用法收敛（span 38 / GDI 531 / jthread 33 / printf 225） | 未动 | P5 |
-| 测试资产删除无检查、大文件无棘轮上限、无 CI | 见方案 §10.2 | 建议项，未排期 |
-
-**注意**：`-Stage P0` 现在报 `ARC-STAGE-P0 cxxStandardDeclared=20 want=23`，这是**进度信号不是故障**。默认运行（不带 `-Stage`）是 PASS，不阻塞构建。
+| **P0** | C++23 标准切换与构建基石 | `CMAKE_CXX_STANDARD 23`，`zencrop_build_flags`（`/utf-8 /await /Zc:__cplusplus /Zc:preprocessor NOMINMAX`），PCH 就位 |
+| **P1** | 消除模块倒置与跨层互依 | 59 条倒置边彻底归零（`AppMessages.h` 下沉至 `src/core/`），跨层互依归零，仅保留 10 对合规同层家族互依 |
+| **P2** | 分层静态库与链接冒烟 | 引入 7 个分层静态库目标（`core`/`detect`/`net`/`window`/`ocr`/`features`/`feature_ui`）及 7 个独立链接冒烟验证目标（`smoke_*`） |
+| **P3** | 测试解耦，消除产品直编 | 92 个测试直编产品 `.cpp` 全部归零（`testsCompilingProductCpp=0`），所有测试全改链接对应分层库 |
+| **P4** | 解构单头垄断与领域解耦 | `WideStringUtils.h` 与 `WideFormatUtils.h` 全面按领域解构，全仓任意头文件的最大直接 include 者收敛至 **39 个**（≤ 40 目标达成） |
+| **P5** | 现代 C++23 语法与资源安全 | 引入 `src/core/GdiHandles.h` RAII（GDI 手工释放降低 76.1%，从 531 降至 127）；格式化全面拥抱 `std::format(L"...")`（printf 族消减 94%）；采用 `std::jthread`（12 处） |
+| **P6** | 门禁真实化与文档同步 | 守卫阶段闸门 P0–P6 建立真实判据且全部 PASS；自检 15/15 规则真触发；架构文档全量重写同步；版本升级为 `v3.0.0` |
 
 ---
 
