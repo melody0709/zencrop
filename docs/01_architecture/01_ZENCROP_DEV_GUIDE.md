@@ -31,17 +31,30 @@ ZenCrop is an independent reimplementation of [PowerToys Crop And Lock](https://
 
 ## Architecture
 
-- **Entry point**: `src/main.cpp` - Win32 application with system tray
-- **Core utilities**: `src/core/` - Utils, Strings, Base64, Settings
-- **Detection module**: `src/detect/` - SmartDetector, SmartDetectorThread
-- **Window modes**: `src/window/` - OverlayWindow, ReparentWindow, ThumbnailWindow, ViewportWindow, AlwaysOnTop
-- **OCR module**: `src/ocr/` - OcrEngine, LayoutEngine, PaddleOCR adapters, OCR UI windows
-  - `src/ocr/engine/` - OcrEngine factory & all engine implementations
-  - `src/ocr/layout/` - LayoutEngine (PP-DocLayout ONNX)
-  - `src/ocr/ui/` - OcrResultWindow, OcrDashboardWindow
-- **Network module**: `src/net/` - Network, TcpHelper, LlamaServerManager, MiniHttpServer
-- **Platform**: Native Windows C++20 with Win32 API
-- **Dependencies**: user32, gdi32, gdiplus, dwmapi, shcore, shell32, ole32, oleaut32, oleacc, shlwapi, comctl32, comdlg32, advapi32, windowsapp, winhttp, ws2_32, uxtheme, windowscodecs, onnxruntime
+ZenCrop uses a strictly layered C++23 architecture structured into 7 static libraries with clear dependency boundaries (L0 to L4) and a single entrypoint application target (L5):
+
+- **L5 App**: `ZenCrop` (`src/main.cpp`) - thin Win32 application lifecycle shell linking all subsystem libraries.
+- **L4 UI**: `zencrop_ui` (`src/ocr/ui/`) - Dashboard, history, settings, and progress UI dialogs.
+- **L3 Domain**:
+  - `zencrop_shot` (`src/screenshot/`) - Screenshot session, overlay, pinned windows, annotations, and longshot stitching.
+  - `zencrop_translate` (`src/translation/`) - Translation coordinator, engine factories, prompt composers, and result windows.
+  - `src/selection/` - Selection text acquirers, clipboard transaction handling.
+- **L2 OCR**: `zencrop_ocr` (`src/ocr/`, `src/ocr/engine/`, `src/ocr/layout/`, `src/ocr/batch/`, `src/ocr/document/`, `src/ocr/model_download/`) - OCR engine factory, PaddleOCR adapters, layout analysis, batch document materializers.
+- **L1 Platform**: `zencrop_platform` (`src/window/`, `src/detect/`, `src/net/`) - Window modes (Reparent, Thumbnail, Viewport, AlwaysOnTop), accessibility detector, WinHTTP client, mini HTTP server.
+- **L0 Core & Media**:
+  - `zencrop_image` (`src/image/`) - Bitmap codec, WIC encoders/decoders, image scaling.
+  - `zencrop_core` (`src/core/`) - Foundational utilities: GDI RAII (`GdiHandles.h`), resource IDs (`ResourceIds.h`), settings (`Settings.h`), decoupled string formatters (`WideFormat*.h`), narrow utilities (`NarrowStringUtils.h`).
+- **Smoke test targets**: Each static library provides an `EXCLUDE_FROM_ALL` target (`smoke_zencrop_*`) ensuring hermetic layer linkability.
+- **Platform & Standard**: Native Windows C++23 (`/std:c++latest`), MSVC 14.4x.
+- **Dependencies**: user32, gdi32, gdiplus, dwmapi, shcore, shell32, ole32, oleaut32, oleacc, shlwapi, comctl32, comdlg32, advapi32, windowsapp, winhttp, ws2_32, uxtheme, windowscodecs, onnxruntime.
+
+### C++23 Modernization & Memory Safety
+
+- **Language Standard**: Strict C++23 using CMake `CMAKE_CXX_STANDARD 23` (expands to `/std:c++latest` on MSVC). **Never use `/std:c++23`** as it causes MSVC to drop STL to C++14.
+- **GDI RAII (`src/core/GdiHandles.h`)**: All GDI objects (`HDC`, `HBITMAP`, `HFONT`, `HBRUSH`, `HPEN`) should use RAII types (`ScopedDC`, `ScopedHBITMAP`, `ScopedHFONT`, `ScopedHBRUSH`, `ScopedHPEN`, `ScopedSelectObject`). Manual `DeleteObject`/`DeleteDC` releases have been reduced by >75%.
+- **Modern Threading**: Background threads use `std::jthread` with cooperative cancellation and automatic joining on destruction.
+- **Modern Formatting**: Wide text formatting uses standard `std::format(L"...", ...)` instead of `swprintf_s` or `wsprintfW`.
+- **Header Hygiene**: Fat utility headers have been decomposed into domain-specific headers (`WideFormatPaths.h`, `WideFormatNumbers.h`, `WideFormatConfig.h`, `WideFormatOcr.h`, `WideFormatWin32.h`, `WideFormatLabels.h`, `WideFormatPrimitives.h`, etc.). The architecture guard strictly enforces that no single first-party header exceeds a direct-includer ceiling of 40.
 
 ## Features
 

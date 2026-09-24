@@ -4,47 +4,59 @@ This document describes the high-level architecture, module decomposition, and d
 
 ---
 
-## 1. Modular Decomposition
+## 1. Modular Decomposition & Layering
 
-ZenCrop is implemented as a native Windows C++20 application with five primary sub-systems:
+ZenCrop is implemented as a native Windows C++23 application structured into 7 static libraries across strict architectural layers (L0 to L5) with zero cyclic dependencies:
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                                ZenCrop                                  │
-├───────────────┬────────────────┬────────────────┬──────────────┬────────┤
-│     Core      │   Detection    │  Window Modes  │  OCR System  │  Net   │
-│  (src/core)   │  (src/detect)  │  (src/window)  │  (src/ocr)   │(src/net│
-└───────────────┴────────────────┴────────────────┴──────────────┴────────┘
+│                           L5: App Target (ZenCrop)                      │
+│                              (src/main.cpp)                             │
+├─────────────────────────────────────────────────────────────────────────┤
+│                           L4: Feature UI Layer                          │
+│                     zencrop_ui (src/ocr/ui/)                            │
+├─────────────────────────────────────────────────────────────────────────┤
+│                        L3: Feature Domain Layer                         │
+│   zencrop_shot (src/screenshot/) │ zencrop_translate (src/translation/)│
+├─────────────────────────────────────────────────────────────────────────┤
+│                           L2: OCR Domain Layer                          │
+│                     zencrop_ocr (src/ocr/)                              │
+├─────────────────────────────────────────────────────────────────────────┤
+│                          L1: Platform Layer                             │
+│       zencrop_platform (src/window/, src/detect/, src/net/)             │
+├─────────────────────────────────────────────────────────────────────────┤
+│                         L0: Core & Media Layer                          │
+│    zencrop_core (src/core/)      │     zencrop_image (src/image/)       │
+└─────────────────────────────────────────────────────────────────────────┘
 ```
 
-1. **Core Sub-system (`src/core/`)**
-   - Application-wide configuration loader & saver (`Settings`).
-   - String utilities, wide/narrow string conversions (`Strings`).
-   - Multi-monitor coordinate utilities and GDI helper functions (`Utils`).
-   - Base64 encoder/decoder (`Base64`).
+1. **L0: Core & Media Layer**
+   - **`zencrop_core` (`src/core/`)**: Base utilities, configuration (`Settings`), GDI RAII primitives (`GdiHandles.h`), resource IDs (`ResourceIds.h`), decoupled string formatters (`WideFormatPaths.h`, `WideFormatNumbers.h`, `WideFormatConfig.h`, `WideFormatOcr.h`, `WideFormatWin32.h`, `WideFormatLabels.h`, `WideFormatPrimitives.h`), and narrow string utils (`NarrowStringUtils.h`). Has strictly zero internal project dependencies.
+   - **`zencrop_image` (`src/image/`)**: Windows Imaging Component (WIC) encoding/decoding, bitmap manipulation, pixel format transformations.
+   - Smoke Targets: `smoke_zencrop_core`, `smoke_zencrop_image`.
 
-2. **Detection Sub-system (`src/detect/`)**
-   - High-performance, low-latency UI element boundary finder using Microsoft Active Accessibility (MSAA).
-   - `SmartDetector`: High-frequency search logic featuring recursive `accHitTest` parsing (up to 31 levels depth), browser white-list double-hit double-checking, and window liveness state evaluation.
-   - `SmartDetectorThread`: Background STA worker thread running a deduplicating command queue (`EnqueueRequest`) to prevent thread contention or lagging UI during cursor movement.
+2. **L1: Platform Layer (`zencrop_platform`)**
+   - `src/window/`: Window modes (`OverlayWindow`, `ReparentWindow`, `ThumbnailWindow`, `ViewportWindow`, `AlwaysOnTop`).
+   - `src/detect/`: MSAA/UIA high-performance UI element boundary search (`SmartDetector`, `SmartDetectorThread`).
+   - `src/net/`: WinHTTP HTTP client (`Network`), local mini HTTP server (`MiniHttpServer`), and local VLM lifecycle management (`LlamaServerManager`).
+   - Smoke Target: `smoke_zencrop_platform`.
 
-3. **Window Modes Sub-system (`src/window/`)**
-   - `OverlayWindow`: Fullscreen semi-transparent layer used during selection. Employs double-buffering 32-bit ARGB pre-multiplied alpha GDI+ rendering (`UpdateLayeredWindow`) to prevent flicker.
-   - `ReparentWindow`: Embeds targeted Win32 child windows cross-process (`SetParent`), including compensation metrics for coordinates and titlebar visibility toggles.
-   - `ThumbnailWindow`: Captures real-time thumbnail updates using the Desktop Window Manager (DWM) API, enforcing strict proportional resizing with anchor point preservation.
-   - `ViewportWindow`: Native window-region based cropping (`SetWindowRgn`) utilizing client region offsets compensation.
-   - `AlwaysOnTop`: Manages active on-top indicators using a pre-multiplied blue border window.
+3. **L2: OCR Domain Layer (`zencrop_ocr`)**
+   - Engine abstractions (`OcrEngine`), layout analysis (`LayoutEngine` via ONNX Runtime), PaddleOCR local/cloud document materializers, and batch pipeline processing (`src/ocr/batch/`, `src/ocr/document/`).
+   - Smoke Target: `smoke_zencrop_ocr`.
 
-4. **OCR Sub-system (`src/ocr/`)**
-   - `OcrEngine`: Factory-dispatched abstraction supporting native `Windows.Media.Ocr`, Cloud-based PaddleOCR-VL-1.6 asynchronous jobs REST services, or offline local VLM endpoints.
-   - `LayoutEngine`: ONNX Runtime-driven engine loading `PP-DocLayoutV3.onnx` to recognize 25 classes of layout regions (tables, text, equations, etc.) using tiling/NMS.
-   - `OcrResultWindow`: Custom Win32 floating text display with auto-resizing, edit subclassing (for capturing Ctrl+A/Ctrl+C), and Always On Top configurations.
-   - `OcrDashboardWindow`: OCR workbench for history, batch image/PDF jobs, source/canvas/result inspection, durable outputs, recovery, retry, and Markdown/WebView2 preview.
+4. **L3: Feature Domain Layer**
+   - **`zencrop_shot` (`src/screenshot/`)**: Interactive screenshot canvas, annotation documents, zoom magnifier, pin-to-screen, and long-shot scrolling stitcher (`longshot/`).
+   - **`zencrop_translate` (`src/translation/`)**: Multi-engine translation coordinator, prompt composer, and result popups.
+   - `src/selection/`: Text acquisition transactions and selection helpers.
+   - Smoke Targets: `smoke_zencrop_shot`, `smoke_zencrop_translate`.
 
-5. **Network Sub-system (`src/net/`)**
-   - `Network`: WinHTTP-wrapped client supporting synchronous and asynchronous HTTP/HTTPS GET and POST operations (including multipart/form-data assembly).
-   - `MiniHttpServer`: Local-only safe HTTP/1.1 file server for hosting local cropped image fragments for local Vision-Language Model queries.
-   - `LlamaServerManager`: Manages the lifecycle of subprocess `llama-server.exe` running local GGUF models.
+5. **L4: Feature UI Layer (`zencrop_ui`)**
+   - Full OCR Dashboard workspace, history repository, batch image/PDF viewers, settings dialogs, and progress dialogs.
+   - Smoke Target: `smoke_zencrop_ui`.
+
+6. **L5: Application Shell (`ZenCrop`)**
+   - `src/main.cpp` entrypoint containing WinMain, tray lifecycle, global hotkey routing, and application initialization. Does not contain business logic.
 
 ---
 
@@ -111,6 +123,9 @@ When a region is selected in OCR mode:
 
 ## 3. Design Principles & Hard Rules
 
+- **Strict Layered Dependency (L0–L5)**: Dependencies are strictly unidirectional downward. L0 and L1 must never depend on higher layers. Forbidden includes and cross-layer inversions are hard-enforced at build time via `scripts/check_architecture.ps1`.
 - **Zero Global State**: Global variables are confined to explicit singleton-like access in `Settings` or single application class instances.
-- **Resource Cleanup**: GDI Handles (`HBITMAP`, `HDC`, `HFONT`) and COM Pointers must be strictly freed or wrapped in RAII containers to prevent memory leaks during long-running sessions.
-- **Thread Safety**: Network operations and MSAA COM querying must occur outside the main GUI thread to avoid application freeze. Communication must rely on Win32 messages (`PostMessageW`) or STA worker queues.
+- **Resource Cleanup & RAII**: GDI Handles (`HBITMAP`, `HDC`, `HFONT`, `HBRUSH`, `HPEN`) are managed via `src/core/GdiHandles.h` RAII wrappers (`ScopedDC`, `ScopedHBITMAP`, `ScopedHFONT`, `ScopedHBRUSH`, `ScopedHPEN`, `ScopedSelectObject`) with manual GDI releases heavily minimized. COM Pointers use `Microsoft::WRL::ComPtr`.
+- **Header Hygiene**: Fat utility hubs are forbidden; domain functionality is partitioned into focused headers with direct includer counts capped at <= 40.
+- **Thread Safety**: Network operations and MSAA COM querying must occur outside the main GUI thread to avoid application freeze. Background execution uses `std::jthread` with cooperative `std::stop_token` cancellation.
+- **C++23 Modernization**: Uses C++23 standard features (`std::span`, `std::expected`, `std::format(L"...")`). Never use `/std:c++23` compiler flag directly (CMake manages it as `/std:c++latest`).

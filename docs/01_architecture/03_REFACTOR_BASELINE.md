@@ -1,8 +1,33 @@
 # 架构重构基线（Architecture Refactor Baseline）
 
-本文件是 Stage 0-A / PR1 的落盘指引，链到具体的 baseline JSON。
+## v3.0.0 最终重构基线（Stage P6 Complete）
 
-## 当前基线
+ZenCrop C++23 架构重构已全面完成（Stage P0 至 P6 守卫门禁 100% 达成，15/15 守卫规则有效生效且 71/71 测试通过）：
+
+| 指标 | 最终测量值 | 门禁标准 (Stage P6) | 状态 | 说明 |
+|---|---|---|---|---|
+| **includeCycles** | 0 | 0 | PASS | 包含依赖环彻底清零 |
+| **forbiddenEdges** | 0 | 0 | PASS | 跨层非法依赖边清零 |
+| **moduleInversionEdges** | 0 | 0 | PASS | 逆层引用（低层引用高层）彻底清零 |
+| **moduleMutualPairs** | 10 | <= 10 | PASS | 模块间相互依赖受控 |
+| **productStaticLibraryCount** | 7 | >= 7 | PASS | 拆分为 7 个分层静态库 |
+| **staticLibsWithSmokeTarget** | 7 | >= 7 | PASS | 每个静态库均有独立 smoke target 验证独立链接性 |
+| **productTargetSourceCount** | 1 | <= 1 | PASS | 主目标仅含 `src/main.cpp` 薄壳 |
+| **testsCompilingProductCpp** | 0 | 0 | PASS | 测试只链接静态库，严禁直接编译产品源文件 |
+| **inlFileCount** | 0 | 0 | PASS | 类方法 `.inl` 全部消除 |
+| **stdCxx23Occurrences** | 0 | 0 | PASS | 严禁手写硬编码 `/std:c++23`（由 CMake 展开为 `/std:c++latest`） |
+| **cxxStandardDeclared** | 23 | >= 23 | PASS | C++23 语言标准统一应用 |
+| **maxHeaderDirectIncluders** | 39 | <= 40 | PASS | Hub 头文件彻底拆分，全局最高直接引用数 <= 40 |
+| **gdiManualReleases** | 127 | <= 159 | PASS | 引入 `src/core/GdiHandles.h` RAII，手动释放减少 76.1%（原 531 降至 127） |
+| **jthreadAdoption** | 12 | >= 10 | PASS | 现代化协作式取消后台线程全面采用 `std::jthread` |
+| **printfOccurrences** | 14 | <= 15 | PASS | 现代化宽格式化采用 `std::format(L"...")`，传统 `swprintf_s` 大幅消除 |
+| **cmakeGlobProductSources** | 0 | 0 | PASS | 禁止 CMake 源文件 glob |
+| **undeclaredSourceDirs** | 0 | 0 | PASS | 未登记的源文件目录为 0 |
+| **guardWiringProblems** | 0 | 0 | PASS | `check_architecture.ps1` 守卫强制挂载在 `build.bat` 每次构建中 |
+
+---
+
+## 历史初始基线（Stage 0-A / PR1 历史归档）
 
 | 字段 | 值 |
 |---|---|
