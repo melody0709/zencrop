@@ -10,27 +10,35 @@
       "moduleInversionEdges": 0,
       "moduleMutualPairs": 10
     },
+    "P2": {
+      "staticLibsWithSmokeTarget": 6,
+      "productStaticLibraryCount": 6
+    },
     "P3": {
       "testsCompilingProductCpp": 0
     },
+    "P4": {
+      "maxHeaderDirectIncluders": 40
+    },
     "P5": {
       "productTargetSourceCount": 1,
-      "hubHeaderDirectIncluders": 0,
+      "maxHeaderDirectIncluders": 40,
+      "gdiManualReleases": 159,
+      "printfOccurrences": 15,
+      "jthreadAdoption": 10,
       "testsCompilingProductCpp": 0
     },
     "P6": {
       "moduleInversionEdges": 0,
       "productTargetSourceCount": 1,
       "moduleMutualPairs": 10,
-      "hubHeaderDirectIncluders": 0,
-      "testsCompilingProductCpp": 0
-    },
-    "P4": {
-      "hubHeaderDirectIncluders": 40
-    },
-    "P2": {
-      "staticLibsWithSmokeTarget": 6,
-      "productStaticLibraryCount": 6
+      "maxHeaderDirectIncluders": 40,
+      "gdiManualReleases": 159,
+      "printfOccurrences": 15,
+      "jthreadAdoption": 10,
+      "testsCompilingProductCpp": 0,
+      "productStaticLibraryCount": 7,
+      "staticLibsWithSmokeTarget": 7
     }
   },
   "schemaVersion": "1.0.0",
@@ -40,7 +48,11 @@
     "undeclaredSourceDirs": 0,
     "targetsMissingUtf8": 0,
     "inlFileCount": 0,
-    "hubHeaderDirectIncluders": 0,
+    "hubHeaderDirectIncluders": 39,
+    "maxHeaderDirectIncluders": 39,
+    "gdiManualReleases": 127,
+    "printfOccurrences": 14,
+    "jthreadAdoption": 12,
     "testsCompilingProductCpp": 0,
     "moduleInversionEdges": 0,
     "staticLibsWithSmokeTarget": 7,

@@ -16,7 +16,7 @@
 #   ARC-LIBCOUNT   product static libraries (stage gate)                    STAGE
 #   ARC-PRODCPP    .cpp listed directly by the product target (ratchet)     RATCHET
 #   ARC-TESTCPP    product .cpp recompiled into tests (ratchet)             RATCHET
-#   ARC-HUBHEADER  direct includers of the hub header (ratchet)             RATCHET
+#   ARC-HUBHEADER  maximum direct includers of any header (ratchet)         RATCHET
 #   ARC-EXTERN     extern declarations (ratchet)                            RATCHET
 #   ARC-UTF8       real targets without /utf-8                              HARD 0
 #   ARC-STD23      forbidden /std:c++23 switch (STL drops to C++14)         HARD 0
@@ -131,7 +131,6 @@ $script:ForbiddenRules = @(
     @{ Id = 'document_to_batch'; Source = 'src/ocr/document/'; SourceIsDir = $true; Target = 'src/ocr/batch/'; TargetIsFile = $false }
 )
 
-$script:HubHeader = 'src/core/WideStringUtils.h'
 $script:SourceExtensions = @('.cpp', '.h', '.hpp', '.inl')
 $script:AssetExcludePattern = 'webview_assets'
 
@@ -543,13 +542,35 @@ function Invoke-Measure([string]$RepoRoot) {
 
     $targets = Get-TargetInfo $RepoRoot
 
-    $hubIncluders = New-Object System.Collections.Generic.List[string]
+    $headerIncluders = @{}
     foreach ($src in $edges.Keys) {
-        if ($src -eq $script:HubHeader) { continue }
         foreach ($t in $edges[$src]) {
-            if ($t -eq $script:HubHeader) { [void]$hubIncluders.Add($src); break }
+            if ($t.EndsWith('.h') -or $t.EndsWith('.hpp')) {
+                if ($src -ne $t) {
+                    if (!$headerIncluders.ContainsKey($t)) {
+                        $headerIncluders[$t] = New-Object System.Collections.Generic.HashSet[string]
+                    }
+                    [void]$headerIncluders[$t].Add($src)
+                }
+            }
         }
     }
+    $maxHeaderIncluders = 0
+    $maxHeaderName = ''
+    foreach ($h in $headerIncluders.Keys) {
+        $count = $headerIncluders[$h].Count
+        if ($count -gt $maxHeaderIncluders) {
+            $maxHeaderIncluders = $count
+            $maxHeaderName = $h
+        }
+    }
+
+    $gdiRegex = [regex]'\b(DeleteObject|DeleteDC|ReleaseDC)\s*\('
+    $gdiManualReleases = 0
+    $printfRegex = [regex]'\b(swprintf_s|sprintf_s|snprintf|sprintf|wsprintfW|wsprintfA)\s*\('
+    $printfOccurrences = 0
+    $jthreadRegex = [regex]'\bstd::jthread\b'
+    $jthreadAdoption = 0
 
     $externCount = 0
     $externRegex = [regex]'^\s*extern\s+[^;]+;'
@@ -558,6 +579,12 @@ function Invoke-Measure([string]$RepoRoot) {
         $lines = Read-TextLines (Join-Path $RepoRoot ($f.Replace('/', '\')))
         $lineTotal += $lines.Count
         foreach ($line in $lines) { if ($externRegex.IsMatch($line)) { $externCount++ } }
+        $fullText = Read-Text (Join-Path $RepoRoot ($f.Replace('/', '\')))
+        if ($f -notlike '*GdiHandles.h*') {
+            $gdiManualReleases += $gdiRegex.Matches($fullText).Count
+        }
+        $printfOccurrences += $printfRegex.Matches($fullText).Count
+        $jthreadAdoption += $jthreadRegex.Matches($fullText).Count
     }
 
     $inlCount = 0
@@ -579,7 +606,11 @@ function Invoke-Measure([string]$RepoRoot) {
             productStaticLibraryCount        = $targets.StaticLibraryCount
             productTargetSourceCount        = $targets.ProductTargetSource
             testsCompilingProductCpp         = Get-TestCompiledProductCpp $RepoRoot
-            hubHeaderDirectIncluders         = $hubIncluders.Count
+            hubHeaderDirectIncluders         = $maxHeaderIncluders
+            maxHeaderDirectIncluders         = $maxHeaderIncluders
+            gdiManualReleases                = $gdiManualReleases
+            printfOccurrences                = $printfOccurrences
+            jthreadAdoption                  = $jthreadAdoption
             externDeclarations               = $externCount
             targetsMissingUtf8               = $targets.MissingUtf8.Count
             stdCxx23Occurrences              = $stdViolations.Count
@@ -601,7 +632,12 @@ function Invoke-Measure([string]$RepoRoot) {
             stdViolations       = @($stdViolations)
             globs               = @($globs)
             undeclaredDirs      = @($newDirs)
-            hubIncluders        = $hubIncluders.Count
+            hubIncluders        = $maxHeaderIncluders
+            maxHeaderName       = $maxHeaderName
+            maxHeaderIncluders  = $maxHeaderIncluders
+            gdiManualReleases   = $gdiManualReleases
+            printfOccurrences   = $printfOccurrences
+            jthreadAdoption     = $jthreadAdoption
             smokeTargets        = @($smoke)
             realTargets         = @($targets.RealTargets.Keys)
             guardWiring         = @($wiring)
@@ -614,7 +650,8 @@ function Invoke-Measure([string]$RepoRoot) {
 
 $script:RatchetKeys = @(
     'moduleInversionEdges', 'moduleMutualPairs', 'productTargetSourceCount',
-    'testsCompilingProductCpp', 'hubHeaderDirectIncluders', 'externDeclarations'
+    'testsCompilingProductCpp', 'hubHeaderDirectIncluders', 'maxHeaderDirectIncluders',
+    'gdiManualReleases', 'printfOccurrences', 'externDeclarations'
 )
 $script:HardZeroKeys = @(
     'includeCycles', 'forbiddenEdges', 'targetsMissingUtf8',
@@ -624,7 +661,7 @@ $script:HardZeroKeys = @(
 # Stage expectations that are a FLOOR (value must reach at least the target)
 # rather than a ceiling.
 $script:StageFloorKeys = @(
-    'productStaticLibraryCount', 'staticLibsWithSmokeTarget', 'cxxStandardDeclared'
+    'productStaticLibraryCount', 'staticLibsWithSmokeTarget', 'cxxStandardDeclared', 'jthreadAdoption'
 )
 $script:RuleIds = @(
     'ARC-CYCLE', 'ARC-FORBIDDEN', 'ARC-RATCHET', 'ARC-SMOKE', 'ARC-UTF8',
@@ -643,26 +680,32 @@ function Get-DefaultBaseline {
             forbiddenEdges            = 0
             moduleInversionEdges      = 0
             moduleMutualPairs         = 10
-            productStaticLibraryCount = 0
-            productTargetSourceCount  = 174
-            testsCompilingProductCpp  = 92
-            hubHeaderDirectIncluders  = 107
+            productStaticLibraryCount = 7
+            productTargetSourceCount  = 1
+            testsCompilingProductCpp  = 0
+            hubHeaderDirectIncluders  = 39
+            maxHeaderDirectIncluders  = 39
+            gdiManualReleases         = 127
+            printfOccurrences         = 14
+            jthreadAdoption           = 12
             externDeclarations        = 4
             targetsMissingUtf8        = 0
             stdCxx23Occurrences       = 0
             inlFileCount              = 0
-            staticLibsWithSmokeTarget = 0
+            staticLibsWithSmokeTarget = 7
             cmakeGlobProductSources   = 0
             undeclaredSourceDirs      = 0
+            cxxStandardDeclared       = 23
+            guardWiringProblems       = 0
         }
         stages        = @{
             P0 = @{ productStaticLibraryCount = 0; staticLibsWithSmokeTarget = 0; testsCompilingProductCpp = 92; cxxStandardDeclared = 23 }
             P1 = @{ moduleInversionEdges = 0; moduleMutualPairs = 10 }
             P2 = @{ productStaticLibraryCount = 6; staticLibsWithSmokeTarget = 6 }
             P3 = @{ testsCompilingProductCpp = 0 }
-            P4 = @{ hubHeaderDirectIncluders = 40 }
-            P5 = @{ hubHeaderDirectIncluders = 0; testsCompilingProductCpp = 0; productTargetSourceCount = 1 }
-            P6 = @{ hubHeaderDirectIncluders = 0; testsCompilingProductCpp = 0; productTargetSourceCount = 1; moduleInversionEdges = 0; moduleMutualPairs = 10 }
+            P4 = @{ maxHeaderDirectIncluders = 40 }
+            P5 = @{ productTargetSourceCount = 1; maxHeaderDirectIncluders = 40; gdiManualReleases = 159; printfOccurrences = 15; jthreadAdoption = 10; testsCompilingProductCpp = 0 }
+            P6 = @{ moduleInversionEdges = 0; productTargetSourceCount = 1; moduleMutualPairs = 10; maxHeaderDirectIncluders = 40; gdiManualReleases = 159; printfOccurrences = 15; jthreadAdoption = 10; testsCompilingProductCpp = 0; productStaticLibraryCount = 7; staticLibsWithSmokeTarget = 7 }
         }
     }
 }
@@ -840,6 +883,10 @@ function Invoke-RuleFiringProbe([string]$RepoRoot) {
             productTargetSourceCount  = 0
             testsCompilingProductCpp  = 0
             hubHeaderDirectIncluders  = 0
+            maxHeaderDirectIncluders  = 0
+            gdiManualReleases         = 0
+            printfOccurrences         = 0
+            jthreadAdoption           = 0
             externDeclarations        = 0
             targetsMissingUtf8        = 0
             stdCxx23Occurrences       = 0
@@ -863,7 +910,7 @@ function Invoke-RuleFiringProbe([string]$RepoRoot) {
         @{ Name = 'ARC-RATCHET:moduleMutualPairs'; Metric = 'moduleMutualPairs' }
         @{ Name = 'ARC-RATCHET:productTargetSourceCount'; Metric = 'productTargetSourceCount' }
         @{ Name = 'ARC-RATCHET:testsCompilingProductCpp'; Metric = 'testsCompilingProductCpp' }
-        @{ Name = 'ARC-RATCHET:hubHeaderDirectIncluders'; Metric = 'hubHeaderDirectIncluders' }
+        @{ Name = 'ARC-RATCHET:maxHeaderDirectIncluders'; Metric = 'maxHeaderDirectIncluders' }
         @{ Name = 'ARC-RATCHET:externDeclarations'; Metric = 'externDeclarations' }
         @{ Name = 'ARC-UTF8'; Metric = 'targetsMissingUtf8' }
         @{ Name = 'ARC-INL'; Metric = 'inlFileCount' }
