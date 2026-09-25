@@ -1,7 +1,7 @@
 # 回滚锚点（Rollback Anchors）
 
 > 规则：每个阶段（P0…P6）或独立切片**开工前**把当时 `HEAD` 的 SHA 记入本文件；完成后再补一行
-> 记录完成提交。阶段失败时用 `git restore .` 或从锚点开新分支回退，**绝不使用 `git stash`**
+> 记录完成提交。阶段失败时先核对工作区，再只还原该阶段的文件，或从锚点开新分支回退；**绝不使用 `git stash`**
 > （本机 `.git` 原子写不可靠，已有两次事故：`.pack` 被删剩孤儿 `.idx`、refs 丢失）。
 >
 > 记录格式：`<阶段> | <ISO 时间> | <HEAD SHA> | <说明>`
@@ -22,14 +22,15 @@
 | settings-ui 完成（UI-A…UI-F） | 2026-09-25 10:52 | `11f2ad8eec59ca759970bee8411bc1965d0bab61` | 原生多容器宿主替换 PropertySheet；`CommitSettingsPatch` 字段级三方合并 + 字段表同时驱动序列化与合并；`AssembleSettingsJson` 统一装配；27 个改动的源/测试文件与 6 个新 TU；守卫与相关测试通过，**多 DPI／双屏／IME 实机验收仍未做** |
 | settings-ui 代码与自动化签收 | 2026-09-25 11:06 | `c0f5553c154a2735d6bcc321db9a5726e90fc1bd` | 当前源码无未提交改动；产品构建与架构守卫通过，`test_startup_registration_contract`、`test_translation_contract` 各 1/1 通过。用户确认多 DPI／双屏／IME 尚未实测，因此 UI-F 实机验收仍待完成 |
 | settings 读取优化方案开工前 | 2026-09-25 11:06 | `c0f5553c154a2735d6bcc321db9a5726e90fc1bd` | 独立方案 `settings-persistence-read-plan.md` 的代码基线；尚未修改读取实现 |
+| settings 读取优化实施完成 | 2026-09-25 12:22 | `414644141bd7d45799b20ef6de07a0fadf905ba6` | R0–R3 全部落地：六段读取改由字段表驱动（只读元数据 + 显式段级例外），版本号升至 v3.1.1，新增读取语义样本并在**原实现**上先行跑绿；提交前产品构建、架构守卫、读取与翻译契约测试通过。实际合为一次实施提交，未按计划逐段提交；`2d36b8a…` 是实施前 HEAD，不是完成锚点 |
 
 ## 状态说明
 
 - 架构重构 P0–P6 与 settings-ui 现代化（UI-A…UI-F）均已落地原子提交，回滚锚点已如上表固化。
 - **settings-ui 的代码与自动化已签收，但“六页在真实显示器矩阵下的表现”尚未验收**；正式按 UI-F 完整签收前
   须补多 DPI／双屏／左·上任务栏／负坐标屏／IME 跨屏往返的实机验证。
-- Settings 读取路径优化是新的独立候选方案；以上 `c0f5553…` 是其开工前代码锚点，并不表示该方案已实施。
-- 如需回退某一阶段，请使用 `git restore .` 或从锚点 SHA 创建分支，**切勿使用 `git stash`**。
+- Settings 读取路径优化已按 `settings-persistence-read-plan.md` 的 R0–R3 实施并提交（版本号升至 v3.1.1）；`c0f5553…` 是开工前代码锚点，`4146441…` 是实施完成提交。
+- 如需回退某一阶段，先核对 `git status --short`，只处理该阶段文件或从锚点 SHA 创建分支，保留其他工作区修改；**切勿使用 `git stash`**。
 - 另有独立安全镜像：仓库根 `.bak/`（gitignored，非 Git 快照），刷新方式 `python scripts\python\make_safety_backup.py`。
 
 ## 恢复套路（.git 受损时用过一次）
