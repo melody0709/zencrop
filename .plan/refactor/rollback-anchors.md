@@ -20,12 +20,15 @@
 | P6 完成 | 2026-09-23 03:26 | `500f711e967406e9ec1914ebfdab0f274cb7ebae` | 版本号全面升级至 v3.0.0，文档同步，P0–P6 全部 7 个阶段闸门全绿 |
 | settings-ui 切片开工 | 2026-09-23 23:28 | `b08d7a6d7c025ded5466ad848a16530d9f74e47c` | 设置界面现代化起点（该提交仅含版本号 3.1.0 与计划文档，不含源码） |
 | settings-ui 完成（UI-A…UI-F） | 2026-09-25 10:52 | `11f2ad8eec59ca759970bee8411bc1965d0bab61` | 原生多容器宿主替换 PropertySheet；`CommitSettingsPatch` 字段级三方合并 + 字段表同时驱动序列化与合并；`AssembleSettingsJson` 统一装配；27 个改动的源/测试文件与 6 个新 TU；守卫与相关测试通过，**多 DPI／双屏／IME 实机验收仍未做** |
+| settings-ui 代码与自动化签收 | 2026-09-25 11:06 | `c0f5553c154a2735d6bcc321db9a5726e90fc1bd` | 当前源码无未提交改动；产品构建与架构守卫通过，`test_startup_registration_contract`、`test_translation_contract` 各 1/1 通过。用户确认多 DPI／双屏／IME 尚未实测，因此 UI-F 实机验收仍待完成 |
+| settings 读取优化方案开工前 | 2026-09-25 11:06 | `c0f5553c154a2735d6bcc321db9a5726e90fc1bd` | 独立方案 `settings-persistence-read-plan.md` 的代码基线；尚未修改读取实现 |
 
 ## 状态说明
 
 - 架构重构 P0–P6 与 settings-ui 现代化（UI-A…UI-F）均已落地原子提交，回滚锚点已如上表固化。
-- **settings-ui 的代码已提交，但“六页在真实显示器矩阵下的表现”尚未验收**；正式按 UI-F 签收前
+- **settings-ui 的代码与自动化已签收，但“六页在真实显示器矩阵下的表现”尚未验收**；正式按 UI-F 完整签收前
   须补多 DPI／双屏／左·上任务栏／负坐标屏／IME 跨屏往返的实机验证。
+- Settings 读取路径优化是新的独立候选方案；以上 `c0f5553…` 是其开工前代码锚点，并不表示该方案已实施。
 - 如需回退某一阶段，请使用 `git restore .` 或从锚点 SHA 创建分支，**切勿使用 `git stash`**。
 - 另有独立安全镜像：仓库根 `.bak/`（gitignored，非 Git 快照），刷新方式 `python scripts\python\make_safety_backup.py`。
 
