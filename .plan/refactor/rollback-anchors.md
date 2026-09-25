@@ -19,7 +19,7 @@
 | P5 完成 | 2026-09-23 03:25 | `1ba100e932b6e8a05c3fcda1ef0fa3b3fe5848bb` | 引入 C++23 std::span、std::wstring_view、ComPtr RAII，71 个全套密封测试 100% 通过 |
 | P6 完成 | 2026-09-23 03:26 | `500f711e967406e9ec1914ebfdab0f274cb7ebae` | 版本号全面升级至 v3.0.0，文档同步，P0–P6 全部 7 个阶段闸门全绿 |
 | settings-ui 切片开工 | 2026-09-23 23:28 | `b08d7a6d7c025ded5466ad848a16530d9f74e47c` | 设置界面现代化起点（该提交仅含版本号 3.1.0 与计划文档，不含源码） |
-| settings-ui 完成（UI-A…UI-F） | 2026-09-25 10:52 | `11f2ad8` | 原生多容器宿主替换 PropertySheet；`CommitSettingsPatch` 字段级三方合并 + 字段表同时驱动序列化与合并；`AssembleSettingsJson` 统一装配；27 个新/改源文件与 6 个新 TU；守卫与相关测试通过，**多 DPI／双屏／IME 实机验收仍未做** |
+| settings-ui 完成（UI-A…UI-F） | 2026-09-25 10:52 | `11f2ad8eec59ca759970bee8411bc1965d0bab61` | 原生多容器宿主替换 PropertySheet；`CommitSettingsPatch` 字段级三方合并 + 字段表同时驱动序列化与合并；`AssembleSettingsJson` 统一装配；27 个改动的源/测试文件与 6 个新 TU；守卫与相关测试通过，**多 DPI／双屏／IME 实机验收仍未做** |
 
 ## 状态说明
 
