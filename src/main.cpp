@@ -5,6 +5,7 @@
 #include "ViewportWindow.h"
 #include "AlwaysOnTop.h"
 #include "Settings.h"
+#include "ocr/ui/SettingsDialog.h"
 #include "Strings.h"
 #include "OcrEngine.h"
 #include "LlamaServerManager.h"
@@ -796,6 +797,12 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         // iteration ensures MessageHandler has fully returned before the object
         // is destroyed.
         g_overlay.reset();
+        return 0;
+    }
+    case WM_APP_REREGISTER_HOTKEYS: {
+        AlwaysOnTopManager::Instance().UpdateSettings();
+        UnregisterAppHotkeys(hwnd);
+        RegisterAppHotkeys(hwnd);
         return 0;
     }
     case WM_CLOSE: {

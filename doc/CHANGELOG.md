@@ -2,10 +2,70 @@
 
 ## V3.1.0 (2026-09-24)
 
-### 设置界面现代化重构基线升级 (Settings UI Modernization Baseline)
+### 设置界面全面现代化重构 (Settings UI Modernization)
 
-- **版本号升级**: 统一升级至 `v3.1.0`，作为设置界面现代化重构的基线锚点。
-- **现代化设置架构**: 确立字段级提交、无边框子容器、工作区安全钳位及 6 大 Tab 等价性设计方案。
+- **现代原生窗口容器架构**:
+  - 彻底淘汰旧版 Win32 `PropertySheetW` 属性页架构，升级为原生多容器单窗口宿主（`SettingsWindow` + 原生 TabControl + 6 个无边框子容器 `WS_CHILD | WS_CLIPCHILDREN | WS_VSCROLL`）。
+  - 各 Tab 拥有完全隔离的纵向滚动位置与 Per-Monitor DPI v2 动态重排管线，切换 Tab 零闪烁、无状态串扰。
+- **基准尺寸与按需滚动**:
+  - 基准尺寸采用 **560×620 DIP**（消除以往 860 DIP 造成的右侧大面积空白），6 大 Tab 标题饱满横跨顶部栏。
+  - 优化截图标注、OCR 与翻译页排布；子容器按需隐藏纵向滚动条。六页在默认尺寸下是否均无需滚动，仍待多 DPI 实机验收。
+  - 接入 Windows 工作区安全钳位与 `WM_GETMINMAXINFO` 最小尺寸保护（520×480 DIP），杜绝底部操作栏被任务栏遮挡或缩放塌陷。
+- **字段级草稿与原子补丁提交 (`CommitSettingsPatch`)**:
+  - 实现字段级差异比对与原子合并提交，仅应用在设置窗口打开期间发生实际改动的字段，彻底避免了整域回写覆盖截图工具条、OCR 运行态及外部写入者的缺陷。
+  - 跨页与跨域安全校验：内置热键冲突拦截、Ctrl+C 保全约束及配置版本向后兼容。
+  - 独立状态边界：开机自启（注册表）与主配置（JSON）解耦为独立事务与状态反馈，避免笼统假成功。
+  - 写盘保留未识别的顶层配置段（`ExtractUnrecognizedTopLevelFields`），未知键不再被任何写入路径丢弃；翻译段仍以原文保留并仅替换窗口拥有的字段。
+  - 冲突处理提供三条明确路径：**重新加载**（放弃本次修改并重建全部页面控件）、**显式覆盖**（`CommitSettingsPatch(..., forceOverwrite=true)`，需用户确认后才会覆盖外部改动）、**返回窗口**；冲突时绝不写盘。
+  - 语言预览与提交解耦：`Auto` 按系统 UI 语言预览（`S::IsSystemChinese()`），提交成功后更新已应用基线，提交失败或取消时回滚到上一次成功应用的语言。
+  - 翻译页不再自行写盘，改由外层 `CommitSettingsPatch` 统一提交；`CollectTranslationPageDraft()` 只收集并校验页面草稿，提交失败或取消不会污染进程内共享设置。
+- **控件列自适应填满窗口宽度**: 设置页控件列由固定 240px 改为 `ctrlW = clientW - ctrlX - padX`（下限 240px），下拉框/输入框/路径框/滑块/快捷键框填满可用宽度，长路径与长文案不再被截断；双列复选框改为按可用宽度均分，修复 “Keep result window on top” 这类长标签被裁剪的问题。
+- **快捷键默认行为明确化**:
+  - 保持原有 6 大 Tab 各类快捷键归属；
+  - `ocrAlt`（备用文字识别）在新安装（无配置文件或无 `hotkeys` 段）时默认启用为 `Alt+Shift+X`；若段已存在但缺 `ocrAlt` 键或显式禁用，则严格保持为空，不发生隐式覆盖。
+
+### 子设置对话框视觉体系与行高 1:1 精准对齐
+
+- **像素级行高严丝合缝**:
+  - 全部 5 个子设置对话框（`Translation Providers`、`Translation Prompts`、`Document Options`、`PP-OCRv6 Options`、`OCR Model Download`）统一采用 Windows 原生标准对话框字体 **`FONT 9, "Segoe UI"`**；单行输入框与复选框统一 **`11 DLU`** 高度，底部按钮保持 **`13 DLU`**。
+  - 96 DPI 下 DLU→像素换算为 `MulDiv(dlu, baseunitY, 8)`，Segoe UI 9pt 的 `baseunitY = 16`：故单行控件 **11 DLU = 22px**，与主 Settings 的 `m_rowH = Scale(22)` 对齐；按钮 **13 DLU = 26px**，与主 Settings 的 `Scale(26)` 按钮对齐。此前文档声称的"13 DLU = 22px"是换算疏漏，已更正。
+- **紧凑化 276 族系尺寸收拢**:
+  - 对话框尺寸全面由臃肿的 320 族系统一收束至轻量级的 **276 族系**（如服务商管理从 320×260 压至 276×216 DLU，屏幕占用约 420×460px），突显主从层级，轻巧直观。
+- **动态折叠无空洞**:
+  - 服务商管理页引入 `AdjustProviderRegionShift`：针对不需要 Region 字段的云端模型服务商，自动将后续控件（Reasoning、API Key、Advanced JSON、Data Destination 等）整组平滑向上移动一行行距（模板 Region y=114 → Reasoning y=129，即 15 DLU ≈ 30px），彻底消除空白大洞断层。
+
+### 设置提交语义与序列化加固 (Save/Commit Hardening)
+
+- **整文件装配收敛为单一入口**: 新增 `AssembleSettingsJson(sourceJson, SettingsSections)`（L0 `Settings.cpp`/`Settings.h`），六个 `Save*Settings`、`CommitSettingsPatch` 与翻译层 `SaveTranslationSettings` 全部改由它装配：已知七段固定顺序、调用方只覆盖自己负责的段、其余段沿用磁盘原文、未知顶层字段一律按原文保留。此前每个写入函数各写一份装配（且只有提交路径保留未知键），现已消除这一分叉。
+
+- **开机自启失败不再假成功**: 注册表写入失败时保留该待应用状态、保持窗口打开并如实提示“设置已保存，但开机自启未生效”，不再清脏标记后显示笼统的“设置已保存”（此前失败会被下一次打开静默丢弃）。
+- **分页缺失时拒绝应用**: 任一设置页创建失败时不再进入设置窗口；若在应用阶段发现分页缺失则取消保存并报错，避免用空控件值覆盖配置（旧行为会把该页快捷键清空、快速保存目录清空）。
+- **组合框展开时 Esc/Enter 归属下拉框**: 模态循环改由 `CB_GETDROPPEDSTATE` 判定，下拉列表展开时按键交给组合框（Esc 收起列表、Enter 选中），不再误关或误确定整个设置窗口。
+- **翻译段补丁改为顶层键语义**: 新增深度感知的 `FindTopLevelJsonFieldValue` / `ReplaceTopLevelJsonField`，顶层 `enabled` 缺失（合法输入）时不再误改 `providerProfiles[].enabled`，读取也不再取到嵌套值。
+- **序列化收敛为单一来源**: 运行时 `Save*Settings` 与设置窗口 `CommitSettingsPatch` 共用 `BuildHotkeySectionJson` / `BuildOcrSectionJson` / `BuildScreenshotSectionJson`（含各自的字段表与前导归一化），删除了两份逐字重复的字段表。
+- **字段描述表同时驱动序列化与合并**: 六段（general / alwaysOnTop / overlay / screenshot / ocr / hotkeys）的字段现在各只有一处声明，同时驱动段文本生成与 `CommitSettingsPatch` 的字段级三方比较——"序列化了却没参与合并"（或反之）在结构上不再可能出现。每段分 `owned`（设置窗口写入并合并）与 `external`（本路径只写、归别的写入者拥有，如截图段的标注/水印/后处理）两组，`external` 字段在一次提交中必须原样存活。原先手写的约 95 行 `CHECK_MERGE` 校验、12 个翻译段散落局部变量与三处 `WideFormat*SettingsJson` 参数表全部删除；`MergeField` 亦被表驱动机制取代。新增单个设置字段从 9–10 处降至约 8 处（结构体 / `Load*` / 文案 / `.rc` / **表中一行** / `Relayout` / 页面 init+通知 / 回读），且不再有"漏加一行"的静默分叉。段内键序改为按类型分组（bool→int→string→color→hotkey→transform→constant），全部读取方按 key 取值；逐字节格式由新增的 `TestSectionJsonShape` 钉住。`test_wide_string_utils_contract` 中针对已删除的三个 `WideFormat*SettingsJson` 的断言随之移除——那三条契约改由 `TestSectionJsonShape` 在真实写入路径上承担（更强：断言的是落盘文本，而非内部 helper 的返回值）。
+- **`ocr.ppocrv6Provider` 不再是合并项**: 加载、提交与写入三处都把它固定为 `"cpu"`，因此它不是设置而是一个兼容字面量。原先那条合并校验是死行（永远 baseline==pending），且能在 UI 无法表达的字段上报冲突；现改为仅写入的常量项。
+- **OCR 页共享控件的模式映射显式化**: Local 模式与 PP-OCRv6 模式复用同一批控件（`IDC_PADDLE_LOCAL_DIR` / `_PROMPT` / `_PORT`），同一个控件在两种模式下代表不同字段（模型目录、Prompt 组合框 vs 变体组合框、端口 vs CPU 线程）。原先这层映射散在 `ApplySettings` 的三处 `if (mode == ppocrv6_onnx)` 分支里，现在收成一个 `ReadOcrLocalControls()` 一次性读数 + 一处模式分支，行为不变但复用关系可见。
+- **测试自隔离**: `test_startup_registration_contract` 在未设置 `ZENCROP_DATA_DIR` 时自行重定向到 `%TEMP%\ZenCrop-settings-contract`，直接运行 exe 也不会触碰真实 `settings.json`；新增“两条写入路径输出一致”契约用例（逐字节比较 `Save*Settings` 与 `CommitSettingsPatch` 的产物）。
+- **全字段持久化契约**: 为 6 个设置结构体补齐 defaulted `operator==`，并新增 `Maximal<Section>()`（每个持久化字段都取非默认值）驱动的三组用例：六段 `Save*`→`Load` 逐字段往返；窗口拥有的字段必须被 `CommitSettingsPatch` 合并（截图段的归属由 `WindowOwnedScreenshot()` 显式列出，非自有字段必须原样存活）；每段一个代表字段的外部改动必须报 `Conflict` 且字段名正确。此前没有任何逐字段往返覆盖，往合并表加字段却忘同步序列化（或反之）不会被发现；现在会直接被这套契约抓住。
+- **页面初始化接口显式化**: 主设置窗口不是属性表，页面不再把 `lParam` `reinterpret_cast` 成 `PROPSHEETPAGEW*`。新增 L0 `SettingsPageInit`（`src/core/SettingsPageInit.h`），页面经 `CreateDialogParamW` 收到指向它的指针；同时删除 `PageInitContext` 及其 `offsetof` 护栏。翻译页的 `PSN_APPLY` 仿真改为显式 `translation::CollectTranslationPageDraft()`（返回 `nullptr` 表示页面已自行报错并拒绝当前值，宿主保持窗口打开），`PSM_CHANGED` 脏标记通知仍沿用（`HotkeyEdit` 为 L0 共享控件、同时服务本宿主与两个真 `PropertySheetW` 管理窗，替换需先定双宿主边界）。
+
+### 四向自适应智能锚定定位算法 (Smart Adaptive Anchored Placement Pipeline)
+
+- **对标划词翻译定位体系**:
+  - 彻底移除各页面散装定位代码，在全局基础库 `Utils.h`/`Utils.cpp` 中提炼落地统一的 **`PositionWindowNearAnchor`** 算法。
+  - 探测优先级：“右侧并列 (首选)” → “左侧并列 (次选)” → “下方 (下选)” → “上方 (备选)”。
+  - 空间最大侧自适应：在四边均受限的极限分辨率屏幕上，自动测量并选拔可用像素最大的一侧作为停靠边，并严密结合 `ClampWindowCoordinate` 工作区绝对钳位，确保标题栏和操作按钮绝不超出屏幕可视区。
+- **根本性 Bug 修复**:
+  - **修复子窗口飞向显示器右上角**: 根治此前调用 `GetAncestor(hDlg, GA_ROOTOWNER)` 跨越宿主误查到后台隐藏托盘主窗口导致坐标退化并贴死在屏幕右上角（`x=1920, y=0`）的严重缺陷，实现逐级解包剥离 `WS_CHILD` 并精准锁定顶层可视的 `SettingsWindow` 作为锚点。
+  - **修复 PropertySheet 100% 居中覆盖主设置**: 拦截 Windows 原生 `PropertySheetW` 在显示前强行自我居中覆盖父窗口的默认行为，在 `PSCB_INITIALIZED` 中为属性页挂接子类化钩子拦截 `WM_SHOWWINDOW`，并注入 `WM_APP + 101/102` 双保险驱动，确保在尺寸就绪后平滑并列弹出，不再遮挡主设置。
+
+### 架构守卫与工程质量
+
+- **分层契约与零倒置出边**:
+  - 通用定位组件 `PositionWindowNearAnchor` 下沉至 L0 `src/core/Utils.*`，向 L3/L4 统一提供无倒置依赖的公共几何定位服务。
+  - 架构门禁守卫 `scripts/check_architecture.ps1` 15/15 全部 PASS，0 门禁违规，GDI 手工释放进一步优化至 125 处，并同步下调 `.plan/refactor/architecture-baseline.json` 棘轮（127 → 125）。
+  - 单元与集成测试全绿：`test_startup_registration_contract`（含空补丁不写盘、同域异字段不丢更新、翻译段并发保留、同字段冲突、强制覆盖、写失败 IoError、更新版 schema 拒写、未知顶层保留、两条写入路径输出一致、Save* 也保留未知顶层键、翻译段缺失时自动创建）与全部 25 个 `test_translation_contract` 100% 通过；设置文件用例使用隔离沙箱（未设 `ZENCROP_DATA_DIR` 时自动重定向到 `%TEMP%`），不再依赖或污染运行目录数据。
 
 ## V3.0.0 (2026-09-23)
 

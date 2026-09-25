@@ -45,6 +45,11 @@ RECT GetClientRectInScreenSpace(HWND hwnd);
 // These windows cannot be reparented properly due to DComp visual tree disconnect
 bool IsXamlOrDCompWindow(HWND hwnd);
 
+// Positions a secondary/dialog window relative to an anchor window following:
+// Right -> Left -> Below -> Above (or largest space), with work area clamping.
+void PositionWindowNearAnchor(HWND hwnd, HWND anchorWnd = nullptr);
+int ClampWindowCoordinate(int coordinate, int extent, int workStart, int workEnd, int gap);
+
 inline HBITMAP DuplicateHBitmap(HBITMAP bitmap) {
     if (!bitmap) return nullptr;
     BITMAP bm = {};

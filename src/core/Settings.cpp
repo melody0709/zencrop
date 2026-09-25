@@ -6,22 +6,25 @@
 #include "core/WideFormatNumbers.h"
 #include "WideFormatConfig.h"
 #include "WideColorUtils.h"
+#include "HotkeyEdit.h"
 #include <shlwapi.h>
 #include <shlobj.h>
 #include <commdlg.h>
 #include <commctrl.h>
 #include <algorithm>
 #include <cwctype>
+#include <span>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <vector>
 #include <fstream>
 #include <limits>
 #include <mutex>
 // Feature includes intentionally omitted (Stage 0-E): AlwaysOnTop / TcpHelper /
-// LlamaServerManager / OcrEngine_PaddleOCR_Local / Network / HotkeyEdit were
+// LlamaServerManager / OcrEngine_PaddleOCR_Local / Network were
 // unused dead includes that pulled UI/engine/net into the settings repository.
-// HotkeyEdit is used by SettingsDialog only; AlwaysOnTop JSON keys are strings.
+// AlwaysOnTop JSON keys are strings.
 
 #pragma comment(lib, "shlwapi.lib")
 #pragma comment(lib, "comctl32.lib")
@@ -38,12 +41,11 @@ static int NormalizeOcrTimeoutMs(int value) {
     return (std::min)(kMaxOcrTimeoutMs, (std::max)(kMinOcrTimeoutMs, value));
 }
 
-static std::wstring FindJsonValue(const std::wstring& json, const std::wstring& key) {
-    std::wstring search = L"\"" + key + L"\"";
-    size_t pos = json.find(search);
-    if (pos == std::wstring::npos) return L"";
-
-    pos = json.find(L':', pos + search.length());
+// Extracts the value that follows the key located at `keyPos` (which points at the
+// opening quote of the key; `search` is the quoted key text).
+static std::wstring ExtractJsonValueAtKey(
+    const std::wstring& json, size_t keyPos, const std::wstring& search) {
+    size_t pos = json.find(L':', keyPos + search.length());
     if (pos == std::wstring::npos) return L"";
 
     pos++;
@@ -96,43 +98,63 @@ static std::wstring FindJsonValue(const std::wstring& json, const std::wstring& 
     }
 }
 
+static std::wstring FindJsonValue(const std::wstring& json, const std::wstring& key) {
+    const std::wstring search = L"\"" + key + L"\"";
+    const size_t keyPos = json.find(search);
+    if (keyPos == std::wstring::npos) return L"";
+    return ExtractJsonValueAtKey(json, keyPos, search);
+}
+
+// Position of a depth-1 object key, or npos when it only appears nested (for example
+// the per-provider "enabled" inside "providerProfiles").
+static size_t FindTopLevelObjectKeyPosition(const std::wstring& objStr, const std::wstring& key) {
+    if (objStr.empty()) return std::wstring::npos;
+    const std::wstring search = L"\"" + key + L"\"";
+    size_t pos = 0;
+    while (pos < objStr.size() &&
+           (objStr[pos] == 0xFEFF || iswspace(objStr[pos]))) {
+        ++pos;
+    }
+    if (pos >= objStr.size() || objStr[pos] != L'{') return std::wstring::npos;
+    ++pos;
+
+    int depth = 1;
+    bool inString = false;
+    while (pos < objStr.size()) {
+        const wchar_t c = objStr[pos];
+        if (inString) {
+            if (c == L'\\' && pos + 1 < objStr.size()) { pos += 2; continue; }
+            if (c == L'"') inString = false;
+            ++pos;
+            continue;
+        }
+        if (c == L'"') {
+            if (depth == 1 && objStr.compare(pos, search.size(), search) == 0) {
+                size_t after = pos + search.size();
+                while (after < objStr.size() && iswspace(objStr[after])) ++after;
+                if (after < objStr.size() && objStr[after] == L':') return pos;
+            }
+            inString = true;
+            ++pos;
+            continue;
+        }
+        if (c == L'{' || c == L'[') ++depth;
+        else if (c == L'}' || c == L']') --depth;
+        ++pos;
+    }
+    return std::wstring::npos;
+}
+
+static std::wstring FindTopLevelJsonFieldValue(
+    const std::wstring& objStr, const std::wstring& key) {
+    const size_t keyPos = FindTopLevelObjectKeyPosition(objStr, key);
+    if (keyPos == std::wstring::npos) return L"";
+    return ExtractJsonValueAtKey(objStr, keyPos, L"\"" + key + L"\"");
+}
+
 // OWN-76: thin wrappers over pure WideStringUtils helpers.
 static bool HasJsonKey(const std::wstring& json, const std::wstring& key) {
     return WideHasJsonKey(json, key);
-}
-
-static size_t SkipJsonString(const std::wstring& json, size_t pos) {
-    return WideSkipJsonString(json, pos);
-}
-
-// OWN-77: pure structural extract at position via WideStringUtils.
-static std::wstring ExtractJsonValueAt(const std::wstring& json, size_t pos, size_t* outEnd = nullptr) {
-    pos = SkipJsonWhitespace(json, pos);
-    if (pos >= json.length()) return L"";
-
-    size_t end = pos;
-    if (json[pos] == L'{') {
-        end = WideJsonFindMatching(json, pos, L'{', L'}');
-        if (end == std::wstring::npos) return L"";
-        ++end;
-    } else if (json[pos] == L'[') {
-        end = WideJsonFindMatching(json, pos, L'[', L']');
-        if (end == std::wstring::npos) return L"";
-        ++end;
-    } else if (json[pos] == L'"') {
-        end = SkipJsonString(json, pos);
-    } else {
-        while (end < json.length() && json[end] != L',' && json[end] != L'}' &&
-            json[end] != L'\n' && json[end] != L'\r') {
-            end++;
-        }
-    }
-
-    if (outEnd) *outEnd = end;
-    if (json[pos] == L'"' && end > pos + 1) {
-        return json.substr(pos + 1, end - pos - 2);
-    }
-    return json.substr(pos, end - pos);
 }
 
 // OWN-77: thin wrapper over pure WideJsonFindTopLevelValue.
@@ -140,72 +162,117 @@ static std::wstring FindTopLevelJsonValue(const std::wstring& json, const std::w
     return WideJsonFindTopLevelValue(json, key);
 }
 
-static void PreserveTranslationSection(
-    std::wstring& fullJson,
-    const std::wstring& sourceJson) {
-    const std::wstring translationSection =
-        FindTopLevelJsonValue(sourceJson, L"translation");
-    if (translationSection.empty()) return;
-    const size_t close = fullJson.rfind(L"\n}");
-    if (close == std::wstring::npos) return;
-    fullJson.insert(close, L",\n  \"translation\": " + translationSection);
-}
+struct UnrecognizedTopLevelField {
+    std::wstring key;
+    std::wstring rawValue;
+};
 
-static bool IsTranslationSectionValid(const std::wstring& section) {
-    if (section.size() < 2 || section.front() != L'{' || section.back() != L'}') {
-        return false;
+static std::vector<UnrecognizedTopLevelField> ExtractUnrecognizedTopLevelFields(
+    const std::wstring& json,
+    const std::vector<std::wstring>& knownKeys) {
+    std::vector<UnrecognizedTopLevelField> result;
+    size_t pos = WideSkipJsonWhitespaceBom(json, 0);
+    if (pos >= json.size() || json[pos] != L'{') return result;
+    ++pos;
+
+    while (pos < json.size()) {
+        pos = WideSkipJsonWhitespaceBom(json, pos);
+        if (pos >= json.size() || json[pos] == L'}') break;
+        if (json[pos] == L',') {
+            ++pos;
+            continue;
+        }
+        if (json[pos] != L'"') break;
+
+        const size_t keyStart = pos + 1;
+        const size_t keyEnd = WideSkipJsonString(json, pos);
+        if (keyEnd <= keyStart) break;
+        const std::wstring currentKey = json.substr(keyStart, keyEnd - keyStart - 1);
+        pos = WideSkipJsonWhitespaceBom(json, keyEnd);
+        if (pos >= json.size() || json[pos] != L':') break;
+        ++pos;
+        pos = WideSkipJsonWhitespaceBom(json, pos);
+        if (pos >= json.size()) break;
+
+        size_t valueEnd = pos;
+        if (json[pos] == L'{') {
+            valueEnd = WideJsonFindMatching(json, pos, L'{', L'}');
+            if (valueEnd == std::wstring::npos) break;
+            ++valueEnd;
+        } else if (json[pos] == L'[') {
+            valueEnd = WideJsonFindMatching(json, pos, L'[', L']');
+            if (valueEnd == std::wstring::npos) break;
+            ++valueEnd;
+        } else if (json[pos] == L'"') {
+            valueEnd = WideSkipJsonString(json, pos);
+        } else {
+            while (valueEnd < json.size() &&
+                   json[valueEnd] != L',' && json[valueEnd] != L'}' &&
+                   json[valueEnd] != L'\n' && json[valueEnd] != L'\r') {
+                ++valueEnd;
+            }
+        }
+
+        bool isKnown = false;
+        for (const auto& k : knownKeys) {
+            if (k == currentKey) {
+                isKnown = true;
+                break;
+            }
+        }
+        if (!isKnown) {
+            result.push_back({ currentKey, json.substr(pos, valueEnd - pos) });
+        }
+        pos = valueEnd;
     }
-    const auto validBool = [&](const wchar_t* key) {
-        if (!HasJsonKey(section, key)) return true;
-        const std::wstring value = FindJsonValue(section, key);
-        return value == L"true" || value == L"false";
+    return result;
+}
+// Canonical layout of settings.json: the seven known sections in a fixed order,
+// followed by any unknown top-level fields carried over verbatim, so another tool or a
+// newer version never loses data. Callers fill only the sections they rewrite; an empty
+// entry reuses the text already on disk. Every write path goes through this function.
+std::wstring AssembleSettingsJson(
+    const std::wstring& sourceJson,
+    const SettingsSections& overrides) {
+    static const std::wstring kKnownKeys[] = {
+        L"general", L"alwaysOnTop", L"overlay", L"screenshot",
+        L"ocr", L"hotkeys", L"translation"
     };
-    if (!validBool(L"enabled") || !validBool(L"showSourceText") ||
-        !validBool(L"preserveParagraphs") || !validBool(L"resultOnTop") ||
-        !validBool(L"showWindowBorder")) {
-        return false;
-    }
-    if (HasJsonKey(section, L"schemaVersion")) {
-        const std::wstring schemaVersion = FindJsonValue(section, L"schemaVersion");
-        if (schemaVersion.empty() ||
-            !std::all_of(schemaVersion.begin(), schemaVersion.end(),
-                [](wchar_t value) { return value >= L'0' && value <= L'9'; })) {
-            return false;
+    const std::wstring* const entries[] = {
+        &overrides.general, &overrides.alwaysOnTop, &overrides.overlay,
+        &overrides.screenshot, &overrides.ocr, &overrides.hotkeys,
+        &overrides.translation
+    };
+
+    std::wstring body;
+    bool first = true;
+    const auto appendEntry = [&body, &first](const std::wstring& entry) {
+        if (entry.empty()) return;
+        if (!first) body += L",\n";
+        body += entry;
+        first = false;
+    };
+
+    for (size_t i = 0; i < sizeof(kKnownKeys) / sizeof(kKnownKeys[0]); ++i) {
+        if (!entries[i]->empty()) {
+            appendEntry(*entries[i]);
+            continue;
+        }
+        const std::wstring raw = FindTopLevelJsonValue(sourceJson, kKnownKeys[i]);
+        if (!raw.empty()) {
+            appendEntry(L"  \"" + kKnownKeys[i] + L"\": " + raw);
         }
     }
-    if (HasJsonKey(section, L"backend")) {
-        const std::wstring backend = FindJsonValue(section, L"backend");
-        if (backend.size() < 2 || backend.front() != L'{' || backend.back() != L'}') {
-            return false;
-        }
-        const auto validString = [&](const std::wstring& object, const wchar_t* key) {
-            if (!HasJsonKey(object, key)) return true;
-            return !FindJsonValue(object, key).empty();
-        };
-        if (!validString(backend, L"kind") || !validString(backend, L"model") ||
-            !validString(backend, L"credentialRef")) {
-            return false;
-        }
+
+    const std::vector<std::wstring> knownKeys(
+        std::begin(kKnownKeys), std::end(kKnownKeys));
+    for (const auto& field : ExtractUnrecognizedTopLevelFields(sourceJson, knownKeys)) {
+        appendEntry(L"  \"" + field.key + L"\": " + field.rawValue);
     }
-    return true;
+
+    return L"{\n" + body + L"\n}";
 }
 
-static std::wstring NormalizeTranslationLanguageForSave(
-    const std::wstring& value, bool source) {
-    if (value == L"zh-Hans-CN") return L"zh-Hans";
-    if (value == L"zh-Hant-CN") return L"zh-Hant";
-    if (source && (value == L"auto" || value == L"zh-Hans" ||
-                   value == L"en" || value == L"zh-Hant" ||
-                   value == L"ja" || value == L"ko")) {
-        return value;
-    }
-    if (!source && (value == L"auto" || value == L"zh-Hans" || value == L"en" ||
-                    value == L"zh-Hant" || value == L"ja" ||
-                    value == L"ko")) {
-        return value;
-    }
-    return L"auto";
-}
 
 // OWN-76: thin wrappers over pure WideParseColorHex / WideColorToHex.
 static COLORREF ParseColor(const std::wstring& hex) {
@@ -311,6 +378,16 @@ bool WriteStringToFile(
     return true;
 }
 
+// Section writers, defined below alongside the field tables that drive them.
+// Every writer is used by both the runtime Save*Settings entry points and by
+// CommitSettingsPatch, so a section can never be serialized two different ways.
+static std::wstring BuildGeneralSectionJson(const GeneralSettings& settings);
+static std::wstring BuildAotSectionJson(const AotSettings& settings);
+static std::wstring BuildOverlaySectionJson(const OverlaySettings& settings);
+static std::wstring BuildScreenshotSectionJson(const ScreenshotSettings& settings);
+static std::wstring BuildOcrSectionJson(const OcrSettings& settings);
+static std::wstring BuildHotkeySectionJson(const HotkeySettings& settings);
+
 GeneralSettings LoadGeneralSettings() {
     GeneralSettings settings;
     std::wstring path = GetSettingsFilePath();
@@ -336,31 +413,9 @@ void SaveGeneralSettings(const GeneralSettings& settings) {
     std::wstring path = GetSettingsFilePath();
     std::wstring json = ReadFileToString(path);
 
-    const wchar_t* langStr = L"auto";
-    if (settings.language.value == AppLanguage::English) langStr = L"en";
-    else if (settings.language.value == AppLanguage::Chinese) langStr = L"zh";
-
-    // OWN-114: pure general settings JSON section (WideStringUtils).
-    const std::wstring generalJson = WideFormatGeneralSettingsJson(
-        langStr, WideJsonBoolLiteral(settings.showTitlebar));
-
-    std::wstring aotSection = FindTopLevelJsonValue(json, L"alwaysOnTop");
-    std::wstring overlaySection = FindTopLevelJsonValue(json, L"overlay");
-    std::wstring screenshotSection = FindTopLevelJsonValue(json, L"screenshot");
-    std::wstring ocrSection = FindTopLevelJsonValue(json, L"ocr");
-    std::wstring hotkeySection = FindTopLevelJsonValue(json, L"hotkeys");
-
-    std::wstring fullJson = L"{\n" + generalJson;
-    if (!aotSection.empty()) fullJson += L",\n  \"alwaysOnTop\": " + aotSection;
-    if (!overlaySection.empty()) fullJson += L",\n  \"overlay\": " + overlaySection;
-    if (!screenshotSection.empty()) fullJson += L",\n  \"screenshot\": " + screenshotSection;
-    if (!ocrSection.empty()) fullJson += L",\n  \"ocr\": " + ocrSection;
-    if (!hotkeySection.empty()) fullJson += L",\n  \"hotkeys\": " + hotkeySection;
-    fullJson += L"\n}";
-
-    PreserveTranslationSection(fullJson, json);
-
-    WriteStringToFile(path, fullJson);
+    SettingsSections sections;
+    sections.general = BuildGeneralSectionJson(settings);
+    WriteStringToFile(path, AssembleSettingsJson(json, sections));
 }
 
 AotSettings LoadAotSettings() {
@@ -403,34 +458,9 @@ void SaveAotSettings(const AotSettings& settings) {
     std::wstring path = GetSettingsFilePath();
     std::wstring json = ReadFileToString(path);
 
-    // OWN-114: pure always-on-top settings JSON section (WideStringUtils).
-    const std::wstring aotJson = WideFormatAotSettingsJson(
-        WideJsonBoolLiteral(settings.showBorder),
-        WideJsonBoolLiteral(settings.customColor),
-        ColorToHex(settings.color).c_str(),
-        settings.opacity,
-        settings.thickness,
-        WideJsonBoolLiteral(settings.roundedCorners),
-        settings.inset);
-
-    std::wstring generalSection = FindTopLevelJsonValue(json, L"general");
-    std::wstring overlaySection = FindTopLevelJsonValue(json, L"overlay");
-    std::wstring screenshotSection = FindTopLevelJsonValue(json, L"screenshot");
-    std::wstring ocrSection = FindTopLevelJsonValue(json, L"ocr");
-    std::wstring hotkeySection = FindTopLevelJsonValue(json, L"hotkeys");
-
-    std::wstring fullJson = L"{\n";
-    if (!generalSection.empty()) fullJson += L"  \"general\": " + generalSection + L",\n";
-    fullJson += aotJson;
-    if (!overlaySection.empty()) fullJson += L",\n  \"overlay\": " + overlaySection;
-    if (!screenshotSection.empty()) fullJson += L",\n  \"screenshot\": " + screenshotSection;
-    if (!ocrSection.empty()) fullJson += L",\n  \"ocr\": " + ocrSection;
-    if (!hotkeySection.empty()) fullJson += L",\n  \"hotkeys\": " + hotkeySection;
-    fullJson += L"\n}";
-
-    PreserveTranslationSection(fullJson, json);
-
-    WriteStringToFile(path, fullJson);
+    SettingsSections sections;
+    sections.alwaysOnTop = BuildAotSectionJson(settings);
+    WriteStringToFile(path, AssembleSettingsJson(json, sections));
 }
 
 OverlaySettings LoadOverlaySettings() {
@@ -461,29 +491,9 @@ void SaveOverlaySettings(const OverlaySettings& settings) {
     std::wstring path = GetSettingsFilePath();
     std::wstring json = ReadFileToString(path);
 
-    // OWN-114: pure overlay settings JSON section (WideStringUtils).
-    const std::wstring overlayJson = WideFormatOverlaySettingsJson(
-        ColorToHex(settings.color).c_str(), settings.thickness,
-        WideJsonBoolLiteral(settings.cropOnTop));
-
-    std::wstring generalSection = FindTopLevelJsonValue(json, L"general");
-    std::wstring aotSection = FindTopLevelJsonValue(json, L"alwaysOnTop");
-    std::wstring screenshotSection = FindTopLevelJsonValue(json, L"screenshot");
-    std::wstring ocrSection = FindTopLevelJsonValue(json, L"ocr");
-    std::wstring hotkeySection = FindTopLevelJsonValue(json, L"hotkeys");
-
-    std::wstring fullJson = L"{\n";
-    if (!generalSection.empty()) fullJson += L"  \"general\": " + generalSection + L",\n";
-    if (!aotSection.empty()) fullJson += L"  \"alwaysOnTop\": " + aotSection + L",\n";
-    fullJson += overlayJson;
-    if (!screenshotSection.empty()) fullJson += L",\n  \"screenshot\": " + screenshotSection;
-    if (!ocrSection.empty()) fullJson += L",\n  \"ocr\": " + ocrSection;
-    if (!hotkeySection.empty()) fullJson += L",\n  \"hotkeys\": " + hotkeySection;
-    fullJson += L"\n}";
-
-    PreserveTranslationSection(fullJson, json);
-
-    WriteStringToFile(path, fullJson);
+    SettingsSections sections;
+    sections.overlay = BuildOverlaySectionJson(settings);
+    WriteStringToFile(path, AssembleSettingsJson(json, sections));
 }
 
 static HotkeyConfig ParseHotkeySection(const std::wstring& section) {
@@ -510,7 +520,7 @@ static HotkeySettings GetDefaultHotkeys() {
     hs.alwaysOnTop = { false, false, false, true, 'T' };
     hs.screenshot = { false, false, true, true, 'S' };
     hs.ocr = { false, false, true, false, 'X' };
-    hs.ocrAlt = {};
+    hs.ocrAlt = { false, false, true, true, 'X' };
     hs.selectionTranslate = { false, false, true, false, 'A' };
     return hs;
 }
@@ -540,7 +550,11 @@ HotkeySettings LoadHotkeySettings() {
     sub = FindJsonValue(hotkeySection, L"ocr");
     if (!sub.empty()) settings.ocr = ParseHotkeySection(sub);
     sub = FindJsonValue(hotkeySection, L"ocrAlt");
-    if (!sub.empty()) settings.ocrAlt = ParseHotkeySection(sub);
+    if (!sub.empty()) {
+        settings.ocrAlt = ParseHotkeySection(sub);
+    } else {
+        settings.ocrAlt = {};
+    }
     sub = FindJsonValue(hotkeySection, L"selectionTranslate");
     if (!sub.empty()) settings.selectionTranslate = ParseHotkeySection(sub);
 
@@ -557,6 +571,574 @@ static std::wstring HotkeyConfigToJson(const HotkeyConfig& hk) {
         (int)hk.key);
 }
 
+static const wchar_t* ScreenshotFormatToJsonValue(ScreenshotFormat format) {
+    switch (format) {
+    case ScreenshotFormat::Jpeg: return L"jpeg";
+    case ScreenshotFormat::Bmp: return L"bmp";
+    case ScreenshotFormat::WebP: return L"webp";
+    case ScreenshotFormat::Avif: return L"avif";
+    case ScreenshotFormat::Png:
+    default:
+        return L"png";
+    }
+}
+
+static int ClampSettingsInt(int value, int minValue, int maxValue) {
+    if (value < minValue) return minValue;
+    if (value > maxValue) return maxValue;
+    return value;
+}
+
+// ---------------------------------------------------------------------------
+// Field tables.
+//
+// A persisted field is declared once and drives both the section writer and the
+// field-level merge in CommitSettingsPatch, so it can no longer be serialized
+// without being merged, or merged without being serialized.
+//
+// Every section has two groups:
+//   owned    - fields the settings window writes and merges.
+//   external - fields written here but owned (and merged) by another writer,
+//              e.g. the screenshot section also belongs to the annotation editor.
+//              They are preserved verbatim and never merged in this path.
+//
+// Field order inside a section follows the group order below (bools, ints,
+// strings, colors, hotkeys, transforms, constants) rather than the historical
+// hand-written order; every reader is key-based.
+// ---------------------------------------------------------------------------
+
+enum class MergeOutcome { Unchanged, Applied, Conflict };
+
+// Three-way merge for one field: an untouched field is left alone, a field the
+// user edited whose on-disk value also moved away from the baseline is a
+// conflict, and everything else takes the user's value.
+template <typename T>
+MergeOutcome MergeFieldValue(const T& baseline, const T& pending, T& current,
+    bool forceOverwrite) {
+    if (pending == baseline) return MergeOutcome::Unchanged;
+    if (!forceOverwrite && current != baseline && current != pending) {
+        return MergeOutcome::Conflict;
+    }
+    if (current == pending) return MergeOutcome::Unchanged;
+    current = pending;
+    return MergeOutcome::Applied;
+}
+
+template <auto Member, typename Struct>
+MergeOutcome MergeMember(const Struct& baseline, const Struct& pending,
+    Struct& current, bool forceOverwrite) {
+    return MergeFieldValue(baseline.*Member, pending.*Member, current.*Member,
+        forceOverwrite);
+}
+
+template <typename Struct>
+struct BoolField {
+    const wchar_t* key;
+    bool Struct::* member;
+};
+
+template <typename Struct>
+struct IntField {
+    const wchar_t* key;
+    int Struct::* member;
+    bool clamp = false;
+    int lo = 0;
+    int hi = 0;
+};
+
+template <typename Struct>
+struct StringField {
+    const wchar_t* key;
+    std::wstring Struct::* member;
+    // Written instead of an empty string.
+    const wchar_t* whenEmpty = nullptr;
+};
+
+template <typename Struct>
+struct ColorField {
+    const wchar_t* key;
+    COLORREF Struct::* member;
+};
+
+template <typename Struct>
+struct HotkeyField {
+    const wchar_t* key;
+    HotkeyConfig Struct::* member;
+};
+
+// A field whose JSON text is not the plain member value: enums, clamped
+// unsigned values and legacy aliases. The merge still compares the raw member.
+template <typename Struct>
+struct TransformField {
+    const wchar_t* key;
+    std::wstring (*valueText)(const Struct&);
+    MergeOutcome (*merge)(const Struct&, const Struct&, Struct&, bool);
+};
+
+// A literal the section carries for older builds. Written, never merged and
+// never assigned, because it is not a setting.
+template <typename Struct>
+struct ConstantField {
+    const wchar_t* key;
+    const wchar_t* valueText;
+};
+
+template <typename Struct>
+struct FieldSet {
+    std::span<const BoolField<Struct>> bools;
+    std::span<const IntField<Struct>> ints;
+    std::span<const StringField<Struct>> strings;
+    std::span<const ColorField<Struct>> colors;
+    std::span<const HotkeyField<Struct>> hotkeys;
+    std::span<const TransformField<Struct>> transforms;
+    std::span<const ConstantField<Struct>> constants;
+};
+
+template <typename Struct>
+struct SectionTable {
+    const wchar_t* name;
+    FieldSet<Struct> owned;
+    FieldSet<Struct> external;
+};
+
+template <typename Struct>
+std::wstring FieldValueText(const BoolField<Struct>& field, const Struct& s) {
+    return (s.*(field.member)) ? L"true" : L"false";
+}
+
+template <typename Struct>
+std::wstring FieldValueText(const IntField<Struct>& field, const Struct& s) {
+    const int value = s.*(field.member);
+    return std::to_wstring(
+        field.clamp ? ClampSettingsInt(value, field.lo, field.hi) : value);
+}
+
+template <typename Struct>
+std::wstring FieldValueText(const StringField<Struct>& field, const Struct& s) {
+    const std::wstring& value = s.*(field.member);
+    if (value.empty() && field.whenEmpty) {
+        return L"\"" + EscapeJsonString(field.whenEmpty) + L"\"";
+    }
+    return L"\"" + EscapeJsonString(value) + L"\"";
+}
+
+template <typename Struct>
+std::wstring FieldValueText(const ColorField<Struct>& field, const Struct& s) {
+    return L"\"" + ColorToHex(s.*(field.member)) + L"\"";
+}
+
+template <typename Struct>
+std::wstring FieldValueText(const HotkeyField<Struct>& field, const Struct& s) {
+    return HotkeyConfigToJson(s.*(field.member));
+}
+
+template <typename Struct>
+std::wstring FieldValueText(const TransformField<Struct>& field, const Struct& s) {
+    return field.valueText(s);
+}
+
+template <typename Struct>
+std::wstring FieldValueText(const ConstantField<Struct>& field, const Struct&) {
+    return field.valueText;
+}
+
+template <typename Struct, typename Field>
+void AppendFieldGroup(std::vector<std::wstring>& lines,
+    std::span<const Field> fields, const Struct& s) {
+    for (const Field& field : fields) {
+        lines.push_back(L"    \"" + std::wstring(field.key ? field.key : L"") +
+            L"\": " + FieldValueText(field, s));
+    }
+}
+
+template <typename Struct>
+void AppendFieldSet(std::vector<std::wstring>& lines,
+    const FieldSet<Struct>& set, const Struct& s) {
+    AppendFieldGroup(lines, set.bools, s);
+    AppendFieldGroup(lines, set.ints, s);
+    AppendFieldGroup(lines, set.strings, s);
+    AppendFieldGroup(lines, set.colors, s);
+    AppendFieldGroup(lines, set.hotkeys, s);
+    AppendFieldGroup(lines, set.transforms, s);
+    AppendFieldGroup(lines, set.constants, s);
+}
+
+template <typename Struct>
+std::wstring BuildSectionJson(const SectionTable<Struct>& table, const Struct& s) {
+    std::vector<std::wstring> lines;
+    lines.reserve(64);
+    AppendFieldSet(lines, table.owned, s);
+    AppendFieldSet(lines, table.external, s);
+    return WideJsonObjectSection(table.name, lines.data(), lines.size());
+}
+
+template <typename Struct, typename Field>
+MergeOutcome MergeOneField(const Struct& baseline, const Struct& pending,
+    Struct& current, bool forceOverwrite, const Field& field) {
+    if constexpr (std::is_same_v<Field, ConstantField<Struct>>) {
+        return MergeOutcome::Unchanged;
+    } else if constexpr (std::is_same_v<Field, TransformField<Struct>>) {
+        return field.merge(baseline, pending, current, forceOverwrite);
+    } else {
+        return MergeFieldValue(baseline.*(field.member), pending.*(field.member),
+            current.*(field.member), forceOverwrite);
+    }
+}
+
+template <typename Struct, typename Field>
+MergeOutcome MergeFieldGroup(const Struct& baseline, const Struct& pending,
+    Struct& current, bool forceOverwrite, std::span<const Field> fields,
+    const std::wstring& prefix, std::wstring* conflictField) {
+    MergeOutcome result = MergeOutcome::Unchanged;
+    for (const Field& field : fields) {
+        const MergeOutcome outcome =
+            MergeOneField(baseline, pending, current, forceOverwrite, field);
+        if (outcome == MergeOutcome::Conflict) {
+            *conflictField = prefix + field.key;
+            return MergeOutcome::Conflict;
+        }
+        if (outcome == MergeOutcome::Applied) result = MergeOutcome::Applied;
+    }
+    return result;
+}
+
+// Merges only the owned fields: an external field must survive this path.
+template <typename Struct>
+MergeOutcome MergeSection(const SectionTable<Struct>& table,
+    const Struct& baseline, const Struct& pending, Struct& current,
+    bool forceOverwrite, std::wstring* conflictField) {
+    const std::wstring prefix = std::wstring(table.name) + L".";
+    const FieldSet<Struct>& owned = table.owned;
+    MergeOutcome result = MergeOutcome::Unchanged;
+    const auto step = [&](auto fields) {
+        if (result == MergeOutcome::Conflict) return;
+        const MergeOutcome outcome = MergeFieldGroup(baseline, pending, current,
+            forceOverwrite, fields, prefix, conflictField);
+        if (outcome == MergeOutcome::Conflict) {
+            result = MergeOutcome::Conflict;
+        } else if (outcome == MergeOutcome::Applied) {
+            result = MergeOutcome::Applied;
+        }
+    };
+    step(owned.bools);
+    step(owned.ints);
+    step(owned.strings);
+    step(owned.colors);
+    step(owned.hotkeys);
+    step(owned.transforms);
+    return result;
+}
+
+// Copies the owned fields into a destination struct that holds fields this
+// section does not own (GetSharedSettings().translation keeps its profile
+// lists). Transform fields are deliberately unsupported here: they carry no
+// member pointer, so a copy would have to duplicate their normalization.
+template <typename Struct, typename Field>
+void AssignField(Struct& dst, const Struct& src, const Field& field) {
+    if constexpr (std::is_same_v<Field, ConstantField<Struct>>) {
+        (void)dst;
+        (void)src;
+    } else {
+        dst.*(field.member) = src.*(field.member);
+    }
+}
+
+template <typename Struct, typename Field>
+void AssignFieldGroup(Struct& dst, const Struct& src,
+    std::span<const Field> fields) {
+    for (const Field& field : fields) AssignField(dst, src, field);
+}
+
+template <typename Struct>
+void AssignOwnedFields(Struct& dst, const Struct& src,
+    const SectionTable<Struct>& table) {
+    const FieldSet<Struct>& owned = table.owned;
+    AssignFieldGroup(dst, src, owned.bools);
+    AssignFieldGroup(dst, src, owned.ints);
+    AssignFieldGroup(dst, src, owned.strings);
+    AssignFieldGroup(dst, src, owned.colors);
+    AssignFieldGroup(dst, src, owned.hotkeys);
+}
+
+// --- Tables -----------------------------------------------------------------
+
+const BoolField<GeneralSettings> kGeneralOwnedBools[] = {
+    { L"showTitlebar", &GeneralSettings::showTitlebar },
+};
+
+const TransformField<GeneralSettings> kGeneralOwnedTransforms[] = {
+    { L"language",
+      [](const GeneralSettings& s) -> std::wstring {
+          switch (s.language.value) {
+          case AppLanguage::English: return L"\"en\"";
+          case AppLanguage::Chinese: return L"\"zh\"";
+          default: return L"\"auto\"";
+          }
+      },
+      &MergeMember<&GeneralSettings::language, GeneralSettings> },
+};
+
+const SectionTable<GeneralSettings> kGeneralTable = {
+    L"general",
+    { kGeneralOwnedBools, {}, {}, {}, {}, kGeneralOwnedTransforms, {} },
+    {},
+};
+
+const BoolField<AotSettings> kAotOwnedBools[] = {
+    { L"showBorder", &AotSettings::showBorder },
+    { L"customColor", &AotSettings::customColor },
+    { L"roundedCorners", &AotSettings::roundedCorners },
+};
+
+const IntField<AotSettings> kAotOwnedInts[] = {
+    { L"opacity", &AotSettings::opacity },
+    { L"thickness", &AotSettings::thickness },
+    { L"inset", &AotSettings::inset },
+};
+
+const ColorField<AotSettings> kAotOwnedColors[] = {
+    { L"color", &AotSettings::color },
+};
+
+const SectionTable<AotSettings> kAotTable = {
+    L"alwaysOnTop",
+    { kAotOwnedBools, kAotOwnedInts, {}, kAotOwnedColors, {}, {}, {} },
+    {},
+};
+
+const BoolField<OverlaySettings> kOverlayOwnedBools[] = {
+    { L"cropOnTop", &OverlaySettings::cropOnTop },
+};
+
+const IntField<OverlaySettings> kOverlayOwnedInts[] = {
+    { L"thickness", &OverlaySettings::thickness },
+};
+
+const ColorField<OverlaySettings> kOverlayOwnedColors[] = {
+    { L"color", &OverlaySettings::color },
+};
+
+const SectionTable<OverlaySettings> kOverlayTable = {
+    L"overlay",
+    { kOverlayOwnedBools, kOverlayOwnedInts, {}, kOverlayOwnedColors, {}, {}, {} },
+    {},
+};
+
+const HotkeyField<HotkeySettings> kHotkeyOwnedHotkeys[] = {
+    { L"reparent", &HotkeySettings::reparent },
+    { L"thumbnail", &HotkeySettings::thumbnail },
+    { L"viewport", &HotkeySettings::viewport },
+    { L"closeReparent", &HotkeySettings::closeReparent },
+    { L"alwaysOnTop", &HotkeySettings::alwaysOnTop },
+    { L"screenshot", &HotkeySettings::screenshot },
+    { L"ocr", &HotkeySettings::ocr },
+    { L"ocrAlt", &HotkeySettings::ocrAlt },
+    { L"selectionTranslate", &HotkeySettings::selectionTranslate },
+};
+
+const SectionTable<HotkeySettings> kHotkeyTable = {
+    L"hotkeys",
+    { {}, {}, {}, {}, kHotkeyOwnedHotkeys, {}, {} },
+    {},
+};
+
+// The settings window owns these twelve fields; the provider manager owns the
+// rest of the translation section and writes it through the codec.
+const BoolField<TranslationSettings> kTranslationOwnedBools[] = {
+    { L"enabled", &TranslationSettings::enabled },
+    { L"selectionCopyFallbackEnabled",
+      &TranslationSettings::selectionCopyFallbackEnabled },
+    { L"showSourceText", &TranslationSettings::showSourceText },
+    { L"preserveParagraphs", &TranslationSettings::preserveParagraphs },
+    { L"resultOnTop", &TranslationSettings::resultOnTop },
+    { L"showWindowBorder", &TranslationSettings::showWindowBorder },
+};
+
+const IntField<TranslationSettings> kTranslationOwnedInts[] = {
+    { L"sourceFontSize", &TranslationSettings::sourceFontSize },
+};
+
+const StringField<TranslationSettings> kTranslationOwnedStrings[] = {
+    { L"ocrRoute", &TranslationSettings::ocrRoute },
+    { L"sourceLanguage", &TranslationSettings::sourceLanguage },
+    { L"targetLanguage", &TranslationSettings::targetLanguage },
+    { L"activeProviderId", &TranslationSettings::activeProviderId },
+    { L"activePromptId", &TranslationSettings::activePromptId },
+};
+
+const SectionTable<TranslationSettings> kTranslationTable = {
+    L"translation",
+    { kTranslationOwnedBools, kTranslationOwnedInts, kTranslationOwnedStrings,
+      {}, {}, {}, {} },
+    {},
+};
+
+const BoolField<OcrSettings> kOcrOwnedBools[] = {
+    { L"cloudUseChartRecognition", &OcrSettings::paddleCloudUseChartRecognition },
+    { L"enableDocParsing", &OcrSettings::enableDocParsing },
+    { L"enableImageCrop", &OcrSettings::enableImageCrop },
+    { L"docRecognizeCharts", &OcrSettings::docRecognizeCharts },
+    { L"docRecognizeImages", &OcrSettings::docRecognizeImages },
+    { L"docRecognizeSeals", &OcrSettings::docRecognizeSeals },
+    { L"docIgnorePageDecorations", &OcrSettings::docIgnorePageDecorations },
+    { L"docKeepFootnotes", &OcrSettings::docKeepFootnotes },
+    { L"docUsePhysicalSorting", &OcrSettings::docUsePhysicalSorting },
+    { L"resultOnTop", &OcrSettings::resultOnTop },
+};
+
+const IntField<OcrSettings> kOcrOwnedInts[] = {
+    { L"altHotkeyIdleTimeoutMin", &OcrSettings::altHotkeyIdleTimeoutMin },
+    { L"paddleLocalPort", &OcrSettings::paddleLocalPort },
+    { L"paddleLocalIdleTimeoutMin", &OcrSettings::paddleLocalIdleTimeoutMin },
+    { L"ocrFontSize", &OcrSettings::ocrFontSize },
+    { L"ppocrv6CpuThreads", &OcrSettings::ppocrv6CpuThreads },
+    { L"ppocrv6RecBatchSize", &OcrSettings::ppocrv6RecBatchSize },
+    { L"ppocrv6DetLimitSideLen", &OcrSettings::ppocrv6DetLimitSideLen },
+    { L"ppocrv6DetMaxSideLimit", &OcrSettings::ppocrv6DetMaxSideLimit },
+    { L"ppocrv6DetThreshPct", &OcrSettings::ppocrv6DetThreshPct },
+    { L"ppocrv6DetBoxThreshPct", &OcrSettings::ppocrv6DetBoxThreshPct },
+    { L"ppocrv6DetUnclipRatioPct", &OcrSettings::ppocrv6DetUnclipRatioPct },
+    { L"ppocrv6RecScoreThreshPct", &OcrSettings::ppocrv6RecScoreThreshPct },
+};
+
+const StringField<OcrSettings> kOcrOwnedStrings[] = {
+    { L"language", &OcrSettings::language },
+    { L"mode", &OcrSettings::mode },
+    { L"paddleApiUrl", &OcrSettings::paddleApiUrl },
+    { L"paddleToken", &OcrSettings::paddleToken },
+    { L"paddleLocalModelDir", &OcrSettings::paddleLocalModelDir },
+    { L"paddleLocalPrompt", &OcrSettings::paddleLocalPrompt },
+    { L"docLayoutModelPath", &OcrSettings::docLayoutModelPath },
+    { L"ppocrv6ModelDir", &OcrSettings::ppocrv6ModelDir },
+    { L"ppocrv6Variant", &OcrSettings::ppocrv6Variant },
+    { L"ppocrv6DetLimitType", &OcrSettings::ppocrv6DetLimitType },
+};
+
+const TransformField<OcrSettings> kOcrOwnedTransforms[] = {
+    { L"altHotkeyRoute",
+      [](const OcrSettings& s) -> std::wstring {
+          std::wstring route = NormalizeOcrRoute(s.altHotkeyRoute);
+          if (route == L"current") route = L"paddle_local_doc";
+          return L"\"" + EscapeJsonString(route) + L"\"";
+      },
+      &MergeMember<&OcrSettings::altHotkeyRoute, OcrSettings> },
+    { L"timeoutMs",
+      [](const OcrSettings& s) -> std::wstring {
+          return std::to_wstring(NormalizeOcrTimeoutMs(s.timeoutMs));
+      },
+      &MergeMember<&OcrSettings::timeoutMs, OcrSettings> },
+    { L"localRasterMaxPixelEdge",
+      [](const OcrSettings& s) -> std::wstring {
+          return std::to_wstring(ClampPdfRenderMaxPixelEdge(
+              static_cast<int>(s.localRasterMaxPixelEdge)));
+      },
+      &MergeMember<&OcrSettings::localRasterMaxPixelEdge, OcrSettings> },
+    { L"localRasterMaxMegapixels",
+      [](const OcrSettings& s) -> std::wstring {
+          return std::to_wstring(ClampPdfRenderMaxMegapixels(
+              static_cast<int>(s.localRasterMaxMegapixels)));
+      },
+      &MergeMember<&OcrSettings::localRasterMaxMegapixels, OcrSettings> },
+    { L"layoutModelFamily",
+      [](const OcrSettings& s) -> std::wstring {
+          std::wstring family = s.layoutModelFamily;
+          if (family != L"pp_doclayout_v3" && family != L"pp_doclayout_v2") {
+              family = L"auto";
+          }
+          return L"\"" + EscapeJsonString(family) + L"\"";
+      },
+      &MergeMember<&OcrSettings::layoutModelFamily, OcrSettings> },
+    { L"layoutThresholdProfile",
+      [](const OcrSettings& s) -> std::wstring {
+          std::wstring profile = s.layoutThresholdProfile;
+          if (profile == L"official-like" || profile == L"official_like") {
+              profile = L"official";
+          } else if (profile != L"balanced" && profile != L"recall" &&
+              profile != L"official") {
+              profile = L"official";
+          }
+          return L"\"" + EscapeJsonString(profile) + L"\"";
+      },
+      &MergeMember<&OcrSettings::layoutThresholdProfile, OcrSettings> },
+    { L"paddleDocGroupingMode",
+      [](const OcrSettings& s) -> std::wstring {
+          std::wstring mode = s.paddleDocGroupingMode;
+          if (mode != L"legacy_union_ab" && mode != L"none") {
+              mode = L"official_group";
+          }
+          return L"\"" + EscapeJsonString(mode) + L"\"";
+      },
+      &MergeMember<&OcrSettings::paddleDocGroupingMode, OcrSettings> },
+    { L"paddleVlMaxTokens",
+      [](const OcrSettings& s) -> std::wstring {
+          return std::to_wstring(s.paddleVlMaxTokens == 8192 ? 8192 : 4096);
+      },
+      &MergeMember<&OcrSettings::paddleVlMaxTokens, OcrSettings> },
+    { L"ppocrv6Preset",
+      [](const OcrSettings& s) -> std::wstring {
+          return L"\"" + EscapeJsonString(PPOcrV6PresetIdName(
+              ParsePPOcrV6PresetId(s.ppocrv6Preset))) + L"\"";
+      },
+      &MergeMember<&OcrSettings::ppocrv6Preset, OcrSettings> },
+};
+
+// ppocrv6Provider is written as a fixed literal: the loader, the commit path
+// and the writer all force "cpu", so it is not a setting and has no merge row.
+const ConstantField<OcrSettings> kOcrOwnedConstants[] = {
+    { L"ppocrv6Provider", L"\"cpu\"" },
+};
+
+const SectionTable<OcrSettings> kOcrTable = {
+    L"ocr",
+    { kOcrOwnedBools, kOcrOwnedInts, kOcrOwnedStrings, {},
+      {}, kOcrOwnedTransforms, kOcrOwnedConstants },
+    {},
+};
+
+// Screenshot fields the settings window owns. The rest of the section belongs
+// to the annotation editor and must survive a commit untouched.
+const BoolField<ScreenshotSettings> kScreenshotOwnedBools[] = {
+    { L"includeCursor", &ScreenshotSettings::includeCursor },
+    { L"hoverMagnifierEnabled", &ScreenshotSettings::hoverMagnifierEnabled },
+    { L"longShotAutoCrop", &ScreenshotSettings::longShotAutoCrop },
+};
+
+const IntField<ScreenshotSettings> kScreenshotOwnedInts[] = {
+    { L"jpegQuality", &ScreenshotSettings::jpegQuality, true, 1, 100 },
+    { L"longShotAfterInitAction", &ScreenshotSettings::longShotAfterInitAction,
+      true, 0, 3 },
+};
+
+const StringField<ScreenshotSettings> kScreenshotOwnedStrings[] = {
+    { L"quickSaveDir", &ScreenshotSettings::quickSaveDir },
+};
+
+const TransformField<ScreenshotSettings> kScreenshotOwnedTransforms[] = {
+    { L"format",
+      [](const ScreenshotSettings& s) -> std::wstring {
+          return L"\"" + std::wstring(ScreenshotFormatToJsonValue(s.format)) + L"\"";
+      },
+      &MergeMember<&ScreenshotSettings::format, ScreenshotSettings> },
+};
+
+static std::wstring BuildGeneralSectionJson(const GeneralSettings& settings) {
+    return BuildSectionJson(kGeneralTable, settings);
+}
+
+static std::wstring BuildAotSectionJson(const AotSettings& settings) {
+    return BuildSectionJson(kAotTable, settings);
+}
+
+static std::wstring BuildOverlaySectionJson(const OverlaySettings& settings) {
+    return BuildSectionJson(kOverlayTable, settings);
+}
+
+// Single source of truth for this section: the runtime writers (Save*Settings)
+// and the settings window (CommitSettingsPatch) must never drift apart.
+static std::wstring BuildHotkeySectionJson(const HotkeySettings& settings) {
+    return BuildSectionJson(kHotkeyTable, settings);
+}
+
 bool SaveHotkeySettings(
     const HotkeySettings& settings,
     std::wstring* error) {
@@ -564,36 +1146,11 @@ bool SaveHotkeySettings(
     std::wstring path = GetSettingsFilePath();
     std::wstring json = ReadFileToString(path);
 
-    std::wstring hkJson = L"  \"hotkeys\": {\n    \"reparent\": " + HotkeyConfigToJson(settings.reparent) +
-        L",\n    \"thumbnail\": " + HotkeyConfigToJson(settings.thumbnail) +
-        L",\n    \"viewport\": " + HotkeyConfigToJson(settings.viewport) +
-        L",\n    \"closeReparent\": " + HotkeyConfigToJson(settings.closeReparent) +
-        L",\n    \"alwaysOnTop\": " + HotkeyConfigToJson(settings.alwaysOnTop) +
-        L",\n    \"screenshot\": " + HotkeyConfigToJson(settings.screenshot) +
-        L",\n    \"ocr\": " + HotkeyConfigToJson(settings.ocr) +
-        L",\n    \"ocrAlt\": " + HotkeyConfigToJson(settings.ocrAlt) +
-        L",\n    \"selectionTranslate\": " +
-            HotkeyConfigToJson(settings.selectionTranslate) +
-        L"\n  }";
+    const std::wstring hkJson = BuildHotkeySectionJson(settings);
 
-    std::wstring generalSection = FindTopLevelJsonValue(json, L"general");
-    std::wstring aotSection = FindTopLevelJsonValue(json, L"alwaysOnTop");
-    std::wstring overlaySection = FindTopLevelJsonValue(json, L"overlay");
-    std::wstring screenshotSection = FindTopLevelJsonValue(json, L"screenshot");
-    std::wstring ocrSection = FindTopLevelJsonValue(json, L"ocr");
-    std::wstring fullJson;
-
-    fullJson = L"{\n";
-    if (!generalSection.empty()) fullJson += L"  \"general\": " + generalSection + L",\n";
-    if (!aotSection.empty()) fullJson += L"  \"alwaysOnTop\": " + aotSection + L",\n";
-    if (!overlaySection.empty()) fullJson += L"  \"overlay\": " + overlaySection + L",\n";
-    if (!screenshotSection.empty()) fullJson += L"  \"screenshot\": " + screenshotSection + L",\n";
-    if (!ocrSection.empty()) fullJson += L"  \"ocr\": " + ocrSection + L",\n";
-    fullJson += hkJson + L"\n}";
-
-    PreserveTranslationSection(fullJson, json);
-
-    return WriteStringToFile(path, fullJson, error);
+    SettingsSections sections;
+    sections.hotkeys = hkJson;
+    return WriteStringToFile(path, AssembleSettingsJson(json, sections), error);
 }
 
 std::wstring NormalizeOcrRoute(const std::wstring& route) {
@@ -860,135 +1417,24 @@ OcrSettings LoadOcrSettings() {
     return settings;
 }
 
+// Single source of truth for this section: the runtime writers (Save*Settings)
+// and the settings window (CommitSettingsPatch) must never drift apart.
+static std::wstring BuildOcrSectionJson(const OcrSettings& settings) {
+    return BuildSectionJson(kOcrTable, settings);
+}
+
 void SaveOcrSettings(const OcrSettings& settings) {
     std::lock_guard<std::mutex> settingsLock(SettingsWriteMutex());
     std::wstring path = GetSettingsFilePath();
     std::wstring json = ReadFileToString(path);
 
-    std::wstring language = EscapeJsonString(settings.language);
-    std::wstring mode = EscapeJsonString(settings.mode);
-    std::wstring normalizedAltHotkeyRoute = NormalizeOcrRoute(settings.altHotkeyRoute);
-    if (normalizedAltHotkeyRoute == L"current") normalizedAltHotkeyRoute = L"paddle_local_doc";
-    std::wstring altHotkeyRoute = EscapeJsonString(normalizedAltHotkeyRoute);
-    std::wstring paddleApiUrl = EscapeJsonString(settings.paddleApiUrl);
-    std::wstring paddleToken = EscapeJsonString(settings.paddleToken);
-    std::wstring paddleLocalModelDir = EscapeJsonString(settings.paddleLocalModelDir);
-    std::wstring paddleLocalPrompt = EscapeJsonString(settings.paddleLocalPrompt);
-    const int paddleVlMaxTokens = settings.paddleVlMaxTokens == 8192 ? 8192 : 4096;
-    const uint32_t localRasterMaxPixelEdge = ClampPdfRenderMaxPixelEdge(
-        static_cast<int>(settings.localRasterMaxPixelEdge));
-    const uint32_t localRasterMaxMegapixels = ClampPdfRenderMaxMegapixels(
-        static_cast<int>(settings.localRasterMaxMegapixels));
-    std::wstring docLayoutModelPath = EscapeJsonString(settings.docLayoutModelPath);
-    std::wstring normalizedLayoutFamily = settings.layoutModelFamily;
-    if (normalizedLayoutFamily != L"pp_doclayout_v3" &&
-        normalizedLayoutFamily != L"pp_doclayout_v2") {
-        normalizedLayoutFamily = L"auto";
-    }
-    std::wstring normalizedThresholdProfile = settings.layoutThresholdProfile;
-    if (normalizedThresholdProfile == L"official-like" ||
-        normalizedThresholdProfile == L"official_like") {
-        normalizedThresholdProfile = L"official";
-    } else if (normalizedThresholdProfile != L"balanced" &&
-        normalizedThresholdProfile != L"recall" &&
-        normalizedThresholdProfile != L"official") {
-        normalizedThresholdProfile = L"official";
-    }
-    std::wstring normalizedGroupingMode = settings.paddleDocGroupingMode;
-    if (normalizedGroupingMode != L"legacy_union_ab" &&
-        normalizedGroupingMode != L"none") {
-        normalizedGroupingMode = L"official_group";
-    }
-    std::wstring layoutModelFamily = EscapeJsonString(normalizedLayoutFamily);
-    std::wstring layoutThresholdProfile = EscapeJsonString(normalizedThresholdProfile);
-    std::wstring paddleDocGroupingMode = EscapeJsonString(normalizedGroupingMode);
-    std::wstring ppocrv6ModelDir = EscapeJsonString(settings.ppocrv6ModelDir);
-    std::wstring ppocrv6Variant = EscapeJsonString(settings.ppocrv6Variant);
-    std::wstring ppocrv6DetLimitType = EscapeJsonString(settings.ppocrv6DetLimitType);
-    std::wstring ppocrv6Preset = EscapeJsonString(
-        PPOcrV6PresetIdName(ParsePPOcrV6PresetId(settings.ppocrv6Preset)));
+    const std::wstring ocrJson = BuildOcrSectionJson(settings);
 
-    // OWN-115: pure JSON field builders assemble OCR section (WideStringUtils).
-    // Field order and literals match historical swprintf_s output exactly.
-    const std::wstring ocrFields[] = {
-        WideJsonFieldString(L"language", language),
-        WideJsonFieldString(L"mode", mode),
-        WideJsonFieldString(L"altHotkeyRoute", altHotkeyRoute),
-        WideJsonFieldInt(L"altHotkeyIdleTimeoutMin", settings.altHotkeyIdleTimeoutMin),
-        WideJsonFieldString(L"paddleApiUrl", paddleApiUrl),
-        WideJsonFieldString(L"paddleToken", paddleToken),
-        WideJsonFieldBool(L"cloudUseChartRecognition", settings.paddleCloudUseChartRecognition),
-        WideJsonFieldInt(L"timeoutMs", NormalizeOcrTimeoutMs(settings.timeoutMs)),
-        WideJsonFieldString(L"paddleLocalModelDir", paddleLocalModelDir),
-        WideJsonFieldInt(L"paddleLocalPort", settings.paddleLocalPort),
-        WideJsonFieldInt(L"paddleLocalIdleTimeoutMin", settings.paddleLocalIdleTimeoutMin),
-        WideJsonFieldString(L"paddleLocalPrompt", paddleLocalPrompt),
-        WideJsonFieldInt(L"paddleVlMaxTokens", paddleVlMaxTokens),
-        WideJsonFieldBool(L"enableDocParsing", settings.enableDocParsing),
-        WideJsonFieldBool(L"enableImageCrop", settings.enableImageCrop),
-        WideJsonFieldUnsigned(L"localRasterMaxPixelEdge", static_cast<unsigned>(localRasterMaxPixelEdge)),
-        WideJsonFieldUnsigned(L"localRasterMaxMegapixels", static_cast<unsigned>(localRasterMaxMegapixels)),
-        WideJsonFieldString(L"docLayoutModelPath", docLayoutModelPath),
-        WideJsonFieldString(L"layoutModelFamily", layoutModelFamily),
-        WideJsonFieldString(L"layoutThresholdProfile", layoutThresholdProfile),
-        WideJsonFieldString(L"paddleDocGroupingMode", paddleDocGroupingMode),
-        WideJsonFieldBool(L"docRecognizeCharts", settings.docRecognizeCharts),
-        WideJsonFieldBool(L"docRecognizeImages", settings.docRecognizeImages),
-        WideJsonFieldBool(L"docRecognizeSeals", settings.docRecognizeSeals),
-        WideJsonFieldBool(L"docIgnorePageDecorations", settings.docIgnorePageDecorations),
-        WideJsonFieldBool(L"docKeepFootnotes", settings.docKeepFootnotes),
-        WideJsonFieldBool(L"docUsePhysicalSorting", settings.docUsePhysicalSorting),
-        WideJsonFieldInt(L"ocrFontSize", settings.ocrFontSize),
-        WideJsonFieldBool(L"resultOnTop", settings.resultOnTop),
-        WideJsonFieldString(L"ppocrv6ModelDir", ppocrv6ModelDir),
-        WideJsonFieldString(L"ppocrv6Variant", ppocrv6Variant),
-        WideJsonFieldStringLiteral(L"ppocrv6Provider", L"cpu"),
-        WideJsonFieldInt(L"ppocrv6CpuThreads", settings.ppocrv6CpuThreads),
-        WideJsonFieldInt(L"ppocrv6RecBatchSize", settings.ppocrv6RecBatchSize),
-        WideJsonFieldInt(L"ppocrv6DetLimitSideLen", settings.ppocrv6DetLimitSideLen),
-        WideJsonFieldString(L"ppocrv6DetLimitType", ppocrv6DetLimitType),
-        WideJsonFieldInt(L"ppocrv6DetMaxSideLimit", settings.ppocrv6DetMaxSideLimit),
-        WideJsonFieldInt(L"ppocrv6DetThreshPct", settings.ppocrv6DetThreshPct),
-        WideJsonFieldInt(L"ppocrv6DetBoxThreshPct", settings.ppocrv6DetBoxThreshPct),
-        WideJsonFieldInt(L"ppocrv6DetUnclipRatioPct", settings.ppocrv6DetUnclipRatioPct),
-        WideJsonFieldInt(L"ppocrv6RecScoreThreshPct", settings.ppocrv6RecScoreThreshPct),
-        WideJsonFieldString(L"ppocrv6Preset", ppocrv6Preset),
-    };
-    const std::wstring ocrJson = WideJsonObjectSection(
-        L"ocr", ocrFields, sizeof(ocrFields) / sizeof(ocrFields[0]));
-
-    std::wstring generalSection = FindTopLevelJsonValue(json, L"general");
-    std::wstring aotSection = FindTopLevelJsonValue(json, L"alwaysOnTop");
-    std::wstring overlaySection = FindTopLevelJsonValue(json, L"overlay");
-    std::wstring screenshotSection = FindTopLevelJsonValue(json, L"screenshot");
-    std::wstring hotkeySection = FindTopLevelJsonValue(json, L"hotkeys");
-
-    std::wstring fullJson = L"{\n";
-    if (!generalSection.empty()) fullJson += L"  \"general\": " + generalSection + L",\n";
-    if (!aotSection.empty()) fullJson += L"  \"alwaysOnTop\": " + aotSection + L",\n";
-    if (!overlaySection.empty()) fullJson += L"  \"overlay\": " + overlaySection + L",\n";
-    if (!screenshotSection.empty()) fullJson += L"  \"screenshot\": " + screenshotSection + L",\n";
-    fullJson += ocrJson;
-    if (!hotkeySection.empty()) fullJson += L",\n  \"hotkeys\": " + hotkeySection;
-    fullJson += L"\n}";
-
-    PreserveTranslationSection(fullJson, json);
-
-    WriteStringToFile(path, fullJson);
+    SettingsSections sections;
+    sections.ocr = ocrJson;
+    WriteStringToFile(path, AssembleSettingsJson(json, sections));
 }
 
-
-static const wchar_t* ScreenshotFormatToJsonValue(ScreenshotFormat format) {
-    switch (format) {
-    case ScreenshotFormat::Jpeg: return L"jpeg";
-    case ScreenshotFormat::Bmp: return L"bmp";
-    case ScreenshotFormat::WebP: return L"webp";
-    case ScreenshotFormat::Avif: return L"avif";
-    case ScreenshotFormat::Png:
-    default:
-        return L"png";
-    }
-}
 
 static ScreenshotFormat ParseScreenshotFormat(const std::wstring& value) {
     if (value == L"jpg" || value == L"jpeg") return ScreenshotFormat::Jpeg;
@@ -996,12 +1442,6 @@ static ScreenshotFormat ParseScreenshotFormat(const std::wstring& value) {
     if (value == L"webp") return ScreenshotFormat::WebP;
     if (value == L"avif") return ScreenshotFormat::Avif;
     return ScreenshotFormat::Png;
-}
-
-static int ClampSettingsInt(int value, int minValue, int maxValue) {
-    if (value < minValue) return minValue;
-    if (value > maxValue) return maxValue;
-    return value;
 }
 
 static void LoadScreenshotInt(const std::wstring& section, const wchar_t* key,
@@ -1178,151 +1618,138 @@ ScreenshotSettings LoadScreenshotSettings() {
     return settings;
 }
 
+// Annotation, hover-magnifier and post-processing fields: written here, owned
+// and merged by the annotation editor / hover magnifier paths.
+const BoolField<ScreenshotSettings> kScreenshotExternalBools[] = {
+    { L"warnAlphaLossForJpegBmp", &ScreenshotSettings::warnAlphaLossForJpegBmp },
+    { L"annotationUsesCustomColor", &ScreenshotSettings::annotationUsesCustomColor },
+    { L"annotationBrokenLineArrow", &ScreenshotSettings::annotationBrokenLineArrow },
+    { L"annotationMagnifierEllipse", &ScreenshotSettings::annotationMagnifierEllipse },
+    { L"annotationMagnifierEraseMark", &ScreenshotSettings::annotationMagnifierEraseMark },
+    { L"annotationMagnifierAntiAlias", &ScreenshotSettings::annotationMagnifierAntiAlias },
+    { L"annotationMagnifierShadow", &ScreenshotSettings::annotationMagnifierShadow },
+    { L"annotationHighLightStroke", &ScreenshotSettings::annotationHighLightStroke },
+    { L"annotationAutoMosaicSync", &ScreenshotSettings::annotationAutoMosaicSync },
+    { L"annotationTextOutline", &ScreenshotSettings::annotationTextOutline },
+    { L"annotationTextBackground", &ScreenshotSettings::annotationTextBackground },
+    { L"annotationTextBold", &ScreenshotSettings::annotationTextBold },
+    { L"annotationTextItalics", &ScreenshotSettings::annotationTextItalics },
+    { L"annotationWatermarkBold", &ScreenshotSettings::annotationWatermarkBold },
+    { L"annotationWatermarkItalics", &ScreenshotSettings::annotationWatermarkItalics },
+    { L"postProcessEnabledEveryScreenshot",
+      &ScreenshotSettings::postProcessEnabledEveryScreenshot },
+    { L"hoverMagnifierShowCoord", &ScreenshotSettings::hoverMagnifierShowCoord },
+    { L"longShotSuperLongWarningNoAsk",
+      &ScreenshotSettings::longShotSuperLongWarningNoAsk },
+    { L"longShotMaxLengthWarningNoAsk",
+      &ScreenshotSettings::longShotMaxLengthWarningNoAsk },
+    { L"longShotMatchFailWarningNoAsk",
+      &ScreenshotSettings::longShotMatchFailWarningNoAsk },
+    { L"longShotStopClearConfirmNoAsk",
+      &ScreenshotSettings::longShotStopClearConfirmNoAsk },
+};
+
+const IntField<ScreenshotSettings> kScreenshotExternalInts[] = {
+    { L"annotationActiveTool", &ScreenshotSettings::annotationActiveTool, true, 0, 13 },
+    { L"annotationGeometryTool", &ScreenshotSettings::annotationGeometryTool, true, 1, 13 },
+    { L"annotationMarkerTool", &ScreenshotSettings::annotationMarkerTool, true, 1, 13 },
+    { L"annotationArrowTool", &ScreenshotSettings::annotationArrowTool, true, 1, 13 },
+    { L"annotationTextTool", &ScreenshotSettings::annotationTextTool, true, 1, 13 },
+    { L"annotationMosaicTool", &ScreenshotSettings::annotationMosaicTool, true, 1, 13 },
+    { L"annotationColorIndex", &ScreenshotSettings::annotationColorIndex, true, 0, 6 },
+    { L"annotationGeometryColorIndex", &ScreenshotSettings::annotationGeometryColorIndex, true, 0, 6 },
+    { L"annotationMarkerColorIndex", &ScreenshotSettings::annotationMarkerColorIndex, true, 0, 6 },
+    { L"annotationColorAlpha", &ScreenshotSettings::annotationColorAlpha, true, 0, 100 },
+    { L"annotationColorPickerMode", &ScreenshotSettings::annotationColorPickerMode, true, 0, 2 },
+    { L"annotationLineStyle", &ScreenshotSettings::annotationLineStyle, true, 1, 5 },
+    { L"annotationGeometryPenWidth", &ScreenshotSettings::annotationGeometryPenWidth, true, 1, 32 },
+    { L"annotationGeometryRoundedRadius", &ScreenshotSettings::annotationGeometryRoundedRadius, true, 0, 0x32 },
+    { L"annotationPencilPenWidth", &ScreenshotSettings::annotationPencilPenWidth, true, 1, 32 },
+    { L"annotationMarkerPenWidth", &ScreenshotSettings::annotationMarkerPenWidth, true, 1, 32 },
+    { L"annotationArrowPenWidth", &ScreenshotSettings::annotationArrowPenWidth, true, 1, 32 },
+    { L"annotationArrowShape", &ScreenshotSettings::annotationArrowShape, true, 1, 8 },
+    { L"annotationBrokenLineMode", &ScreenshotSettings::annotationBrokenLineMode, true, 0, 1 },
+    { L"annotationBrokenLineStartArrowType", &ScreenshotSettings::annotationBrokenLineStartArrowType, true, 0, 11 },
+    { L"annotationBrokenLineEndArrowType", &ScreenshotSettings::annotationBrokenLineEndArrowType, true, 0, 11 },
+    { L"annotationMagnifierPenWidth", &ScreenshotSettings::annotationMagnifierPenWidth, true, 1, 32 },
+    { L"annotationMagnifierRoundedRadius", &ScreenshotSettings::annotationMagnifierRoundedRadius, true, 0, 0x32 },
+    { L"annotationMagnifierLinkType", &ScreenshotSettings::annotationMagnifierLinkType, true, 0, 3 },
+    { L"annotationMagnifierMagnification", &ScreenshotSettings::annotationMagnifierMagnification, true, 100, 400 },
+    { L"annotationMosaicPenWidth", &ScreenshotSettings::annotationMosaicPenWidth, true, 1, 32 },
+    { L"annotationEraserPenWidth", &ScreenshotSettings::annotationEraserPenWidth, true, 1, 32 },
+    { L"annotationSerialPenWidth", &ScreenshotSettings::annotationSerialPenWidth, true, 1, 32 },
+    { L"annotationMosaicStrength", &ScreenshotSettings::annotationMosaicStrength, true, 0, 28 },
+    { L"annotationMarkerBlendMode", &ScreenshotSettings::annotationMarkerBlendMode, true, 0, 1 },
+    { L"annotationMosaicMode", &ScreenshotSettings::annotationMosaicMode, true, 0, 1 },
+    { L"annotationSerialType", &ScreenshotSettings::annotationSerialType, true, 0, 4 },
+    { L"annotationHighLightOpacity", &ScreenshotSettings::annotationHighLightOpacity, true, 0, 100 },
+    { L"annotationTextOutlineSize", &ScreenshotSettings::annotationTextOutlineSize, true, 1, 0x32 },
+    { L"annotationTextBackgroundOpacity", &ScreenshotSettings::annotationTextBackgroundOpacity, true, 0, 100 },
+    { L"annotationTextBackgroundRounded", &ScreenshotSettings::annotationTextBackgroundRounded, true, 0, 0x1e },
+    { L"annotationTextBackgroundPadding", &ScreenshotSettings::annotationTextBackgroundPadding, true, 0, 0x32 },
+    { L"annotationTextFontSize", &ScreenshotSettings::annotationTextFontSize, true, 8, 96 },
+    { L"annotationWatermarkOpacity", &ScreenshotSettings::annotationWatermarkOpacity, true, 0, 100 },
+    { L"annotationWatermarkFontSize", &ScreenshotSettings::annotationWatermarkFontSize, true, 8, 96 },
+    { L"annotationWatermarkGap", &ScreenshotSettings::annotationWatermarkGap, true, 0, 200 },
+    { L"annotationWatermarkAngle", &ScreenshotSettings::annotationWatermarkAngle, true, -90, 90 },
+    { L"annotationWatermarkPosition", &ScreenshotSettings::annotationWatermarkPosition, true, 0, 7 },
+    { L"postProcessMode", &ScreenshotSettings::postProcessMode, true, 1, 2 },
+    { L"roundedCornerRadius", &ScreenshotSettings::roundedCornerRadius, true, 0, 0x3c },
+    { L"postProcessShadowSize", &ScreenshotSettings::postProcessShadowSize, true, 0, 100 },
+    { L"postProcessBorderSize", &ScreenshotSettings::postProcessBorderSize, true, 0, 100 },
+    { L"hoverMagnifierPower", &ScreenshotSettings::hoverMagnifierPower, true, 1, 100 },
+    { L"hoverMagnifierColorFormat", &ScreenshotSettings::hoverMagnifierColorFormat, true, 0, 5 },
+};
+
+const StringField<ScreenshotSettings> kScreenshotExternalStrings[] = {
+    { L"fileNameTemplate", &ScreenshotSettings::fileNameTemplate },
+    { L"annotationTextFontFamily", &ScreenshotSettings::annotationTextFontFamily,
+      L"Microsoft YaHei" },
+    { L"annotationWatermarkText", &ScreenshotSettings::annotationWatermarkText },
+    { L"annotationWatermarkFontFamily",
+      &ScreenshotSettings::annotationWatermarkFontFamily, L"Microsoft YaHei" },
+    { L"functionAreaAlwaysShow", &ScreenshotSettings::functionAreaAlwaysShow },
+    { L"functionAreaMorePanel", &ScreenshotSettings::functionAreaMorePanel },
+    { L"functionAreaAlwaysHide", &ScreenshotSettings::functionAreaAlwaysHide },
+};
+
+const ColorField<ScreenshotSettings> kScreenshotExternalColors[] = {
+    { L"annotationCustomColor", &ScreenshotSettings::annotationCustomColor },
+    { L"annotationHighLightStrokeColor", &ScreenshotSettings::annotationHighLightStrokeColor },
+    { L"annotationTextOutlineColor", &ScreenshotSettings::annotationTextOutlineColor },
+    { L"annotationTextBackgroundColor", &ScreenshotSettings::annotationTextBackgroundColor },
+    { L"annotationWatermarkColor", &ScreenshotSettings::annotationWatermarkColor },
+    { L"postProcessShadowColor", &ScreenshotSettings::postProcessShadowColor },
+    { L"postProcessBorderColor", &ScreenshotSettings::postProcessBorderColor },
+};
+
+const ConstantField<ScreenshotSettings> kScreenshotExternalConstants[] = {
+    { L"longShotBehaviorVersion", L"1" },
+};
+
+const SectionTable<ScreenshotSettings> kScreenshotTable = {
+    L"screenshot",
+    { kScreenshotOwnedBools, kScreenshotOwnedInts, kScreenshotOwnedStrings, {},
+      {}, kScreenshotOwnedTransforms, {} },
+    { kScreenshotExternalBools, kScreenshotExternalInts,
+      kScreenshotExternalStrings, kScreenshotExternalColors, {},
+      {}, kScreenshotExternalConstants },
+};
+
+static std::wstring BuildScreenshotSectionJson(const ScreenshotSettings& settings) {
+    return BuildSectionJson(kScreenshotTable, settings);
+}
+
 void SaveScreenshotSettings(const ScreenshotSettings& settings) {
     std::lock_guard<std::mutex> settingsLock(SettingsWriteMutex());
     std::wstring path = GetSettingsFilePath();
     std::wstring json = ReadFileToString(path);
 
-    int quality = settings.jpegQuality;
-    if (quality < 1) quality = 1;
-    if (quality > 100) quality = 100;
+    const std::wstring screenshotJson = BuildScreenshotSectionJson(settings);
 
-    std::wstring quickSaveDir = EscapeJsonString(settings.quickSaveDir);
-    std::wstring fileNameTemplate = EscapeJsonString(settings.fileNameTemplate);
-    std::wstring textFontFamily = EscapeJsonString(
-        settings.annotationTextFontFamily.empty() ? L"Microsoft YaHei" : settings.annotationTextFontFamily);
-    std::wstring watermarkText = EscapeJsonString(settings.annotationWatermarkText);
-    std::wstring watermarkFontFamily = EscapeJsonString(
-        settings.annotationWatermarkFontFamily.empty() ? L"Microsoft YaHei" : settings.annotationWatermarkFontFamily);
-    std::wstring functionAreaAlwaysShow = EscapeJsonString(settings.functionAreaAlwaysShow);
-    std::wstring functionAreaMorePanel = EscapeJsonString(settings.functionAreaMorePanel);
-    std::wstring functionAreaAlwaysHide = EscapeJsonString(settings.functionAreaAlwaysHide);
-    const std::wstring customColorHex = ColorToHex(settings.annotationCustomColor);
-    const std::wstring highLightStrokeColorHex = ColorToHex(settings.annotationHighLightStrokeColor);
-    const std::wstring textOutlineColorHex = ColorToHex(settings.annotationTextOutlineColor);
-    const std::wstring textBackgroundColorHex = ColorToHex(settings.annotationTextBackgroundColor);
-    const std::wstring watermarkColorHex = ColorToHex(settings.annotationWatermarkColor);
-    const std::wstring shadowColorHex = ColorToHex(settings.postProcessShadowColor);
-    const std::wstring borderColorHex = ColorToHex(settings.postProcessBorderColor);
-
-    // OWN-115: pure JSON field builders assemble screenshot section (WideStringUtils).
-    // Field order matches historical swprintf_s + hover-mag insert path.
-    const std::wstring screenshotFields[] = {
-        WideJsonFieldString(L"format", ScreenshotFormatToJsonValue(settings.format)),
-        WideJsonFieldInt(L"jpegQuality", quality),
-        WideJsonFieldBool(L"includeCursor", settings.includeCursor),
-        WideJsonFieldString(L"quickSaveDir", quickSaveDir),
-        WideJsonFieldString(L"fileNameTemplate", fileNameTemplate),
-        WideJsonFieldBool(L"warnAlphaLossForJpegBmp", settings.warnAlphaLossForJpegBmp),
-        WideJsonFieldInt(L"annotationActiveTool", ClampSettingsInt(settings.annotationActiveTool, 0, 13)),
-        WideJsonFieldInt(L"annotationGeometryTool", ClampSettingsInt(settings.annotationGeometryTool, 1, 13)),
-        WideJsonFieldInt(L"annotationMarkerTool", ClampSettingsInt(settings.annotationMarkerTool, 1, 13)),
-        WideJsonFieldInt(L"annotationArrowTool", ClampSettingsInt(settings.annotationArrowTool, 1, 13)),
-        WideJsonFieldInt(L"annotationTextTool", ClampSettingsInt(settings.annotationTextTool, 1, 13)),
-        WideJsonFieldInt(L"annotationMosaicTool", ClampSettingsInt(settings.annotationMosaicTool, 1, 13)),
-        WideJsonFieldInt(L"annotationColorIndex", ClampSettingsInt(settings.annotationColorIndex, 0, 6)),
-        WideJsonFieldInt(L"annotationGeometryColorIndex", ClampSettingsInt(settings.annotationGeometryColorIndex, 0, 6)),
-        WideJsonFieldInt(L"annotationMarkerColorIndex", ClampSettingsInt(settings.annotationMarkerColorIndex, 0, 6)),
-        WideJsonFieldBool(L"annotationUsesCustomColor", settings.annotationUsesCustomColor),
-        WideJsonFieldString(L"annotationCustomColor", customColorHex),
-        WideJsonFieldInt(L"annotationColorAlpha", ClampSettingsInt(settings.annotationColorAlpha, 0, 100)),
-        WideJsonFieldInt(L"annotationColorPickerMode", ClampSettingsInt(settings.annotationColorPickerMode, 0, 2)),
-        WideJsonFieldInt(L"annotationLineStyle", ClampSettingsInt(settings.annotationLineStyle, 1, 5)),
-        WideJsonFieldInt(L"annotationGeometryPenWidth", ClampSettingsInt(settings.annotationGeometryPenWidth, 1, 32)),
-        WideJsonFieldInt(L"annotationGeometryRoundedRadius", ClampSettingsInt(settings.annotationGeometryRoundedRadius, 0, 0x32)),
-        WideJsonFieldInt(L"annotationPencilPenWidth", ClampSettingsInt(settings.annotationPencilPenWidth, 1, 32)),
-        WideJsonFieldInt(L"annotationMarkerPenWidth", ClampSettingsInt(settings.annotationMarkerPenWidth, 1, 32)),
-        WideJsonFieldInt(L"annotationArrowPenWidth", ClampSettingsInt(settings.annotationArrowPenWidth, 1, 32)),
-        WideJsonFieldInt(L"annotationArrowShape", ClampSettingsInt(settings.annotationArrowShape, 1, 8)),
-        WideJsonFieldInt(L"annotationBrokenLineMode", ClampSettingsInt(settings.annotationBrokenLineMode, 0, 1)),
-        WideJsonFieldBool(L"annotationBrokenLineArrow", settings.annotationBrokenLineArrow),
-        WideJsonFieldInt(L"annotationBrokenLineStartArrowType", ClampSettingsInt(settings.annotationBrokenLineStartArrowType, 0, 11)),
-        WideJsonFieldInt(L"annotationBrokenLineEndArrowType", ClampSettingsInt(settings.annotationBrokenLineEndArrowType, 0, 11)),
-        WideJsonFieldInt(L"annotationMagnifierPenWidth", ClampSettingsInt(settings.annotationMagnifierPenWidth, 1, 32)),
-        WideJsonFieldInt(L"annotationMagnifierRoundedRadius", ClampSettingsInt(settings.annotationMagnifierRoundedRadius, 0, 0x32)),
-        WideJsonFieldBool(L"annotationMagnifierEllipse", settings.annotationMagnifierEllipse),
-        WideJsonFieldBool(L"annotationMagnifierEraseMark", settings.annotationMagnifierEraseMark),
-        WideJsonFieldBool(L"annotationMagnifierAntiAlias", settings.annotationMagnifierAntiAlias),
-        WideJsonFieldBool(L"annotationMagnifierShadow", settings.annotationMagnifierShadow),
-        WideJsonFieldInt(L"annotationMagnifierLinkType", ClampSettingsInt(settings.annotationMagnifierLinkType, 0, 3)),
-        WideJsonFieldInt(L"annotationMagnifierMagnification", ClampSettingsInt(settings.annotationMagnifierMagnification, 100, 400)),
-        WideJsonFieldInt(L"annotationMosaicPenWidth", ClampSettingsInt(settings.annotationMosaicPenWidth, 1, 32)),
-        WideJsonFieldInt(L"annotationEraserPenWidth", ClampSettingsInt(settings.annotationEraserPenWidth, 1, 32)),
-        WideJsonFieldInt(L"annotationSerialPenWidth", ClampSettingsInt(settings.annotationSerialPenWidth, 1, 32)),
-        WideJsonFieldInt(L"annotationMosaicStrength", ClampSettingsInt(settings.annotationMosaicStrength, 0, 28)),
-        WideJsonFieldInt(L"annotationMarkerBlendMode", ClampSettingsInt(settings.annotationMarkerBlendMode, 0, 1)),
-        WideJsonFieldInt(L"annotationMosaicMode", ClampSettingsInt(settings.annotationMosaicMode, 0, 1)),
-        WideJsonFieldInt(L"annotationSerialType", ClampSettingsInt(settings.annotationSerialType, 0, 4)),
-        WideJsonFieldBool(L"annotationHighLightStroke", settings.annotationHighLightStroke),
-        WideJsonFieldInt(L"annotationHighLightOpacity", ClampSettingsInt(settings.annotationHighLightOpacity, 0, 100)),
-        WideJsonFieldString(L"annotationHighLightStrokeColor", highLightStrokeColorHex),
-        WideJsonFieldBool(L"annotationAutoMosaicSync", settings.annotationAutoMosaicSync),
-        WideJsonFieldBool(L"annotationTextOutline", settings.annotationTextOutline),
-        WideJsonFieldInt(L"annotationTextOutlineSize", ClampSettingsInt(settings.annotationTextOutlineSize, 1, 0x32)),
-        WideJsonFieldString(L"annotationTextOutlineColor", textOutlineColorHex),
-        WideJsonFieldBool(L"annotationTextBackground", settings.annotationTextBackground),
-        WideJsonFieldString(L"annotationTextBackgroundColor", textBackgroundColorHex),
-        WideJsonFieldInt(L"annotationTextBackgroundOpacity", ClampSettingsInt(settings.annotationTextBackgroundOpacity, 0, 100)),
-        WideJsonFieldInt(L"annotationTextBackgroundRounded", ClampSettingsInt(settings.annotationTextBackgroundRounded, 0, 0x1e)),
-        WideJsonFieldInt(L"annotationTextBackgroundPadding", ClampSettingsInt(settings.annotationTextBackgroundPadding, 0, 0x32)),
-        WideJsonFieldBool(L"annotationTextBold", settings.annotationTextBold),
-        WideJsonFieldBool(L"annotationTextItalics", settings.annotationTextItalics),
-        WideJsonFieldString(L"annotationTextFontFamily", textFontFamily),
-        WideJsonFieldInt(L"annotationTextFontSize", ClampSettingsInt(settings.annotationTextFontSize, 8, 96)),
-        WideJsonFieldString(L"annotationWatermarkText", watermarkText),
-        WideJsonFieldString(L"annotationWatermarkColor", watermarkColorHex),
-        WideJsonFieldBool(L"annotationWatermarkBold", settings.annotationWatermarkBold),
-        WideJsonFieldBool(L"annotationWatermarkItalics", settings.annotationWatermarkItalics),
-        WideJsonFieldInt(L"annotationWatermarkOpacity", ClampSettingsInt(settings.annotationWatermarkOpacity, 0, 100)),
-        WideJsonFieldInt(L"annotationWatermarkFontSize", ClampSettingsInt(settings.annotationWatermarkFontSize, 8, 96)),
-        WideJsonFieldInt(L"annotationWatermarkGap", ClampSettingsInt(settings.annotationWatermarkGap, 0, 200)),
-        WideJsonFieldInt(L"annotationWatermarkAngle", ClampSettingsInt(settings.annotationWatermarkAngle, -90, 90)),
-        WideJsonFieldString(L"annotationWatermarkFontFamily", watermarkFontFamily),
-        WideJsonFieldInt(L"annotationWatermarkPosition", ClampSettingsInt(settings.annotationWatermarkPosition, 0, 7)),
-        WideJsonFieldBool(L"postProcessEnabledEveryScreenshot", settings.postProcessEnabledEveryScreenshot),
-        WideJsonFieldInt(L"postProcessMode", ClampSettingsInt(settings.postProcessMode, 1, 2)),
-        WideJsonFieldInt(L"roundedCornerRadius", ClampSettingsInt(settings.roundedCornerRadius, 0, 0x3c)),
-        WideJsonFieldInt(L"postProcessShadowSize", ClampSettingsInt(settings.postProcessShadowSize, 0, 100)),
-        WideJsonFieldString(L"postProcessShadowColor", shadowColorHex),
-        WideJsonFieldInt(L"postProcessBorderSize", ClampSettingsInt(settings.postProcessBorderSize, 0, 100)),
-        WideJsonFieldString(L"postProcessBorderColor", borderColorHex),
-        // Historical hover-mag insert fields (were appended before closing brace).
-        WideJsonFieldString(L"functionAreaAlwaysShow", functionAreaAlwaysShow),
-        WideJsonFieldString(L"functionAreaMorePanel", functionAreaMorePanel),
-        WideJsonFieldString(L"functionAreaAlwaysHide", functionAreaAlwaysHide),
-        WideJsonFieldBool(L"hoverMagnifierEnabled", settings.hoverMagnifierEnabled),
-        WideJsonFieldInt(L"hoverMagnifierPower", (std::min)((std::max)(settings.hoverMagnifierPower, 1), 100)),
-        WideJsonFieldInt(L"hoverMagnifierColorFormat", (std::min)((std::max)(settings.hoverMagnifierColorFormat, 0), 5)),
-        WideJsonFieldBool(L"hoverMagnifierShowCoord", settings.hoverMagnifierShowCoord),
-        WideJsonFieldBool(L"longShotSuperLongWarningNoAsk", settings.longShotSuperLongWarningNoAsk),
-        WideJsonFieldBool(L"longShotMaxLengthWarningNoAsk", settings.longShotMaxLengthWarningNoAsk),
-        WideJsonFieldBool(L"longShotMatchFailWarningNoAsk", settings.longShotMatchFailWarningNoAsk),
-        WideJsonFieldBool(L"longShotStopClearConfirmNoAsk", settings.longShotStopClearConfirmNoAsk),
-        WideJsonFieldInt(L"longShotBehaviorVersion", 1),
-        WideJsonFieldInt(L"longShotAfterInitAction", ClampSettingsInt(settings.longShotAfterInitAction, 0, 3)),
-        WideJsonFieldBool(L"longShotAutoCrop", settings.longShotAutoCrop),
-    };
-    const std::wstring screenshotJson = WideJsonObjectSection(
-        L"screenshot", screenshotFields, sizeof(screenshotFields) / sizeof(screenshotFields[0]));
-
-    std::wstring generalSection = FindTopLevelJsonValue(json, L"general");
-    std::wstring aotSection = FindTopLevelJsonValue(json, L"alwaysOnTop");
-    std::wstring overlaySection = FindTopLevelJsonValue(json, L"overlay");
-    std::wstring ocrSection = FindTopLevelJsonValue(json, L"ocr");
-    std::wstring hotkeySection = FindTopLevelJsonValue(json, L"hotkeys");
-
-    std::wstring fullJson = L"{\n";
-    if (!generalSection.empty()) fullJson += L"  \"general\": " + generalSection + L",\n";
-    if (!aotSection.empty()) fullJson += L"  \"alwaysOnTop\": " + aotSection + L",\n";
-    if (!overlaySection.empty()) fullJson += L"  \"overlay\": " + overlaySection + L",\n";
-    fullJson += screenshotJson;
-    if (!ocrSection.empty()) fullJson += L",\n  \"ocr\": " + ocrSection;
-    if (!hotkeySection.empty()) fullJson += L",\n  \"hotkeys\": " + hotkeySection;
-    fullJson += L"\n}";
-
-    PreserveTranslationSection(fullJson, json);
-
-    WriteStringToFile(path, fullJson);
+    SettingsSections sections;
+    sections.screenshot = screenshotJson;
+    WriteStringToFile(path, AssembleSettingsJson(json, sections));
 }
 
 COLORREF GetSystemAccentColor() {
@@ -1389,3 +1816,270 @@ std::wstring HotkeyConfig::ToString() const {
 static SharedSettings g_sharedSettings;
 
 SharedSettings& GetSharedSettings() { return g_sharedSettings; }
+
+namespace {
+
+// Appends a key/value pair before the closing brace of an object string.
+bool InsertJsonField(std::wstring& objStr, const std::wstring& key, const std::wstring& newValue) {
+    size_t closeBrace = objStr.rfind(L'}');
+    if (closeBrace == std::wstring::npos) return false;
+    size_t prevNonWs = closeBrace;
+    while (prevNonWs > 0 && iswspace(objStr[prevNonWs - 1])) prevNonWs--;
+    std::wstring insertStr;
+    if (prevNonWs > 0 && objStr[prevNonWs - 1] != L'{') {
+        insertStr = L",\n    \"" + key + L"\": " + newValue + L"\n  ";
+    } else {
+        insertStr = L"\n    \"" + key + L"\": " + newValue + L"\n  ";
+    }
+    objStr.insert(closeBrace, insertStr);
+    return true;
+}
+
+// Replaces the value that follows the key located at `keyPos`.
+bool ReplaceJsonValueAtKey(std::wstring& objStr, size_t keyPos, const std::wstring& search,
+    const std::wstring& newValue) {
+    size_t colonPos = objStr.find(L':', keyPos + search.length());
+    if (colonPos == std::wstring::npos) return false;
+    size_t valStart = colonPos + 1;
+    while (valStart < objStr.length() && iswspace(objStr[valStart])) valStart++;
+    if (valStart >= objStr.length()) return false;
+
+    size_t valEnd = valStart;
+    if (objStr[valStart] == L'"') {
+        valEnd = valStart + 1;
+        while (valEnd < objStr.length()) {
+            if (objStr[valEnd] == L'\\' && valEnd + 1 < objStr.length()) { valEnd += 2; continue; }
+            if (objStr[valEnd] == L'"') { valEnd++; break; }
+            valEnd++;
+        }
+    } else if (objStr[valStart] == L'{' || objStr[valStart] == L'[') {
+        wchar_t open = objStr[valStart];
+        wchar_t close = (open == L'{') ? L'}' : L']';
+        int depth = 1;
+        valEnd = valStart + 1;
+        bool inStr = false;
+        while (valEnd < objStr.length() && depth > 0) {
+            if (inStr) {
+                if (objStr[valEnd] == L'\\' && valEnd + 1 < objStr.length()) valEnd++;
+                else if (objStr[valEnd] == L'"') inStr = false;
+            } else {
+                if (objStr[valEnd] == L'"') inStr = true;
+                else if (objStr[valEnd] == open) depth++;
+                else if (objStr[valEnd] == close) depth--;
+            }
+            valEnd++;
+        }
+    } else {
+        while (valEnd < objStr.length() && objStr[valEnd] != L',' && objStr[valEnd] != L'}' && objStr[valEnd] != L'\n' && objStr[valEnd] != L'\r') {
+            valEnd++;
+        }
+    }
+    objStr.replace(valStart, valEnd - valStart, newValue);
+    return true;
+}
+
+// Replaces (or adds) a depth-1 key, so nested duplicates such as the per-provider
+// "enabled" inside "providerProfiles" are never touched.
+bool ReplaceTopLevelJsonField(std::wstring& objStr, const std::wstring& key, const std::wstring& newValue) {
+    if (objStr.empty()) return false;
+    const size_t keyPos = FindTopLevelObjectKeyPosition(objStr, key);
+    if (keyPos == std::wstring::npos) return InsertJsonField(objStr, key, newValue);
+    return ReplaceJsonValueAtKey(objStr, keyPos, L"\"" + key + L"\"", newValue);
+}
+
+} // namespace
+
+SettingsCommitResult CommitSettingsPatch(
+    const SettingsDraft& draft,
+    SettingsDraft* outUpdatedDraft,
+    bool forceOverwrite) {
+    std::lock_guard<std::mutex> settingsLock(SettingsWriteMutex());
+    SettingsCommitResult result;
+    const bool forcePatch = forceOverwrite;
+
+    const std::wstring path = GetSettingsFilePath();
+    const std::wstring json = ReadFileToString(path);
+
+    GeneralSettings currentGeneral = LoadGeneralSettings();
+    AotSettings currentAot = LoadAotSettings();
+    OverlaySettings currentOverlay = LoadOverlaySettings();
+    ScreenshotSettings currentScreenshot = LoadScreenshotSettings();
+    HotkeySettings currentHotkeys = LoadHotkeySettings();
+    OcrSettings currentOcr = LoadOcrSettings();
+
+    std::wstring translationSection = FindTopLevelJsonValue(json, L"translation");
+    if (!translationSection.empty()) {
+        std::wstring schemaVerStr = FindJsonValue(translationSection, L"schemaVersion");
+        int schemaVer = WideParseJsonIntToken(schemaVerStr, 0);
+        if (schemaVer > kTranslationSettingsSchemaVersion) {
+            result.status = SettingsCommitStatus::SchemaUnsupported;
+            result.errorMessage = L"The translation settings use a newer unsupported schema.";
+            return result;
+        }
+    }
+
+    // The translation section is written as a text patch (its provider profiles
+    // belong to the codec in another layer), so only the twelve window-owned
+    // fields are read back from the on-disk section as the merge baseline.
+    TranslationSettings currentTranslation;
+    currentTranslation.enabled = WideParseJsonBoolToken(FindTopLevelJsonFieldValue(translationSection, L"enabled"), true);
+    currentTranslation.selectionCopyFallbackEnabled = WideParseJsonBoolToken(FindTopLevelJsonFieldValue(translationSection, L"selectionCopyFallbackEnabled"), true);
+    currentTranslation.sourceLanguage = FindTopLevelJsonFieldValue(translationSection, L"sourceLanguage");
+    if (currentTranslation.sourceLanguage.empty()) currentTranslation.sourceLanguage = L"auto";
+    currentTranslation.targetLanguage = FindTopLevelJsonFieldValue(translationSection, L"targetLanguage");
+    if (currentTranslation.targetLanguage.empty()) currentTranslation.targetLanguage = L"auto";
+    currentTranslation.ocrRoute = FindTopLevelJsonFieldValue(translationSection, L"ocrRoute");
+    if (currentTranslation.ocrRoute.empty()) currentTranslation.ocrRoute = L"current";
+    currentTranslation.activeProviderId = FindTopLevelJsonFieldValue(translationSection, L"activeProviderId");
+    if (currentTranslation.activeProviderId.empty()) currentTranslation.activeProviderId = kDefaultTranslationProviderId;
+    currentTranslation.activePromptId = FindTopLevelJsonFieldValue(translationSection, L"activePromptId");
+    if (currentTranslation.activePromptId.empty()) currentTranslation.activePromptId = kDefaultTranslationPromptId;
+    currentTranslation.showSourceText = WideParseJsonBoolToken(FindTopLevelJsonFieldValue(translationSection, L"showSourceText"), true);
+    currentTranslation.preserveParagraphs = WideParseJsonBoolToken(FindTopLevelJsonFieldValue(translationSection, L"preserveParagraphs"), true);
+    currentTranslation.resultOnTop = WideParseJsonBoolToken(FindTopLevelJsonFieldValue(translationSection, L"resultOnTop"), false);
+    currentTranslation.showWindowBorder = WideParseJsonBoolToken(FindTopLevelJsonFieldValue(translationSection, L"showWindowBorder"), false);
+    currentTranslation.sourceFontSize = WideParseJsonIntToken(FindTopLevelJsonFieldValue(translationSection, L"sourceFontSize"), 14);
+
+    bool anyChanged = false;
+    bool translationSectionChanged = false;
+
+    // Field-level merge, driven by the same tables that build the sections.
+    const auto mergeInto = [&](const auto& table, const auto& baseline,
+        const auto& pending, auto& current, bool& changedFlag) -> bool {
+        const MergeOutcome outcome = MergeSection(
+            table, baseline, pending, current, forcePatch, &result.conflictingField);
+        if (outcome == MergeOutcome::Conflict) {
+            result.errorMessage =
+                L"Conflict detected in field: " + result.conflictingField;
+            return false;
+        }
+        if (outcome == MergeOutcome::Applied) changedFlag = true;
+        return true;
+    };
+    const auto conflict = [&]() {
+        result.status = SettingsCommitStatus::Conflict;
+        return result;
+    };
+
+    if (!mergeInto(kGeneralTable, draft.baseline.general, draft.pending.general,
+            currentGeneral, anyChanged)) return conflict();
+    if (!mergeInto(kAotTable, draft.baseline.aot, draft.pending.aot,
+            currentAot, anyChanged)) return conflict();
+    if (!mergeInto(kOverlayTable, draft.baseline.overlay, draft.pending.overlay,
+            currentOverlay, anyChanged)) return conflict();
+    if (!mergeInto(kScreenshotTable, draft.baseline.screenshot,
+            draft.pending.screenshot, currentScreenshot, anyChanged)) return conflict();
+    if (!mergeInto(kHotkeyTable, draft.baseline.hotkeys, draft.pending.hotkeys,
+            currentHotkeys, anyChanged)) return conflict();
+    if (!mergeInto(kTranslationTable, draft.baseline.translation,
+            draft.pending.translation, currentTranslation,
+            translationSectionChanged)) return conflict();
+    if (translationSectionChanged) {
+        anyChanged = true;
+    }
+
+    if (!mergeInto(kOcrTable, draft.ocrBaseline, draft.ocrPending,
+            currentOcr, anyChanged)) return conflict();
+    currentOcr.docIncludeIgnoredRegions = !currentOcr.docIgnorePageDecorations;
+
+    if (currentOcr.mode == L"ppocrv6_onnx") {
+        DowngradePPOcrV6PresetIfDiverged(currentOcr);
+    }
+
+    // Cross-page validation
+    if (HasHotkeyConflict(currentHotkeys)) {
+        result.status = SettingsCommitStatus::ValidationError;
+        result.errorMessage = S::HotkeyConflictMsg();
+        return result;
+    }
+    if (currentTranslation.selectionCopyFallbackEnabled && HasExactCtrlCHotkey(currentHotkeys)) {
+        result.status = SettingsCommitStatus::ValidationError;
+        result.errorMessage = S::IsChinese()
+            ? L"启用模拟复制兜底时，Ctrl+C 不能同时分配给 ZenCrop 快捷键。请更换该快捷键，或关闭 Translate 页的模拟复制兜底。"
+            : L"While copy fallback is enabled, Ctrl+C cannot also be assigned to a ZenCrop hotkey. Change that hotkey or disable copy fallback on the Translate page.";
+        return result;
+    }
+
+    if (anyChanged) {
+        const std::wstring generalJson = BuildGeneralSectionJson(currentGeneral);
+        const std::wstring aotJson = BuildAotSectionJson(currentAot);
+        const std::wstring overlayJson = BuildOverlaySectionJson(currentOverlay);
+        const std::wstring screenshotJson = BuildScreenshotSectionJson(currentScreenshot);
+        const std::wstring ocrJson = BuildOcrSectionJson(currentOcr);
+        const std::wstring hotkeyJson = BuildHotkeySectionJson(currentHotkeys);
+
+        // Update translation section if needed
+        if (translationSectionChanged) {
+            if (translationSection.empty()) {
+                translationSection = L"{\n    \"schemaVersion\": " +
+                    std::to_wstring(kTranslationSettingsSchemaVersion) +
+                    L",\n    \"enabled\": " +
+                    std::wstring(WideJsonBoolLiteral(currentTranslation.enabled)) +
+                    L",\n    \"selectionCopyFallbackEnabled\": " +
+                    std::wstring(WideJsonBoolLiteral(currentTranslation.selectionCopyFallbackEnabled)) +
+                    L",\n    \"sourceLanguage\": \"" + EscapeJsonString(currentTranslation.sourceLanguage) +
+                    L"\",\n    \"targetLanguage\": \"" + EscapeJsonString(currentTranslation.targetLanguage) +
+                    L"\",\n    \"ocrRoute\": \"" + EscapeJsonString(currentTranslation.ocrRoute) +
+                    L"\",\n    \"activeProviderId\": \"" + EscapeJsonString(currentTranslation.activeProviderId) +
+                    L"\",\n    \"activePromptId\": \"" + EscapeJsonString(currentTranslation.activePromptId) +
+                    L"\",\n    \"showSourceText\": " + WideJsonBoolLiteral(currentTranslation.showSourceText) +
+                    L",\n    \"preserveParagraphs\": " + WideJsonBoolLiteral(currentTranslation.preserveParagraphs) +
+                    L",\n    \"resultOnTop\": " + WideJsonBoolLiteral(currentTranslation.resultOnTop) +
+                    L",\n    \"showWindowBorder\": " + WideJsonBoolLiteral(currentTranslation.showWindowBorder) +
+                    L",\n    \"sourceFontSize\": " + std::to_wstring(currentTranslation.sourceFontSize) +
+                    L"\n  }";
+            } else {
+                ReplaceTopLevelJsonField(translationSection, L"enabled", WideJsonBoolLiteral(currentTranslation.enabled));
+                ReplaceTopLevelJsonField(translationSection, L"selectionCopyFallbackEnabled", WideJsonBoolLiteral(currentTranslation.selectionCopyFallbackEnabled));
+                ReplaceTopLevelJsonField(translationSection, L"sourceLanguage", L"\"" + EscapeJsonString(currentTranslation.sourceLanguage) + L"\"");
+                ReplaceTopLevelJsonField(translationSection, L"targetLanguage", L"\"" + EscapeJsonString(currentTranslation.targetLanguage) + L"\"");
+                ReplaceTopLevelJsonField(translationSection, L"ocrRoute", L"\"" + EscapeJsonString(currentTranslation.ocrRoute) + L"\"");
+                ReplaceTopLevelJsonField(translationSection, L"activeProviderId", L"\"" + EscapeJsonString(currentTranslation.activeProviderId) + L"\"");
+                ReplaceTopLevelJsonField(translationSection, L"activePromptId", L"\"" + EscapeJsonString(currentTranslation.activePromptId) + L"\"");
+                ReplaceTopLevelJsonField(translationSection, L"showSourceText", WideJsonBoolLiteral(currentTranslation.showSourceText));
+                ReplaceTopLevelJsonField(translationSection, L"preserveParagraphs", WideJsonBoolLiteral(currentTranslation.preserveParagraphs));
+                ReplaceTopLevelJsonField(translationSection, L"resultOnTop", WideJsonBoolLiteral(currentTranslation.resultOnTop));
+                ReplaceTopLevelJsonField(translationSection, L"showWindowBorder", WideJsonBoolLiteral(currentTranslation.showWindowBorder));
+                ReplaceTopLevelJsonField(translationSection, L"sourceFontSize", std::to_wstring(currentTranslation.sourceFontSize));
+            }
+        }
+
+        SettingsSections sections;
+        sections.general = generalJson;
+        sections.alwaysOnTop = aotJson;
+        sections.overlay = overlayJson;
+        sections.screenshot = screenshotJson;
+        sections.ocr = ocrJson;
+        sections.hotkeys = hotkeyJson;
+        if (!translationSection.empty()) {
+            sections.translation = L"  \"translation\": " + translationSection;
+        }
+
+        if (!WriteStringToFile(path, AssembleSettingsJson(json, sections), &result.errorMessage)) {
+            result.status = SettingsCommitStatus::IoError;
+            return result;
+        }
+    }
+
+    // Update in-memory shared settings
+    GetSharedSettings().general = currentGeneral;
+    GetSharedSettings().aot = currentAot;
+    GetSharedSettings().overlay = currentOverlay;
+    GetSharedSettings().screenshot = currentScreenshot;
+    GetSharedSettings().hotkeys = currentHotkeys;
+    AssignOwnedFields(GetSharedSettings().translation, currentTranslation,
+        kTranslationTable);
+
+    if (outUpdatedDraft) {
+        outUpdatedDraft->baseline = GetSharedSettings();
+        outUpdatedDraft->pending = GetSharedSettings();
+        outUpdatedDraft->ocrBaseline = currentOcr;
+        outUpdatedDraft->ocrPending = currentOcr;
+        outUpdatedDraft->appliedLanguageChinese = S::IsChinese();
+        outUpdatedDraft->startupBaseline = draft.startupBaseline;
+        outUpdatedDraft->startupPending = draft.startupPending;
+    }
+
+    result.status = SettingsCommitStatus::Success;
+    return result;
+}

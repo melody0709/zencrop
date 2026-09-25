@@ -3,6 +3,7 @@
 #include "core/ClipboardUtils.h"
 #include "core/Settings.h"
 #include "core/Strings.h"
+#include "core/Utils.h"
 #include "core/WideFormatUtils.h"
 #include "ocr/OcrMarkdownPreviewHost.h"
 #include "selection/SelectionTypes.h"
@@ -144,13 +145,6 @@ UINT MonitorDpi(HMONITOR monitor) {
         return x;
     }
     return kTranslationDesignDpi;
-}
-
-int ClampWindowCoordinate(int coordinate, int extent, int workStart, int workEnd, int gap) {
-    const int minimum = workStart + gap;
-    const int maximum = workEnd - extent - gap;
-    if (maximum < minimum) return workStart;
-    return (std::max)(minimum, (std::min)(coordinate, maximum));
 }
 
 // Keeps an anchored top-left inside the work area without shifting a window that

@@ -2,9 +2,6 @@
 
 #include <windows.h>
 
-// PropertySheet-based settings dialog. Extracted from Settings.cpp so that
-// Settings.cpp can focus on persistence (Load/Save) while this file holds
-// the UI/page procs. The shared state lives in Settings.cpp via
-// GetSharedSettings(); this file only declares the entry point.
+// Opens the Settings window. Page ownership and layout are internal to src/ocr/ui.
 
 void ShowSettingsDialog(HWND parent);

@@ -4,8 +4,11 @@
 #include "TranslationEngineFactory.h"
 #include "TranslationProviderCatalog.h"
 
+#include "core/AppMessages.h"
 #include "core/Settings.h"
 #include "core/Strings.h"
+#include "core/GdiHandles.h"
+#include "core/Utils.h"
 #include "TranslationSettingsCodec.h"
 
 #include <commctrl.h>
@@ -39,6 +42,7 @@ void ClearSensitiveString(std::wstring& value) {
 }
 
 struct ProviderPageState {
+    TranslationSettings baseline;
     TranslationSettings pending;
     // The management combo selects a profile to edit. It must not also change
     // the Translate page's active provider merely because the user inspected
@@ -65,6 +69,9 @@ struct ProviderPageState {
     TranslationResult testResult;
     bool testCompleted = false;
     std::atomic<uint64_t> generation{0};
+    zencrop::ScopedHFONT hHintFont;
+    bool regionShifted = false;
+    int regionStepPx = 0;
 
     ~ProviderPageState() {
         for (auto* value : profileIds) delete value;
@@ -552,6 +559,54 @@ TranslationReasoningMode ReadReasoning(HWND page) {
         SendMessageW(combo, CB_GETITEMDATA, index, 0));
 }
 
+void AdjustProviderRegionShift(HWND page, ProviderPageState& state, bool acceptsRegion) {
+    const bool targetShifted = !acceptsRegion;
+    if (state.regionShifted == targetShifted) return;
+
+    if (state.regionStepPx <= 0) {
+        HWND hReg = GetDlgItem(page, IDC_PROVIDER_REGION);
+        HWND hReas = GetDlgItem(page, IDC_PROVIDER_REASONING);
+        if (hReg && hReas) {
+            RECT rcReg = {}, rcReas = {};
+            GetWindowRect(hReg, &rcReg);
+            GetWindowRect(hReas, &rcReas);
+            state.regionStepPx = rcReas.top - rcReg.top;
+        }
+        if (state.regionStepPx <= 0) state.regionStepPx = 22;
+    }
+
+    const int shift = targetShifted ? -state.regionStepPx : state.regionStepPx;
+
+    const int shiftControls[] = {
+        IDC_PROVIDER_REASONING_LABEL,
+        IDC_PROVIDER_REASONING,
+        IDC_PROVIDER_TEMPERATURE_LABEL,
+        IDC_PROVIDER_TEMPERATURE,
+        IDC_PROVIDER_KEY_LABEL,
+        IDC_PROVIDER_KEY,
+        IDC_PROVIDER_KEY_ACTION,
+        IDC_PROVIDER_KEY_CLEAR,
+        IDC_PROVIDER_KEY_STATUS,
+        IDC_PROVIDER_ADVANCED_LABEL,
+        IDC_PROVIDER_ADVANCED,
+        IDC_PROVIDER_DATA_ROUTE
+    };
+
+    for (int ctrlId : shiftControls) {
+        HWND hCtrl = GetDlgItem(page, ctrlId);
+        if (hCtrl) {
+            RECT rc = {};
+            GetWindowRect(hCtrl, &rc);
+            POINT pt = { rc.left, rc.top };
+            ScreenToClient(page, &pt);
+            SetWindowPos(hCtrl, nullptr, pt.x, pt.y + shift, 0, 0,
+                         SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+        }
+    }
+
+    state.regionShifted = targetShifted;
+}
+
 void RenderProfile(HWND page, ProviderPageState& state) {
     auto* profile = CurrentProfile(page, state);
     if (!profile) return;
@@ -590,6 +645,7 @@ void RenderProfile(HWND page, ProviderPageState& state) {
     ShowWindow(GetDlgItem(page, IDC_PROVIDER_REGION),
         capabilities.acceptsRegion ? SW_SHOW : SW_HIDE);
     SetText(page, IDC_PROVIDER_REGION, profile->region);
+    AdjustProviderRegionShift(page, state, capabilities.acceptsRegion);
     if (const HWND model = GetDlgItem(page, IDC_PROVIDER_MODEL)) {
         SendMessageW(model, CB_RESETCONTENT, 0, 0);
         if (preset) {
@@ -1108,16 +1164,53 @@ INT_PTR CALLBACK TranslationProviderSettingsPageProc(
             state->pending.providerProfiles.empty()) {
             state->pending = GetSharedSettings().translation;
         }
+        state->baseline = state->pending;
         RestoreMissingBuiltInProfiles(state->pending);
         state->selectedProviderId = state->pending.activeProviderId;
         SetWindowLongPtrW(page, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(state));
+        UINT dpi = 96;
+        HMODULE hUser32 = GetModuleHandleW(L"user32.dll");
+        auto pfnGetDpiForWindow = (UINT(WINAPI*)(HWND))GetProcAddress(hUser32, "GetDpiForWindow");
+        if (pfnGetDpiForWindow) dpi = pfnGetDpiForWindow(page);
+        if (dpi == 0) dpi = 96;
+
+        state->hHintFont.reset(CreateFontW(-MulDiv(8, dpi, 72), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+            CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI"));
+
+        if (state->hHintFont) {
+            SendDlgItemMessageW(page, IDC_PROVIDER_KEY_STATUS, WM_SETFONT, reinterpret_cast<WPARAM>(state->hHintFont.get()), TRUE);
+            SendDlgItemMessageW(page, IDC_PROVIDER_TEST_STATUS, WM_SETFONT, reinterpret_cast<WPARAM>(state->hHintFont.get()), TRUE);
+            SendDlgItemMessageW(page, IDC_PROVIDER_DATA_ROUTE, WM_SETFONT, reinterpret_cast<WPARAM>(state->hHintFont.get()), TRUE);
+        }
+
         SetText(page, IDC_PROVIDER_ENABLED,
             S::IsChinese() ? L"在翻译中启用" : L"Enable in Translate");
         FillProfiles(page, *state);
         RenderProfile(page, *state);
+        PostMessageW(page, WM_APP_SETTINGS_SHEET_INIT_LAYOUT, 0, 0);
         return TRUE;
     }
     if (!state) return FALSE;
+    if (message == WM_APP_SETTINGS_SHEET_INIT_LAYOUT) {
+        HWND hSheet = GetParent(page);
+        if (hSheet) {
+            PositionWindowNearAnchor(hSheet, nullptr);
+        }
+        return TRUE;
+    }
+    if (message == WM_CTLCOLORSTATIC) {
+        HWND hCtrl = reinterpret_cast<HWND>(lParam);
+        int id = GetDlgCtrlID(hCtrl);
+        if (id == IDC_PROVIDER_KEY_STATUS ||
+            id == IDC_PROVIDER_TEST_STATUS ||
+            id == IDC_PROVIDER_DATA_ROUTE) {
+            HDC hdc = reinterpret_cast<HDC>(wParam);
+            SetBkMode(hdc, TRANSPARENT);
+            SetTextColor(hdc, RGB(110, 110, 110));
+            return reinterpret_cast<INT_PTR>(GetSysColorBrush(COLOR_BTNFACE));
+        }
+    }
     if (message == kProviderTestDone) {
         bool completed = false;
         {
@@ -1360,15 +1453,9 @@ INT_PTR CALLBACK TranslationProviderSettingsPageProc(
                 return TRUE;
             }
         }
-        TranslationSettings merged = GetSharedSettings().translation;
-        merged.activeProviderId = state->pending.activeProviderId;
-        merged.providerProfiles = state->pending.providerProfiles;
-        if (!NormalizeTranslationSettingsForPersistence(merged, &error)) {
-            MessageBoxW(page, error.c_str(), L"Provider", MB_OK | MB_ICONERROR);
-            SetWindowLongPtrW(page, DWLP_MSGRESULT, PSNRET_INVALID_NOCHANGEPAGE);
-            return TRUE;
-        }
-        if (!SaveTranslationSettings(merged, &error)) {
+        TranslationSettings merged;
+        if (!CommitTranslationManagedSettings(state->baseline, state->pending,
+                TranslationManagedArea::Providers, &merged, &error)) {
             if (mutationAttempted) {
                 RestoreCredential(*profile, hadPrevious, previousKey);
             }
@@ -1383,6 +1470,7 @@ INT_PTR CALLBACK TranslationProviderSettingsPageProc(
         // was written. A later reopen in the same settings session must not
         // fall back to a pre-Apply model or profile shape.
         GetSharedSettings().translation = merged;
+        state->baseline = merged;
         state->pending = merged;
         SetWindowLongPtrW(page, DWLP_MSGRESULT, PSNRET_NOERROR);
         return TRUE;

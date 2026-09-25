@@ -742,6 +742,10 @@ std::wstring SerializeTranslationSection(const TranslationSettings& settings) {
     return Utf8ToWide(value.dump(2));
 }
 
+std::wstring BuildTranslationSectionEntry(const TranslationSettings& settings) {
+    return L"  \"translation\": " + SerializeTranslationSection(settings);
+}
+
 bool NormalizeTranslationSettingsForPersistence(
     TranslationSettings& settings,
     std::wstring* error) {
@@ -896,22 +900,62 @@ bool SaveTranslationSettings(
     if (!NormalizeTranslationSettingsForPersistence(normalized, error)) {
         return false;
     }
-    const std::wstring translationJson =
-        L"  \"translation\": " + SerializeTranslationSection(normalized);
+    // The shared assembler keeps every section this call does not own and preserves
+    // unknown top-level fields, exactly like the other settings writers.
+    SettingsSections sections;
+    sections.translation = BuildTranslationSectionEntry(normalized);
+    return WriteStringToFile(path, AssembleSettingsJson(json, sections), error);
+}
 
-    const std::wstring generalSection = WideJsonFindTopLevelValue(json, L"general");
-    const std::wstring aotSection = WideJsonFindTopLevelValue(json, L"alwaysOnTop");
-    const std::wstring overlaySection = WideJsonFindTopLevelValue(json, L"overlay");
-    const std::wstring screenshotSection = WideJsonFindTopLevelValue(json, L"screenshot");
-    const std::wstring ocrSection = WideJsonFindTopLevelValue(json, L"ocr");
-    const std::wstring hotkeySection = WideJsonFindTopLevelValue(json, L"hotkeys");
-    std::wstring fullJson = L"{\n";
-    if (!generalSection.empty()) fullJson += L"  \"general\": " + generalSection + L",\n";
-    if (!aotSection.empty()) fullJson += L"  \"alwaysOnTop\": " + aotSection + L",\n";
-    if (!overlaySection.empty()) fullJson += L"  \"overlay\": " + overlaySection + L",\n";
-    if (!screenshotSection.empty()) fullJson += L"  \"screenshot\": " + screenshotSection + L",\n";
-    if (!ocrSection.empty()) fullJson += L"  \"ocr\": " + ocrSection + L",\n";
-    if (!hotkeySection.empty()) fullJson += L"  \"hotkeys\": " + hotkeySection + L",\n";
-    fullJson += translationJson + L"\n}";
-    return WriteStringToFile(path, fullJson, error);
+bool CommitTranslationManagedSettings(
+    const TranslationSettings& baseline,
+    const TranslationSettings& pending,
+    TranslationManagedArea area,
+    TranslationSettings* saved,
+    std::wstring* error) {
+    std::lock_guard<std::mutex> settingsLock(SettingsWriteMutex());
+    const std::wstring path = GetSettingsFilePath();
+    const std::wstring json = ReadFileToString(path);
+    const std::wstring section = WideJsonFindTopLevelValue(json, L"translation");
+    TranslationSettings current;
+    current.enabled = true;
+    if (!section.empty() && !ParseTranslationSection(section, current, error)) return false;
+    if (!current.schemaSupported || current.schemaVersion > kTranslationSettingsSchemaVersion) {
+        if (error) *error = L"The translation settings use a newer unsupported schema.";
+        return false;
+    }
+
+    bool changed = false;
+    const auto merge = [&](const auto& before, const auto& after, auto& latest,
+        const wchar_t* field) -> bool {
+        if (before == after) return true;
+        if (latest != before && latest != after) {
+            if (error) *error = std::wstring(L"Conflict detected in field: translation.") + field;
+            return false;
+        }
+        if (latest != after) {
+            latest = after;
+            changed = true;
+        }
+        return true;
+    };
+    if (area == TranslationManagedArea::Providers) {
+        if (!merge(baseline.providerProfiles, pending.providerProfiles,
+                current.providerProfiles, L"providerProfiles") ||
+            !merge(baseline.activeProviderId, pending.activeProviderId,
+                current.activeProviderId, L"activeProviderId")) return false;
+    } else {
+        if (!merge(baseline.customPromptProfiles, pending.customPromptProfiles,
+                current.customPromptProfiles, L"customPromptProfiles") ||
+            !merge(baseline.activePromptId, pending.activePromptId,
+                current.activePromptId, L"activePromptId")) return false;
+    }
+    if (changed) {
+        if (!NormalizeTranslationSettingsForPersistence(current, error)) return false;
+        SettingsSections sections;
+        sections.translation = BuildTranslationSectionEntry(current);
+        if (!WriteStringToFile(path, AssembleSettingsJson(json, sections), error)) return false;
+    }
+    if (saved) *saved = std::move(current);
+    return true;
 }

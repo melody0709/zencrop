@@ -1,8 +1,11 @@
 #include "TranslationPromptSettingsPage.h"
 
 #include "TranslationPromptComposer.h"
+#include "TranslationSettingsCodec.h"
+#include "core/AppMessages.h"
 #include "core/Settings.h"
 #include "core/Strings.h"
+#include "core/Utils.h"
 
 #include <algorithm>
 #include <atomic>
@@ -13,6 +16,7 @@ namespace translation {
 namespace {
 
 struct State {
+    TranslationSettings baseline;
     TranslationSettings pending;
     // CBN_SELCHANGE is delivered after the combo selection has moved. Track
     // the profile whose controls are currently rendered so edits are saved
@@ -120,10 +124,32 @@ void ReadCustom(HWND h, State& s) {
 INT_PTR CALLBACK TranslationPromptSettingsPageProc(HWND h, UINT msg, WPARAM w, LPARAM l) {
     auto* s = reinterpret_cast<State*>(GetWindowLongPtrW(h, GWLP_USERDATA));
     if (msg == WM_INITDIALOG) {
-        s = new State(); s->pending = GetSharedSettings().translation;
-        SetWindowLongPtrW(h, GWLP_USERDATA, (LONG_PTR)s); Fill(h, *s); Render(h, *s); return TRUE;
+        s = new State(); s->pending = LoadTranslationSettings();
+        if (!s->pending.schemaSupported || s->pending.providerProfiles.empty()) {
+            s->pending = GetSharedSettings().translation;
+        }
+        s->baseline = s->pending;
+        SetWindowLongPtrW(h, GWLP_USERDATA, (LONG_PTR)s); Fill(h, *s); Render(h, *s);
+        PostMessageW(h, WM_APP_SETTINGS_SHEET_INIT_LAYOUT, 0, 0);
+        return TRUE;
     }
     if (!s) return FALSE;
+    if (msg == WM_APP_SETTINGS_SHEET_INIT_LAYOUT) {
+        HWND hSheet = GetParent(h);
+        if (hSheet) {
+            PositionWindowNearAnchor(hSheet, nullptr);
+        }
+        return TRUE;
+    }
+    if (msg == WM_CTLCOLORSTATIC) {
+        HWND hCtrl = reinterpret_cast<HWND>(l);
+        if (GetPropW(hCtrl, L"ZenCropHint")) {
+            HDC hdc = reinterpret_cast<HDC>(w);
+            SetBkMode(hdc, TRANSPARENT);
+            SetTextColor(hdc, RGB(110, 110, 110));
+            return reinterpret_cast<INT_PTR>(GetSysColorBrush(COLOR_BTNFACE));
+        }
+    }
     if (msg == WM_COMMAND) {
         int id = LOWORD(w), code = HIWORD(w);
         if (id == IDC_PROMPT_PROFILE && code == CBN_SELCHANGE) {
@@ -160,11 +186,18 @@ INT_PTR CALLBACK TranslationPromptSettingsPageProc(HWND h, UINT msg, WPARAM w, L
     }
     if (msg == WM_NOTIFY && reinterpret_cast<NMHDR*>(l)->code == PSN_APPLY) {
         ReadCustom(h, *s); std::wstring error;
-        TranslationSettings merged = GetSharedSettings().translation;
-        merged.activePromptId = s->pending.activePromptId;
-        merged.customPromptProfiles = s->pending.customPromptProfiles;
-        if (!SaveTranslationSettings(merged, &error)) { MessageBoxW(h, error.c_str(), L"Prompt", MB_OK|MB_ICONERROR); SetWindowLongPtrW(h, DWLP_MSGRESULT, PSNRET_INVALID_NOCHANGEPAGE); return TRUE; }
-        GetSharedSettings().translation = merged; SetWindowLongPtrW(h, DWLP_MSGRESULT, PSNRET_NOERROR); return TRUE;
+        TranslationSettings merged;
+        if (!CommitTranslationManagedSettings(s->baseline, s->pending,
+                TranslationManagedArea::Prompts, &merged, &error)) {
+            MessageBoxW(h, error.c_str(), L"Prompt", MB_OK | MB_ICONERROR);
+            SetWindowLongPtrW(h, DWLP_MSGRESULT, PSNRET_INVALID_NOCHANGEPAGE);
+            return TRUE;
+        }
+        GetSharedSettings().translation = merged;
+        s->baseline = merged;
+        s->pending = merged;
+        SetWindowLongPtrW(h, DWLP_MSGRESULT, PSNRET_NOERROR);
+        return TRUE;
     }
     if (msg == WM_DESTROY) { for (auto* p : s->ids) delete p; delete s; SetWindowLongPtrW(h, GWLP_USERDATA, 0); return TRUE; }
     return FALSE;

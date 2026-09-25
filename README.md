@@ -6,7 +6,9 @@ An independent, **enhanced** reimplementation of [PowerToys Crop And Lock](https
 
 ## What's new in v3.1.0
 
-- **Settings UI Modernization**: Modernized settings UI host and page container architecture, field-level atomic draft commit, Per-Monitor DPI v2 adaptive layout, and complete feature-parity across all 6 tabs.
+- **Settings UI Modernization**: Decoupled multi-container single-window architecture replacing legacy Win32 PropertySheet, golden-ratio 560×620 DIP dimensions ensuring 100% zero-scrollbar display by default across all 6 tabs, and field-level atomic patch commit (`CommitSettingsPatch`) preventing cross-domain overwrite conflicts. All writers now share one `AssembleSettingsJson` layout, so sections they do not own and unknown top-level keys are never dropped.
+- **Child Dialogs Visual Alignment**: Unified 9pt Segoe UI with 11 DLU single-line controls (22px at 96 DPI, matching the main settings row height) and 13 DLU buttons (26px, matching the main settings buttons); tightened 276 DLU family dialog footprint and dynamic collapsing of unused region gaps.
+- **Smart Adaptive Anchored Placement**: Unified `PositionWindowNearAnchor` algorithm following Right -> Left -> Below -> Above priority with monitor work-area clamping, fixing dialog top-right jumping and property sheet center-covering bugs.
 - **Unified Version Bump**: Product version elevated to `v3.1.0` across binaries, installers, portable packages, and documentation.
 
 ## What's new in v3.0.0

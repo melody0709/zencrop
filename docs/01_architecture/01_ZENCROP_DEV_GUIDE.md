@@ -120,11 +120,19 @@ The migrator backs up both metadata sets, merges history, relocates OCR image re
 - **预乘 Alpha**: `UpdateLayeredWindow` + `AC_SRC_ALPHA` 要求像素值为预乘 Alpha（`preR = r * alpha / 255`），否则透明度不生效。
 - **ARGB 与 COLORREF 字节序**: 32 位 DIB Section 像素格式为 `0xAARRGGBB`，而 `COLORREF` 为 `0x00BBGGRR`。构造像素时必须用 `GetRValue` 在高位、`GetBValue` 在低位，不能直接移位 `COLORREF`。
 
-### PropertySheet 设置对话框
+### 设置界面架构与子弹窗智能定位 (Settings & Child Window Placement)
 
-- **居中无闪烁**: 使用 `PSCB_PRECREATE` 回调移除 `WS_VISIBLE` 样式，在 `PSCB_INITIALIZED` 中用 `SetTimer(0ms)` 延迟居中，最后 `ShowWindow(SW_SHOWNORMAL)` 显示。直接在 `PSCB_INITIALIZED` 中居中会导致窗口先在左上角闪现再跳到中间。
-- **DLU 与像素转换**: .rc 文件使用对话框单位（DLU），`MoveWindow` 使用像素。动态创建的控件定位时必须用 `MapDialogRect` 转换 DLU 坐标，或用 `GetWindowRect` + `MapWindowPoints` 获取已有控件的像素位置来计算。
-- **自定义控件焦点**: 自定义窗口类（如 HotkeyEdit）必须处理 `WM_LBUTTONDOWN` 并调用 `SetFocus(hwnd)`，否则点击无法获得焦点，键盘事件无法捕获。
+- **现代原生窗口容器架构**: 主设置界面已从旧版 Win32 `PropertySheetW` 属性页重构为原生多容器单窗口架构（`SettingsWindow` + 6 个无边框子容器 `WS_CHILD | WS_CLIPCHILDREN | WS_VSCROLL`），采用 560×620 DIP 基准尺寸，页面按内容高度决定是否显示纵向滚动条，并由 `WM_GETMINMAXINFO`（520×480 DIP）与工作区安全钳位守护。
+- **字段级原子提交 (`CommitSettingsPatch`)**: 只合并并提交主设置界面实际发生改动的字段，绝不进行按域整体覆盖，杜绝冲掉外部模块运行态数据或截图/OCR 工具条状态。**该路径的序列化与运行时 `Save*Settings` 共用同一组 `Build*SectionJson`**（`Settings.cpp`），新增字段只需改一处，避免两条写入路径分叉；**所有写入路径（六个 `Save*Settings`、`CommitSettingsPatch`、翻译层 `SaveTranslationSettings`）都经由 L0 的 `AssembleSettingsJson(sourceJson, SettingsSections)` 装配**：已知七段固定顺序、只覆盖调用方负责的段、其余段沿用磁盘原文、未知顶层字段按原文保留，因此新增字段只需改一处且不会被任何路径丢弃。
+- **字段描述表（唯一权威）**: `Settings.cpp` 的字段表是每一段字段的唯一声明处，**同时驱动序列化与合并**：`BuildSectionJson` 走表生成段文本，`CommitSettingsPatch` 走同一张表做字段级三方比较，因此"序列化了却没参与合并"（或反之）在结构上不可能出现。每段分两组：`owned`（设置窗口写入并合并）与 `external`（本路径只写、由别的写入者拥有并合并，如截图段的标注/水印/后处理归标注编辑器），`external` 字段在一次提交中必须原样存活。新增一个设置字段仍涉及结构体成员、`ResourceIds.h` 控件 ID、`Load*` 读取、文案、`.rc` 控件、表中一行、`Relayout<Page>`、页面初始化与收集，以及相关测试；无需再手调下方控件坐标，也无需分别维护序列化与合并。注意表内键序按组排布（bool→int→string→color→hotkey→transform→constant），与历史手写顺序不同，全部读取方都按 key 取值；逐字节格式由 `TestSectionJsonShape` 与全字段往返契约钉住。
+- **页面接口与代码归属**: 主窗口不是属性表，因此页面**不得**依赖 `PROPSHEETPAGEW`/`PSN_APPLY` 那套消息协议。页面用 `CreateDialogParamW` 创建，`lParam` 是指向 L0 `SettingsPageInit`（`src/core/SettingsPageInit.h`，仅前向声明两个 payload 类型以免抬高 `Settings.h` 的 `ARC-RATCHET` 直接包含者计数）的指针，携带 `hotkeyDraft` 与 OCR 页的 `ocrPending`；禁止再 `reinterpret_cast` 成 `PROPSHEETPAGEW*`。各页的 `Collect*Page()` 读取控件，宿主只调度收集与提交；翻译页用 `translation::CollectTranslationPageDraft()`（返回 `nullptr` 表示页面拒绝当前值）。成功 Apply 后仅在合并值或语言切换改变页面内容时重建页面，并按新布局范围恢复焦点与滚动位置；普通 Apply 保留控件，避免旧控件值在下一次 Apply 中变成新修改。`SettingsDialog.cpp` 只负责窗口生命周期、路由和提交；`SettingsPages.cpp` 负责共用布局与滚动；`SettingsSimplePages.cpp` 负责四个简单页面及翻译页布局；`SettingsOcrPage.cpp` 负责 OCR 页；翻译页留在 `src/translation/`。**仍保留** `PSM_CHANGED` 脏标记通知：`HotkeyEdit` 是 L0 共享控件，同时向本宿主和两个真 `PropertySheetW` 管理窗发出该消息，替换需先定双宿主边界。
+- **翻译段仍是文本补丁（有意保留）**: `CommitSettingsPatch`（L0）不能调用 L3 的翻译 codec，而 codec 的结构解析与 L3 provider 目录深度耦合（`FindBuiltInProviderPreset` 参与身份修复、reasoning 能力钳位与 `builtin.*` 保留 id 校验），因此"只把序列化下沉 L0"无法替掉文本补丁：序列化完整段必须先解析磁盘原文，而那需要 L3 目录。当前做法是 L0 只回读并三方比较窗口拥有的 12 个字段、再对磁盘原文做顶层文本补丁，**非自有字段与段内未知键都按原文保留**；`SaveTranslationSettings` 则整段走 codec 装配。两者差异仅在"段缺失"这一分支，且该分支产出的最小段是合法可解析段（`ParseTranslationSection` 会对缺键取默认值）。
+- **翻译管理窗的提交边界**: Provider 与 Prompt 管理窗通过 L3 `CommitTranslationManagedSettings` 在同一写锁内读取最新磁盘值，只合并本窗修改的列表和活动 ID；同字段冲突拒写。凭据写入失败时仍由 Provider 页恢复原值。主窗口再次 Apply 时会从最新翻译段刷新页面，避免管理窗和结果窗的修改被旧控件覆盖。
+- **全字段持久化契约**: `tests/test_startup_registration_contract.cpp` 用 `Maximal<Section>()`（每个持久化字段都取非默认值）钉住三件事：①六段 `Save*`→`Load` 逐字段往返；②窗口拥有的字段必须被 `CommitSettingsPatch` 合并（截图段对 `WindowOwnedScreenshot()` 显式列出归属，非自有字段必须原样存活）；③每段一个代表字段的外部改动必须报 `Conflict` 且字段名正确。`Maximal<Section>()` 为人工枚举；新增持久化字段须同步填写非默认值，否则测试不能保证覆盖新字段。
+- **子窗口飞向右上角的根因与规避**: 对话框如果调用 `GetAncestor(hDlg, GA_ROOTOWNER)`，在以隐藏托盘窗口为主进程 root 的架构中会越过中间的 `SettingsWindow` 查找到隐藏主窗口，因其不可见导致坐标回退为显示器全屏矩形并飞向右上角（`x ≈ 1920, y = 0`）。**正确做法**：必须沿父链逐层剥离 `WS_CHILD` 属性（如 Tab 页面容器 `hPage`），精准解包出真实的顶层可视宿主 `SettingsWindow`。
+- **PropertySheet 默认居中覆盖的拦截**: Windows 原生 `PropertySheetW` 会在初始化内部控件后、显示窗口前强行自我居中覆盖 `hwndParent`。**正确做法**：在 `PSCB_INITIALIZED` 中为属性页句柄安装子类化钩子拦截 `WM_SHOWWINDOW`，并在页面自身的 `WM_INITDIALOG` 中通过 `PostMessage(page, WM_APP + 102, 0, 0)` 双保险触发后置定位，确保尺寸就绪后平滑并列停靠。
+- **四向自适应排列 (`PositionWindowNearAnchor`)**: 统一使用全局基础库提供的 `PositionWindowNearAnchor`，对标划词翻译窗口的跟随逻辑：按“右侧并列 (首选) → 左侧并列 (次选) → 下方 (下选) → 上方 (备选)”自适应探测，空间受限时选择可用空间最大的一侧，并调用 `ClampWindowCoordinate` 将窗口严格限制在当前显示器工作区 `rcWork` 内。
+- **行高与字体对齐（口径修正）**: 子对话框模板使用 Windows 标准 `FONT 9, "Segoe UI"`；**单行输入框与复选框用 `11 DLU`，底部按钮用 `13 DLU`**。DLU→像素为 `MulDiv(dlu, baseunitY, 8)`，Segoe UI 9pt 的 `baseunitY = 16`，因此 11 DLU = 22px（对齐主设置 `Scale(22)` 行高）、13 DLU = 26px（对齐主设置 `Scale(26)` 按钮）。旧文档写"13 DLU = 22px"是换算错误；禁止再手写 10pt 字体（会被放大到 32px 造成松垮感）。
 
 ### 快捷键与窗口识别
 

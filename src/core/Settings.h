@@ -13,11 +13,15 @@
 struct AppLanguage {
     enum Value { Auto, English, Chinese };
     Value value = Auto;
+
+    bool operator==(const AppLanguage&) const = default;
 };
 
 struct GeneralSettings {
     AppLanguage language;
     bool showTitlebar = false;
+
+    bool operator==(const GeneralSettings&) const = default;
 };
 
 struct AotSettings {
@@ -28,12 +32,16 @@ struct AotSettings {
     int thickness = 4;
     bool roundedCorners = true;
     int inset = 1;
+
+    bool operator==(const AotSettings&) const = default;
 };
 
 struct OverlaySettings {
     COLORREF color = RGB(255, 0, 0);
     int thickness = 3;
     bool cropOnTop = true;
+
+    bool operator==(const OverlaySettings&) const = default;
 };
 
 enum class ScreenshotFormat {
@@ -147,6 +155,8 @@ struct ScreenshotSettings {
     bool longShotStopClearConfirmNoAsk = false; // LongShot.StopClearConfirmNoAsk
     int longShotAfterInitAction = 1; // 0 do-not-start, 1 vert auto, 2 horiz auto, 3 show start/stop
     bool longShotAutoCrop = false;
+
+    bool operator==(const ScreenshotSettings&) const = default;
 };
 
 struct HotkeyConfig {
@@ -245,12 +255,16 @@ struct TranslationProviderProfile {
     TranslationReasoningMode reasoningMode = TranslationReasoningMode::Off;
     std::optional<double> temperature;
     std::wstring advancedOptionsJson = L"{}";
+
+    bool operator==(const TranslationProviderProfile&) const = default;
 };
 
 struct TranslationPromptProfile {
     std::wstring id;
     std::wstring name;
     std::wstring styleInstruction;
+
+    bool operator==(const TranslationPromptProfile&) const = default;
 };
 
 struct BuiltInOpenAiCompatibleProviderDefault {
@@ -311,6 +325,8 @@ struct TranslationSettings {
         profile.reasoningMode = TranslationReasoningMode::Off;
         providerProfiles.push_back(std::move(profile));
     }
+
+    bool operator==(const TranslationSettings&) const = default;
 };
 
 struct OcrSettings {
@@ -367,6 +383,8 @@ struct OcrSettings {
     // Legacy ids accepted on load. Presets do NOT change Variant (small/medium).
     // New installs default to balanced knobs above; id marks the pack name.
     std::wstring ppocrv6Preset = L"balanced";
+
+    bool operator==(const OcrSettings&) const = default;
 };
 
 // PP-OCRv6 Options presets — same-model speed/quality axis (scheme 1).
@@ -520,6 +538,27 @@ bool WriteStringToFile(
     const std::wstring& content,
     std::wstring* error = nullptr);
 
+// The canonical settings.json layout: seven known sections in a fixed order, followed
+// by any unknown top-level fields preserved verbatim. Each non-empty field below is the
+// complete `  "key": { ... }` entry text (the Build*SectionJson helpers already produce
+// that); an empty field reuses the section text already present in the source JSON.
+struct SettingsSections {
+    std::wstring general;
+    std::wstring alwaysOnTop;
+    std::wstring overlay;
+    std::wstring screenshot;
+    std::wstring ocr;
+    std::wstring hotkeys;
+    std::wstring translation;
+};
+
+// Single entry point for writing settings.json: merges `overrides` into `sourceJson`,
+// keeps every section the caller does not override, and never drops unknown top-level
+// fields. All Save*Settings writers and CommitSettingsPatch go through this function.
+std::wstring AssembleSettingsJson(
+    const std::wstring& sourceJson,
+    const SettingsSections& overrides);
+
 GeneralSettings LoadGeneralSettings();
 void SaveGeneralSettings(const GeneralSettings& settings);
 AotSettings LoadAotSettings();
@@ -543,10 +582,7 @@ bool OcrRouteUsesLlama(const std::wstring& route);
 bool OcrSettingsUsesLlama(const OcrSettings& settings, const HotkeySettings& hotkeys);
 int ResolveOcrLlamaIdleTimeoutMin(const OcrSettings& settings, const HotkeySettings& hotkeys);
 COLORREF GetSystemAccentColor();
-void ShowSettingsDialog(HWND parent);
-
-// Aggregate of all settings pages, shared across PropertySheet page procs.
-// Moved to the header so SettingsDialog.cpp can access it without redefining.
+// Settings snapshot shared by the owning domains and the Settings window.
 struct SharedSettings {
     GeneralSettings general;
     AotSettings aot;
@@ -557,3 +593,36 @@ struct SharedSettings {
 };
 
 SharedSettings& GetSharedSettings();
+
+enum class SettingsCommitStatus {
+    Success = 0,
+    Conflict,
+    ValidationError,
+    IoError,
+    SchemaUnsupported,
+};
+
+struct SettingsCommitResult {
+    SettingsCommitStatus status = SettingsCommitStatus::Success;
+    std::wstring errorMessage;
+    std::wstring conflictingField;
+};
+
+struct SettingsDraft {
+    SharedSettings baseline;
+    SharedSettings pending;
+    OcrSettings ocrBaseline;
+    OcrSettings ocrPending;
+    bool startupBaseline = false;
+    bool startupPending = false;
+    bool appliedLanguageChinese = false;
+};
+
+// Applies the fields that differ between draft.baseline and draft.pending onto the
+// latest on-disk settings. Returns Conflict (and leaves the file untouched) when the
+// same field was changed externally; pass forceOverwrite=true only after the user has
+// explicitly accepted overwriting that external change.
+SettingsCommitResult CommitSettingsPatch(
+    const SettingsDraft& draft,
+    SettingsDraft* outUpdatedDraft = nullptr,
+    bool forceOverwrite = false);

@@ -50,7 +50,7 @@
     "inlFileCount": 0,
     "hubHeaderDirectIncluders": 39,
     "maxHeaderDirectIncluders": 39,
-    "gdiManualReleases": 127,
+    "gdiManualReleases": 125,
     "printfOccurrences": 14,
     "jthreadAdoption": 12,
     "testsCompilingProductCpp": 0,

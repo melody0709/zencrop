@@ -10,7 +10,10 @@
 #include "core/Settings.h"
 #include "core/SettingsHotkeyDraft.h"
 #include "core/HotkeyEdit.h"
+#include "core/AppMessages.h"
+#include "core/SettingsPageInit.h"
 #include "core/Strings.h"
+#include "core/Utils.h"
 
 #include <commctrl.h>
 
@@ -23,10 +26,12 @@ namespace translation {
 namespace {
 
 struct PageState {
-    // Main-page controls are a draft until PSN_APPLY. Management dialogs may
+    // Main-page controls are a draft until the host applies them. Management dialogs may
     // update provider/prompt collections in shared settings, but must not
     // overwrite the other unsaved controls in this draft.
     TranslationSettings draft;
+    std::wstring managedProviderBaseline;
+    std::wstring managedPromptBaseline;
     SettingsHotkeyDraft* hotkeyDraft = nullptr;
     std::vector<std::wstring*> sourceIds;
     std::vector<std::wstring*> targetIds;
@@ -119,7 +124,7 @@ TranslationSettings ReadPage(HWND page, PageState& state) {
     settings.customPromptProfiles = shared.customPromptProfiles;
     settings.schemaVersion = shared.schemaVersion;
     settings.schemaSupported = shared.schemaSupported;
-    settings.enabled = true;
+    settings.enabled = shared.enabled;
     settings.selectionCopyFallbackEnabled = IsDlgButtonChecked(
         page, IDC_TRANSLATE_SELECTION_COPY_FALLBACK) == BST_CHECKED;
     UpdateSelectionCopyFallbackDraft(
@@ -204,6 +209,8 @@ bool ValidatePage(HWND page, const TranslationSettings& settings) {
 
 void InitializePage(HWND page, PageState& state) {
     state.draft = GetSharedSettings().translation;
+    state.managedProviderBaseline = state.draft.activeProviderId;
+    state.managedPromptBaseline = state.draft.activePromptId;
     if (state.hotkeyDraft) {
         state.draft.selectionCopyFallbackEnabled =
             state.hotkeyDraft->selectionCopyFallbackEnabled;
@@ -251,18 +258,6 @@ void InitializePage(HWND page, PageState& state) {
         SendMessageW(page, WM_GETFONT, 0, 0));
     SendDlgItemMessageW(page, IDC_TRANSLATE_SELECTION_HOTKEY_EDIT,
         WM_SETFONT, reinterpret_cast<WPARAM>(pageFont), 0);
-    HWND clearButton = GetDlgItem(
-        page, IDC_TRANSLATE_SELECTION_HOTKEY_CLEAR);
-    RECT clearRect = {};
-    GetWindowRect(clearButton, &clearRect);
-    MapWindowPoints(nullptr, page,
-        reinterpret_cast<POINT*>(&clearRect), 2);
-    RECT editStart = {110, 0, 0, 0};
-    MapDialogRect(page, &editStart);
-    MoveWindow(GetDlgItem(page, IDC_TRANSLATE_SELECTION_HOTKEY_EDIT),
-        editStart.left, clearRect.top,
-        clearRect.left - editStart.left - 4,
-        clearRect.bottom - clearRect.top, TRUE);
 
     HWND source = GetDlgItem(page, IDC_TRANSLATE_SOURCE);
     HWND target = GetDlgItem(page, IDC_TRANSLATE_TARGET);
@@ -367,12 +362,16 @@ void RefreshManagedCombos(HWND page, PageState& state) {
     const std::wstring preferredPrompt = state.draft.activePromptId;
     state.draft.providerProfiles = managed.providerProfiles;
     state.draft.activeProviderId = hasProvider(state.draft, preferredProvider)
+        && preferredProvider != state.managedProviderBaseline
         ? preferredProvider
         : (hasProvider(state.draft, managed.activeProviderId)
             ? managed.activeProviderId : std::wstring());
     state.draft.customPromptProfiles = managed.customPromptProfiles;
     state.draft.activePromptId = hasPrompt(state.draft, preferredPrompt)
+        && preferredPrompt != state.managedPromptBaseline
         ? preferredPrompt : managed.activePromptId;
+    state.managedProviderBaseline = managed.activeProviderId;
+    state.managedPromptBaseline = managed.activePromptId;
     const TranslationSettings& settings = state.draft;
     HWND provider = GetDlgItem(page, IDC_TRANSLATE_PROVIDER);
     for (const auto& profile : settings.providerProfiles) {
@@ -395,9 +394,30 @@ void RefreshManagedCombos(HWND page, PageState& state) {
     UpdateDataRoute(page, settings);
 }
 
-} // namespace
+LRESULT CALLBACK ManagementSheetSubclassProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam,
+                                            UINT_PTR uIdSubclass, DWORD_PTR dwRefData) {
+    if (msg == WM_SHOWWINDOW && wParam == TRUE) {
+        HWND owner = reinterpret_cast<HWND>(dwRefData);
+        PositionWindowNearAnchor(hwnd, owner);
+        PostMessageW(hwnd, WM_APP_SETTINGS_SHEET_SHOW_WINDOW, 0, dwRefData);
+    } else if (msg == WM_APP_SETTINGS_SHEET_SHOW_WINDOW) {
+        HWND owner = reinterpret_cast<HWND>(lParam);
+        PositionWindowNearAnchor(hwnd, owner);
+        return 0;
+    } else if (msg == WM_NCDESTROY) {
+        RemoveWindowSubclass(hwnd, ManagementSheetSubclassProc, uIdSubclass);
+    }
+    return DefSubclassProc(hwnd, msg, wParam, lParam);
+}
 
-namespace {
+int CALLBACK ManagementSheetCallback(HWND hwnd, UINT uMsg, LPARAM lParam) {
+    if (uMsg == PSCB_INITIALIZED && hwnd) {
+        HWND owner = GetWindow(hwnd, GW_OWNER);
+        SetWindowSubclass(hwnd, ManagementSheetSubclassProc, 1, reinterpret_cast<DWORD_PTR>(owner));
+        PositionWindowNearAnchor(hwnd, owner);
+    }
+    return 0;
+}
 
 void ShowManagementPage(HWND owner, int resourceId, DLGPROC dialogProc,
                         const wchar_t* title) {
@@ -411,12 +431,13 @@ void ShowManagementPage(HWND owner, int resourceId, DLGPROC dialogProc,
 
     PROPSHEETHEADERW sheet = {};
     sheet.dwSize = sizeof(sheet);
-    sheet.dwFlags = PSH_PROPSHEETPAGE | PSH_NOCONTEXTHELP;
+    sheet.dwFlags = PSH_PROPSHEETPAGE | PSH_NOCONTEXTHELP | PSH_USECALLBACK;
     sheet.hwndParent = owner;
     sheet.hInstance = GetModuleHandleW(nullptr);
     sheet.pszCaption = title;
     sheet.nPages = 1;
     sheet.ppsp = &page;
+    sheet.pfnCallback = ManagementSheetCallback;
     PropertySheetW(&sheet);
 }
 
@@ -438,16 +459,23 @@ INT_PTR CALLBACK TranslationSettingsPageProc(
         GetWindowLongPtrW(page, GWLP_USERDATA));
     if (message == WM_INITDIALOG) {
         state = new PageState();
-        const auto* propertyPage =
-            reinterpret_cast<const PROPSHEETPAGEW*>(lParam);
-        state->hotkeyDraft = propertyPage
-            ? reinterpret_cast<SettingsHotkeyDraft*>(propertyPage->lParam)
-            : nullptr;
+        const auto* pageInit = reinterpret_cast<const SettingsPageInit*>(lParam);
+        state->hotkeyDraft = pageInit ? pageInit->hotkeyDraft : nullptr;
         SetWindowLongPtrW(page, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(state));
         InitializePage(page, *state);
         return TRUE;
     }
     if (!state) return FALSE;
+    if (message == WM_CTLCOLORSTATIC) {
+        HWND hCtrl = reinterpret_cast<HWND>(lParam);
+        int id = GetDlgCtrlID(hCtrl);
+        if (id == IDC_TRANSLATE_SELECTION_COPY_HINT || GetPropW(hCtrl, L"ZenCropHint")) {
+            HDC hdc = reinterpret_cast<HDC>(wParam);
+            SetBkMode(hdc, TRANSPARENT);
+            SetTextColor(hdc, RGB(110, 110, 110));
+            return reinterpret_cast<INT_PTR>(GetSysColorBrush(COLOR_BTNFACE));
+        }
+    }
     if (message == WM_COMMAND) {
         const int control = LOWORD(wParam);
         const int notification = HIWORD(wParam);
@@ -491,49 +519,6 @@ INT_PTR CALLBACK TranslationSettingsPageProc(
         }
         return TRUE;
     }
-    if (message == WM_NOTIFY &&
-        reinterpret_cast<NMHDR*>(lParam)->code == PSN_APPLY) {
-        const TranslationSettings settings = ReadPage(page, *state);
-        if (!ValidatePage(page, settings)) {
-            SetWindowLongPtrW(page, DWLP_MSGRESULT, PSNRET_INVALID_NOCHANGEPAGE);
-            return TRUE;
-        }
-        // The Provider manager is a separate persistence surface. Reload the
-        // latest on-disk translation section so applying this outer page can
-        // never overwrite provider model/reasoning/temperature changes with
-        // the Translate page's older draft.
-        TranslationSettings merged = LoadTranslationSettings();
-        if (!merged.schemaSupported || merged.providerProfiles.empty()) {
-            merged = GetSharedSettings().translation;
-        }
-        merged.enabled = settings.enabled;
-        merged.selectionCopyFallbackEnabled =
-            settings.selectionCopyFallbackEnabled;
-        merged.ocrRoute = settings.ocrRoute;
-        merged.sourceLanguage = settings.sourceLanguage;
-        merged.targetLanguage = settings.targetLanguage;
-        merged.showSourceText = settings.showSourceText;
-        merged.preserveParagraphs = settings.preserveParagraphs;
-        merged.resultOnTop = settings.resultOnTop;
-        merged.showWindowBorder = settings.showWindowBorder;
-        merged.sourceFontSize = settings.sourceFontSize;
-        merged.sourcePreviewZoomFactor = settings.sourcePreviewZoomFactor;
-        merged.translationPreviewZoomFactor = settings.translationPreviewZoomFactor;
-        merged.activeProviderId = settings.activeProviderId;
-        merged.activePromptId = settings.activePromptId;
-        std::wstring error;
-        if (!SaveTranslationSettings(merged, &error)) {
-            MessageBoxW(page, error.c_str(),
-                S::IsChinese() ? L"设置" : L"Settings",
-                MB_OK | MB_ICONERROR);
-            SetWindowLongPtrW(page, DWLP_MSGRESULT, PSNRET_INVALID_NOCHANGEPAGE);
-            return TRUE;
-        }
-        GetSharedSettings().translation = merged;
-        state->draft = merged;
-        SetWindowLongPtrW(page, DWLP_MSGRESULT, PSNRET_NOERROR);
-        return TRUE;
-    }
     if (message == WM_DESTROY) {
         FreeValues(state->sourceIds);
         FreeValues(state->targetIds);
@@ -546,5 +531,50 @@ INT_PTR CALLBACK TranslationSettingsPageProc(
     }
     return FALSE;
 }
+
+const TranslationSettings* CollectTranslationPageDraft(HWND page) {
+    if (!page) return nullptr;
+    auto* state = reinterpret_cast<PageState*>(GetWindowLongPtrW(page, GWLP_USERDATA));
+    if (!state) return nullptr;
+    const TranslationSettings settings = ReadPage(page, *state);
+    // ValidatePage reports the reason itself; the caller only needs to abort.
+    if (!ValidatePage(page, settings)) return nullptr;
+    // The Provider manager is a separate persistence surface. Reload the latest
+    // on-disk translation section so applying this outer page can never overwrite
+    // provider model/reasoning/temperature changes with the Translate page's
+    // older draft.
+    TranslationSettings merged = LoadTranslationSettings();
+    if (!merged.schemaSupported || merged.providerProfiles.empty()) {
+        merged = GetSharedSettings().translation;
+    }
+    merged.enabled = settings.enabled;
+    merged.selectionCopyFallbackEnabled = settings.selectionCopyFallbackEnabled;
+    merged.ocrRoute = settings.ocrRoute;
+    merged.sourceLanguage = settings.sourceLanguage;
+    merged.targetLanguage = settings.targetLanguage;
+    merged.showSourceText = settings.showSourceText;
+    merged.preserveParagraphs = settings.preserveParagraphs;
+    merged.resultOnTop = settings.resultOnTop;
+    merged.showWindowBorder = settings.showWindowBorder;
+    merged.sourceFontSize = settings.sourceFontSize;
+    merged.sourcePreviewZoomFactor = settings.sourcePreviewZoomFactor;
+    merged.translationPreviewZoomFactor = settings.translationPreviewZoomFactor;
+    merged.activeProviderId = settings.activeProviderId;
+    merged.activePromptId = settings.activePromptId;
+    // The page draft is in memory only; disk persistence and shared-settings
+    // updates are handled by the outer settings window through CommitSettingsPatch.
+    state->draft = merged;
+    return &state->draft;
+}
+
+void AcceptTranslationPageCommit(HWND page, const TranslationSettings& committed) {
+    if (!page) return;
+    auto* state = reinterpret_cast<PageState*>(GetWindowLongPtrW(page, GWLP_USERDATA));
+    if (!state) return;
+    state->draft = committed;
+    state->managedProviderBaseline = committed.activeProviderId;
+    state->managedPromptBaseline = committed.activePromptId;
+}
+
 
 } // namespace translation

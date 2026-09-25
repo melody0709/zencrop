@@ -35,6 +35,10 @@ bool IsChinese() {
     return g_chinese;
 }
 
+bool IsSystemChinese() {
+    return DetectChineseSystem();
+}
+
 const wchar_t* AppName() { return L"ZenCrop"; }
 const wchar_t* TrayTip() { return g_chinese ? L"ZenCrop（右键退出）" : L"ZenCrop (Right click to exit)"; }
 const wchar_t* AlreadyRunning() { return g_chinese ? L"ZenCrop 已在运行。" : L"ZenCrop is already running."; }

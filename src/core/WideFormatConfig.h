@@ -18,43 +18,6 @@ inline std::wstring WideFormatHotkeyJson(
         key);
 }
 
-inline std::wstring WideFormatGeneralSettingsJson(
-    const wchar_t* langStr, const wchar_t* showTitlebarLit)
-{
-    return std::format(
-        L"  \"general\": {{\n    \"language\": \"{}\",\n    \"showTitlebar\": {}\n  }}",
-        langStr ? langStr : L"",
-        showTitlebarLit ? showTitlebarLit : L"false");
-}
-
-inline std::wstring WideFormatOverlaySettingsJson(
-    const wchar_t* colorHex, int thickness, const wchar_t* cropOnTopLit)
-{
-    return std::format(
-        L"  \"overlay\": {{\n    \"color\": \"{}\",\n    \"thickness\": {},\n    \"cropOnTop\": {}\n  }}",
-        colorHex ? colorHex : L"#000000",
-        thickness,
-        cropOnTopLit ? cropOnTopLit : L"false");
-}
-
-inline std::wstring WideFormatAotSettingsJson(
-    const wchar_t* showBorderLit, const wchar_t* customColorLit,
-    const wchar_t* colorHex, int opacity, int thickness,
-    const wchar_t* roundedCornersLit, int inset)
-{
-    return std::format(
-        L"  \"alwaysOnTop\": {{\n    \"showBorder\": {},\n    \"customColor\": {},\n"
-        L"    \"color\": \"{}\",\n    \"opacity\": {},\n    \"thickness\": {},\n"
-        L"    \"roundedCorners\": {},\n    \"inset\": {}\n  }}",
-        showBorderLit ? showBorderLit : L"false",
-        customColorLit ? customColorLit : L"false",
-        colorHex ? colorHex : L"#000000",
-        opacity,
-        thickness,
-        roundedCornersLit ? roundedCornersLit : L"false",
-        inset);
-}
-
 inline std::wstring WideFormatJsonIndexOpen(int index)
 {
     return std::format(L"{{\"index\":{}", index);

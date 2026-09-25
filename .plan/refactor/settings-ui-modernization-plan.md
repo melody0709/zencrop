@@ -73,8 +73,9 @@ ZenCrop 当前的设置界面继承自传统的 Win32 `PropertySheetW` 属性页
 ## 2. 重构目标与核心设计原则
 
 1. **减少重复布线**：控件创建、加载、变更通知与布局集中在对应页面；新增字段仍需定义、文案、持久化和 UI 绑定，不以固定修改处数作为验收指标。
-2. **现代宽屏与工作区安全**：
-   - 采用 **860×680 DIP** 作为理想基准尺寸，同时强制接入 **Windows 工作区安全钳位**，保证在 1080p @ 150% 等高缩放笔记本屏幕上底部按钮绝对不被任务栏遮挡。
+2. **精致比例、紧凑排布与按需滚动**：
+   - 采用 **560×620 DIP** 作为黄金比例基准尺寸（由 860×680 收敛优化：宽度 560 DIP 让 6 个 Tab 饱满横跨 Tab 栏，消除右侧空洞；高度 620 DIP 配合截图标注页排布精简与动态滚动条隐藏 `ShowScrollBar(needScroll)`，页面仅在内容超出时显示滚动条；六页在不同 DPI 下是否均无需滚动仍待实机验收）。
+   - 强制接入 **Windows 工作区安全钳位**与 **`WM_GETMINMAXINFO` 最小尺寸限制**（`520×480 DIP`），保证在各种高缩放笔记本屏幕上底部按钮绝对不被任务栏遮挡，且无法被缩小至控件塌陷。
 3. **保持既有信息架构并明确快捷键行为变更**：
    - 维持原有 6 个 Tab 命名与顺序完全不变：`General`、`ZenCrop`、`Always On Top`、`OCR`、`Screenshot`、`Translate`。
    - 所有快捷键留在现有的各个 Tab 内部。
@@ -147,7 +148,7 @@ struct SettingsDraft {
 
 为主窗口新增一个**窄入口**（例如 `CommitSettingsPatch`），复用 `Settings.cpp` 现有写锁、读写及序列化逻辑，不再依次调用多个 `Save...Settings`：
 
-1. 在同一把设置写锁内读取最新 `settings.json`；保留未识别的顶层数据及受更新版 schema 保护的翻译段。
+1. 在同一把设置写锁内读取最新 `settings.json`；保留未识别的顶层数据及受更新版 schema 保护的翻译段。 该约束由 L0 `AssembleSettingsJson` 统一实现：六个 `Save*Settings`、`CommitSettingsPatch` 与翻译层 `SaveTranslationSettings` 共用同一装配入口。
 2. 对每个待改字段比较“当前磁盘值”和草稿基线值。若当前值既不同于基线、也不同于待提交值，返回字段冲突，保持窗口打开；用户可重新加载或显式决定覆盖，**不得静默整域覆盖**。
 3. 把无冲突的字段补丁应用到最新值；用合并后的当前热键与复制兜底状态做跨页校验，再序列化并**一次**原子替换配置文件，更新 `GetSharedSettings()`。没有 JSON 字段变化时不重写文件。
 4. **严格保证 L0 纯度**：`CommitSettingsPatch` 在 `Settings.cpp`（L0）内仅执行三方比对合并、跨页校验（热键冲突、Ctrl+C 保全）、JSON 原子写盘及 `GetSharedSettings()` 内存更新。热键重新注册、AOT 边框状态刷新、Llama 进程启停等运行时副作用，严禁写入 L0，必须在 L0 写盘成功后由 L4 设置窗口统一调度与触发；不得执行 `GetSharedSettings() = draft.shared` 或把某一域的旧快照整份赋回。
@@ -203,6 +204,23 @@ sequenceDiagram
 - **翻译子窗的写入实现**：服务商列表、提示词列表与活动项按语义字段提交；现有子窗内整份 `SaveTranslationSettings(merged)` 也需迁入同一冲突/合并入口，不能只修外层主窗口。凭据写入失败后的现有恢复逻辑保留。
 - **OCR 文档与 PP-OCRv6 子窗**：`IDD_OCR_DOC_OPTIONS` 与 `IDD_OCR_PPOCRV6_OPTIONS` 属于纯配置参数抽屉，应直接传入外层草稿的 `ocrPending` 引用。子窗 OK 仅将子窗中的控件状态同步更新到内存中的 `ocrPending` 并标记草稿置脏，子窗 Cancel 则丢弃子窗修改；最终由主窗口的“应用/确定”统一切入写盘与回滚。这样彻底避免破坏主窗的取消语义，并杜绝不必要的单字段伪冲突。
 - **模型下载**：网络和文件 I/O 立即生效，不属于设置取消范围；下载成功后只把返回的模型路径更新到当前草稿，路径仍须由主窗应用才持久化。子窗确认、下载等独立提交边界应在按钮附近用简短状态文案告知用户。
+- **子 Settings 视觉规范与统一排布**：
+  1. **对话框尺寸族系（紧凑化 276 族系）**：
+     - Translate Providers：`276 × 216` DLU（优化原 320×260 与 280×304 细长高耸形态，屏幕尺寸收敛至 ~420×460px）
+     - Translate Prompts：`276 × 216` DLU（优化原 320×260 与 260×320）
+     - Document Options：`276 × 245` DLU（优化原 320×276 与 280×346，紧凑化高收缩）
+     - PP-OCRv6 Options：`276 × 195` DLU（优化原 320×218 与 320×248，紧凑无空白）
+     - OCR Model Download：`310 × 195` DLU（优化原 360×220）
+  2. **行高与控件高度对齐（口径修正）**：全部子对话框统一采用 Windows 原生标准对话框字体 **`FONT 9, "Segoe UI"`**；单行输入框与复选框用 **`11 DLU`**、底部按钮用 **`13 DLU`**。DLU→像素换算为 `MulDiv(dlu, baseunitY, 8)`，Segoe UI 9pt 的 `baseunitY = 16`，因此 11 DLU = **22px**（与主 Settings 的 `m_rowH = Scale(22)` 逐像素一致）、13 DLU = **26px**（与主 Settings 的 `Scale(26)` 按钮一致）。此前方案与文档写的"13 DLU = 22px"是换算疏漏，已更正。
+  3. **网格与对齐网络**：参数子窗采用严格网格约束（如 PP-OCRv6 双列对称网格，左列 X=14/82，右列 X=150/200-220，数字输入框固定 46 DLU 宽；Document Options 所有下拉框统一对齐）。
+  4. **Hint 文本规范**：状态文本、次级说明（如 Stored securely、Resolved: ...、Preset 说明）统一采用 **8pt Segoe UI** 字体，并在 `WM_CTLCOLORSTATIC` 中拦截着色为次级灰（`RGB(110, 110, 110)`），保证视觉层级清晰、主次分明。
+  5. **统一智能锚定弹出算法（对标划词翻译，支持右/左/下/上四向自适应跟随与工作区安全钳位）**：
+     - 彻底弃用各个子页面各自拷贝的散装逻辑，统一收敛至 L0 通用方法 `PositionWindowNearAnchor(HWND hwnd, HWND anchorWnd)`；
+     - **根所有者精准反解**：修复此前使用 `GetAncestor(hDlg, GA_ROOTOWNER)` 跨越 `SettingsWindow` 误抓到隐藏主托盘窗口导致坐标飞向屏幕右上角（`x=1920, y=0`）的严重缺陷，精准层级解包定位到可见的 `SettingsWindow` 作为宿主锚点；
+     - **PropertySheet 默认居中覆盖拦截**：针对 `PropertySheetW` 在初始化后强行自我居中覆盖主界面的行为，通过在 `PSCB_INITIALIZED` 中子类化挂接 `WM_SHOWWINDOW` 与 `WM_APP + 101/102` 双重后置消息，在尺寸确定后将窗口移向右侧，彻底终结 100% 遮挡主窗口问题；
+     - **四向自适应排列管线**：对标划词翻译窗口的跟随算法，按 `Right (首选)` -> `Left (次选)` -> `Below (下选)` -> `Above (备选)` 依次探测显示器工作区空间，四向均受限时自动选拔可用空间最大的一侧；
+     - **工作区绝对钳位**：严密应用 `ClampWindowCoordinate`，杜绝任何偏位、离屏或标题栏被遮挡。
+  6. **动态折叠无空洞**：在 `TranslationProviderSettingsPage` 中，针对绝大多数不需要 Region 字段的服务商，通过 `AdjustProviderRegionShift` 平滑将后续控件（Reasoning、API Key、Advanced JSON、Data Destination 等）向上移动一行距离，自动填补空白洞；切换至需要 Region 的服务商时平滑恢复。
 
 ---
 
@@ -215,7 +233,7 @@ sequenceDiagram
 │                              ZenCrop 设置                              │
 ├─ General ─┬─ ZenCrop ─┬─ Always On Top ─┬─ OCR ─┬─ Screenshot ─┬─ Translate ─┤
 │           │           │                 │       │              │             │
-│  (Tab 宿主内容区域 860×560 DIP，超长内容支持纵向滚动 VScroll)                 │
+│  (Tab 宿主内容区域随 560×620 DIP 外窗伸缩，超长内容支持纵向滚动 VScroll)                 │
 │                                                                        │
 ├────────────────────────────────────────────────────────────────────────┤
 │ [状态提示：就绪 / 保存成功]                        [ 应用 ] [ 确定 ] [ 取消 ] │
@@ -306,24 +324,22 @@ sequenceDiagram
 
 ### 1. 理想尺寸与工作区钳位
 
-`860×680 DIP` 只是首选**外窗**尺寸。初次打开时可在目标显示器工作区居中；跨屏 `WM_DPICHANGED` 时先使用系统建议矩形，再按 `GetMonitorInfoW(...).rcWork` 钳位大小与位置，**不得每次拖拽都重新居中**。工作区可能有负坐标，任务栏可能在任何边；尺寸还需计入非客户区、Tab 与底部操作栏，不能只比较 680 DIP 和工作区高度。
+基准尺寸设定为 **`560×620 DIP`**。当前设计按单列纵向面板排布：ZenCrop 各页面均为单列纵向配置面板（控件有效右边界约 440px），560 DIP 宽度使得 6 个 Tab 标题横跨宽度（约 480px）与 Tab 栏几乎完全吻合，左侧页边距 18px、控件列自适应填满剩余宽度（`ctrlW = clientW - ctrlX - padX`，下限 240px；560 DIP 下实测约 378px），故不再有右侧大片留白；620 DIP 高度配合截图标注页排布精简（指针与取色器复选框并排、纵向间距紧凑化由 250 DLU 压至 180 DLU）以及子容器动态滚动条隐藏机制（`ShowScrollBar(SB_VERT, needScroll)`），使页面仅在内容超出时显示垂直滚动条；六页在不同 DPI 下是否均无需滚动仍待实机验收。初次打开时在目标显示器工作区居中；跨屏 `WM_DPICHANGED` 时先使用系统建议矩形，再按 `GetMonitorInfoW(...).rcWork` 钳位大小与位置，**不得每次拖拽都重新居中**。通过 `WM_GETMINMAXINFO` 锁定最小追踪尺寸为 `520×480 DIP`。
 
 | 布局量 | 首选值（96 DPI） | 缩小时的处理 |
 | :--- | :--- | :--- |
-| 外窗 | 860×680 DIP | 宽高分别按目标显示器 `rcWork` 钳位 |
-| 底部操作栏 | 64 DIP | 固定在客户区底部，必要时按钮收紧间距 |
-| 页内左右边距 | 24 DIP | 仍保留可读边距，不用固定绝对 X 坐标 |
-| 双列标签 | 140 DIP | 文字测量不足或窗口变窄时转为上下排 |
-| 单行控件 | 首选 380–540 DIP | 以客户区剩余宽度伸缩，路径框优先吃满宽度 |
-| 普通行 | 约 30 DIP 高、44 DIP 步进 | 多行标签和路径/按钮组合按实际高度增加 |
+| 外窗 | 560×620 DIP | 宽高分别按目标显示器 `rcWork` 钳位，且受 520×480 最小尺寸保护 |
+| 底部操作栏 | 46 DIP | 固定在客户区底部，按钮紧凑靠右排列，状态提示居左 |
+| 页内左右边距 | 左 18 DIP；控件列自适应（下限 240 DIP） | 窗口变窄时控件列收缩到下限，长路径靠编辑框横向滚动 |
+| 标签与表单 | 紧凑单列 / 260 DLU | 截图标注页并排精简，内容溢出时按需显示滚动条 |
 
 窗口尺寸算法分清两个入口（首次打开 vs 跨屏 DPI）：
 
 ```text
-首次打开：用 860×680 DIP 计算首选尺寸 → 限制到目标 rcWork → 居中。
+首次打开：用 560×620 DIP 计算首选尺寸 → 限制到目标 rcWork → 居中。
 跨屏 DPI：从 WM_DPICHANGED 的建议 RECT 起步 → 限制宽高 →
           把 left/top 钳进目标 rcWork；不要再次居中。
-窗口手动缩放：尊重用户尺寸，只保证最小可操作客户区和可见的底部按钮。
+窗口手动缩放：尊重用户尺寸，受 WM_GETMINMAXINFO (520×480 DIP) 保护，只保证最小可操作客户区和可见的底部按钮。
 ```
 
 窗口变矮时，仅内容区滚动；底部“应用/确定/取消”始终在客户区内，并能通过键盘抵达。窗口变窄时按实际**客户区宽度**计算行布局：足够宽用标签/控件双列，窄屏改为标签在上、控件在下，长路径/按钮组合可伸缩或换行。不能使用固定绝对 X 坐标定位行内按钮：1366px 宽屏在 200% 下可用逻辑宽度不足 700 DIP，固定坐标会直接裁掉按钮。
@@ -339,53 +355,55 @@ sequenceDiagram
 
 ---
 
-## 7. 按页重排布局与控件绑定
+### 7. 按页重排布局与统一控件规范 (SettingsPageLayout)
 
-先在一页纵向切片中用现有 Win32 控件实现创建、加载、变更通知、字段补丁与按宽度/DPI 排版。OCR 模式变化时，页面按当前模式枚举可见行；隐藏行不占高度，统一计算行矩形与内容总高，再移动现有 HWND 并更新滚动范围。Tab 切换、窗口尺寸变化与 DPI 变化调用同一页面布局函数，避免“只在初始化时计算一次”。
+为解决各个页面快捷键大小不一、行高间距杂乱、Translate 页溢出滚动以及新增行/新增 Tab 繁琐的问题，系统落地了统一的 **`SettingsPageLayout`** 流式表单排版引擎：
 
-原方案的声明式表单接口仍是**目标形态的候选**，不是先于页面存在的基建任务。若简单页与 OCR 页都出现重复的创建、加载、字段变更与重排代码，再抽取到 `SettingsFormBuilder`；只有确实需要时才加入 `VisibleWhen`、`EnabledWhen` 和复合谓词。
+### 1. 统一设计尺度 (Design Tokens)
+- **基准 DPI 坐标**：基于 96 DPI，全局统一使用 `Scale(val) = MulDiv(val, dpi, 96)`。
+- **外边距与列对齐**：左边距 `padX = 18px`，顶边距 `padY = 18px`，标签列宽 `labelW = 110px`，控件起始列 `ctrlX = padX + labelW + 8 = 136px`。
+- **控件列宽**：标准下拉框与单行编辑框 `ctrlW = clientW - ctrlX - padX`（下限 240px），随窗口宽度自适应，避免右侧留白与长路径/长文案被截断。
+- **舒展行高与垂直节奏**：控件高度统一为 `rowH = 22px`，行间距为 `rowGap = 14px`，标准行步长 `rowStep = 36px`（22px 控件 + 14px 垂直留白）。相比旧版紧凑的 8px 间距，控件间的点击范围与视觉层次更舒展，彻底告别“紧凑拥挤”感。
+- **Hint 辅助提示文本规范**：
+  - **小字号**：采用专用的 `hHintFont`（8pt Segoe UI，相比主窗口 9pt 及页面 10pt 字体缩小一档），呈现更精致从属的说明文字。
+  - **灰色提示色彩**：父页面子类化与 DialogProc 在 `WM_CTLCOLORSTATIC` 中拦截 Hint 控件，将其文本着色为现代标准次级灰 `RGB(110, 110, 110)` 并返回透明画刷。
+  - **智能布局与紧凑关联**：通过 `AddCheckboxWithHint`，Hint 与上方复选框保持紧密（3px），且左侧缩进 20px 避开方框、与复选框文字精确对齐；控件高度充足（16px）杜绝任何文本下半部截断。
+- **统一快捷键规范**：
+  - 全局 9 个快捷键编辑框（ZenCrop 4个、AOT 1个、OCR 2个、Screenshot 1个、Translate 1个）统一为 `高度 22px`、宽度占满控件列（右侧留 6px + 24px 清除按钮）。
+  - 清除按钮 `[ X ]` 统一为紧凑方形 `宽度 24px × 高度 22px`，与编辑框右侧保持 `6px` 间距，彻底消除旧模板中 20 DLU（~35px）巨型突兀方块。
+- **统一按钮尺寸**：
+  - 颜色拾取 "Choose..."：`72px × 22px`。
+  - 模型/服务商管理 "Manage..."：`72px × 22px`（OCR 模型管理为 `110px × 22px`）。
+  - 路径浏览 "..."：`32px × 22px`。
 
-```mermaid
-classDiagram
-    class SettingsWindow {
-        +ApplyPatch() Result
-        +Relayout(UINT dpi, RECT client) void
-    }
-    class PageLayout {
-        +Relayout(UINT dpi, int clientWidth) int
-        +Load(const SettingsDraft& draft) void
-        +CollectEditedFields(SettingsDraft& draft) void
-    }
-    class SettingsFormBuilder {
-        +Init(HWND parent) void
-        +AddCheckbox(...) Binding&
-        +AddEdit(...) Binding&
-        +AddSlider(...) Binding&
-        +AddColorPicker(...) Binding&
-        +AddHotkey(...) Binding&
-        +AddCombo(...) Binding&
-        +AddPassword(...) Binding&
-        +AddSection(wstring title) void
-        +LoadAll(const SettingsDraft& draft) void
-        +CollectEditedFields(SettingsDraft& draft) void
-        +Relayout(UINT dpi, int clientWidth) int
-        +VisibleWhen(predicate) Binding&
-        +EnabledWhen(predicate) Binding&
-        +OnChanged(callback) Binding&
-    }
-    SettingsWindow *-- PageLayout
-    PageLayout ..> SettingsFormBuilder : 仅在重复成立后提取
+### 2. 声明式表单排版 API
+`SettingsPageLayout` 提供声明式行添加方法，无需在 `.rc` 中做手工算术：
+```cpp
+// 1. 标准标签+控件行
+layout.AddRow(labelId, ctrlId);
+// 2. 带尾部按钮行（如 下拉框 + "Manage..." 或 路径 + "..."）
+layout.AddRowWithButton(labelId, ctrlId, btnId, btnWidth);
+// 3. 快捷键行（Label + HotkeyEdit + [X] ClearButton）
+layout.AddHotkeyRow(labelId, editId, clearId);
+// 4. 颜色行（Label + 预览块 + "Choose..."）
+layout.AddColorRow(labelId, previewId, chooseBtnId);
+// 5. 滑块行（Label + Trackbar + 数值标签）
+layout.AddSliderRow(labelId, sliderId, valLabelId);
+// 6. 单行复选框 / 双列复选框 / 复选框从属Hint
+layout.AddCheckbox(checkId);
+layout.AddCheckboxWithHint(checkId, hintId, hintHeight);
+layout.AddCheckboxPair(check1Id, check2Id);
+// 7. 完成排版并自动按需控制滚动条
+layout.Finish();
 ```
 
-原方案解决 OCR 显隐空洞的核心计算保留：先根据当前 `OcrSettings::mode` 和其他条件过滤可见行；只给可见行累加高度；随后批量移动控件、显示/隐藏控件并更新 `WS_VSCROLL` 的范围。`VisibleWhen` 若被抽取，应只决定排版和可见性，**不能**凭控件隐藏就丢掉未提交的字段值。`EnabledWhen` 只控制可操作性，不能与可见性混用。
-
-候选绑定写法仍可表达原方案的复合联动，例如 AOT 边框的 `showBorder && customColor` 才启用色块、OCR `mode == L"paddle_cloud"` 才显示 URL。差别是绑定必须输出**字段补丁**，而不是 `SaveAll(draft)` 后把整份域结构体写盘；这个安全约束优先于语法简洁。
-
-原来的批量 ID 分配动机同样保留：不要在 `AddColorPicker(AllocId(), AllocId(), ...)` 的多个实参里修改同一个计数器；先显式取得两个 ID，再创建拾色按钮和预览块。可直接复用已定义的 `IDC_*`，无需为了这个问题单独引入模板分配器。
-
-`BeginDeferWindowPos` 可用于批量移动，但不等于“原子提交且必然无闪烁”；绘制抑制、显示隐藏、滚动位置和焦点恢复以实际截图与交互验收。控件 ID 使用现有常量或顺序分配，避免在同一调用的多个参数里递增分配器。`HotkeyEdit` 当前自行调用 `PropSheet_Changed`，接入新宿主前要解除它对 PropertySheet 父窗口的假设，由页面 `EN_CHANGE` 统一处理状态变化。
-
-只有在第二、第三页出现真实重复时，才抽取小的行布局或字段绑定辅助函数；不预先承诺 `ISettingsTab` 接口、泛型 `ControlBinding`、任意谓词引擎及完整表单 DSL。
+### 3. 加行与新增 Tab 的极简范式
+- **加行**：在对应 `Relayout<Page>` 函数中插入单行 `layout.AddRow(...)`、`layout.AddCheckboxWithHint(...)` 或 `layout.AddHotkeyRow(...)` 即可；引擎自动处理向下顺移和 DPI 换算，无需手动计算累加 Y 坐标或修改 `.rc` 绝对坐标。
+- **新增 Tab**：
+  1. `.rc` 仅需声明控件 ID 与基础样式（坐标可为任意占位符）。
+  2. 实现页面的 `RelayoutNewPage`，用 `SettingsPageLayout` 依次声明各行并调用 `layout.Finish()`。
+  3. 在 `RelayoutPageForTab` 中加入分发项。
+  4. 引擎自动计算内容物理高度 `totalH`，并在 `totalH > clientH` 时激活垂直滚动条；各 DPI 下的六页实际滚动状态仍需实机验收。
 
 ---
 

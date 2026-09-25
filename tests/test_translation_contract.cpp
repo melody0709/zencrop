@@ -16,6 +16,7 @@
 #include "translation/TranslationUntranslatable.h"
 #include "translation/MachineTranslationEngine.h"
 #include "ocr/ui/dashboard/DashboardTranslationCache.h"
+#include "ocr/ui/SettingsDialogInternal.h"
 #include "translation/TranslationSettingsCodec.h"
 #include "window/AlwaysOnTop.h"
 #include "ocr/LocalRaster.h"
@@ -5628,6 +5629,49 @@ int TestSettingsRoundTrip() {
     }
     if (!SameTranslation(LoadTranslationSettings(), expected)) return 23;
 
+    // Management dialogs must merge their own fields with newer edits made by
+    // the translation result window while a dialog remains open.
+    TranslationSettings providerBaseline = LoadTranslationSettings();
+    TranslationSettings providerPending = providerBaseline;
+    auto* editedProvider = translation::FindActiveTranslationProvider(providerPending);
+    if (!editedProvider) return 129;
+    editedProvider->model = L"deepseek-v4-flash";
+    TranslationSettings external = providerBaseline;
+    external.resultOnTop = !external.resultOnTop;
+    if (!SaveTranslationSettings(external)) return 129;
+    TranslationSettings managedSaved;
+    std::wstring managedError;
+    if (!CommitTranslationManagedSettings(providerBaseline, providerPending,
+            TranslationManagedArea::Providers, &managedSaved, &managedError) ||
+        managedSaved.resultOnTop != external.resultOnTop ||
+        !translation::FindActiveTranslationProvider(managedSaved) ||
+        translation::FindActiveTranslationProvider(managedSaved)->model !=
+            editedProvider->model) return 130;
+
+    providerBaseline = LoadTranslationSettings();
+    providerPending = providerBaseline;
+    providerPending.providerProfiles.front().displayName += L" mine";
+    external = providerBaseline;
+    auto* externalProvider = translation::FindActiveTranslationProvider(external);
+    if (!externalProvider) return 131;
+    externalProvider->model = L"deepseek-v4-pro";
+    if (!SaveTranslationSettings(external)) return 131;
+    if (CommitTranslationManagedSettings(providerBaseline, providerPending,
+            TranslationManagedArea::Providers, &managedSaved, &managedError) ||
+        managedError.find(L"providerProfiles") == std::wstring::npos) return 132;
+
+    TranslationSettings promptBaseline = LoadTranslationSettings();
+    TranslationSettings promptPending = promptBaseline;
+    promptPending.activePromptId = L"builtin.natural.v1";
+    external = promptBaseline;
+    external.sourceLanguage = L"en";
+    if (!SaveTranslationSettings(external)) return 133;
+    if (!CommitTranslationManagedSettings(promptBaseline, promptPending,
+            TranslationManagedArea::Prompts, &managedSaved, &managedError) ||
+        managedSaved.sourceLanguage != L"en" ||
+        managedSaved.activePromptId != L"builtin.natural.v1") return 134;
+    if (!SaveTranslationSettings(expected)) return 135;
+
     // A failed replacement must leave the last complete settings file intact.
     // Occupying the temporary-file path with a directory forces CreateFileW to
     // fail without changing the production settings path.
@@ -7122,6 +7166,7 @@ int TestUntranslatableSegmentContract() {
     settings.enabled = true;
     settings.sourceLanguage = L"auto";
     settings.targetLanguage = L"zh-Hans";
+    settings.preserveParagraphs = true;
     if (!SaveTranslationSettings(settings)) return 803;
 
     HWND messageWindow = CreateTranslationTestMessageWindow();
@@ -7328,6 +7373,88 @@ int TestUntranslatableSegmentContract() {
     return 0;
 }
 
+int TestSettingsPageScrollRelayout() {
+    HWND page = CreateWindowExW(0, L"STATIC", L"", WS_POPUP | WS_VSCROLL,
+        0, 0, 220, 130, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+    if (!page) return 1;
+    HWND child = CreateWindowExW(0, L"BUTTON", L"Control", WS_CHILD | WS_VISIBLE,
+        10, 180, 80, 20, page, nullptr, GetModuleHandleW(nullptr), nullptr);
+    if (!child) {
+        DestroyWindow(page);
+        return 2;
+    }
+
+    settings_ui::UpdatePageScroll(page, 300);
+    SCROLLINFO scroll = { sizeof(scroll), SIF_POS };
+    scroll.nPos = 80;
+    SetScrollInfo(page, SB_VERT, &scroll, TRUE);
+    ScrollWindowEx(page, 0, -80, nullptr, nullptr, nullptr, nullptr, SW_SCROLLCHILDREN);
+
+    // Relayout resets child coordinates; the shared scroll helper must reapply
+    // the retained scrollbar position.
+    MoveWindow(child, 10, 180, 80, 20, TRUE);
+    settings_ui::UpdatePageScroll(page, 300);
+    POINT topLeft = {};
+    MapWindowPoints(child, page, &topLeft, 1);
+    scroll.fMask = SIF_POS;
+    GetScrollInfo(page, SB_VERT, &scroll);
+    const bool relayoutRestored = scroll.nPos == 80 && topLeft.y == 100;
+
+    scroll.nPos = 0;
+    SetScrollInfo(page, SB_VERT, &scroll, TRUE);
+    MoveWindow(child, 10, 180, 80, 20, TRUE);
+    settings_ui::RestorePageScroll(page, 80);
+    GetScrollInfo(page, SB_VERT, &scroll);
+    topLeft = {};
+    MapWindowPoints(child, page, &topLeft, 1);
+    const bool rebuildRestored = scroll.nPos == 80 && topLeft.y == 100;
+
+    scroll.nPos = 0;
+    SetScrollInfo(page, SB_VERT, &scroll, TRUE);
+    MoveWindow(child, 10, 180, 80, 20, TRUE);
+    settings_ui::UpdatePageScroll(page, 150);
+    settings_ui::RestorePageScroll(page, 80);
+    GetScrollInfo(page, SB_VERT, &scroll);
+    topLeft = {};
+    MapWindowPoints(child, page, &topLeft, 1);
+    RECT client = {};
+    GetClientRect(page, &client);
+    const int clamped = (std::clamp)(80, 0,
+        150 - static_cast<int>(client.bottom - client.top));
+    const bool shorterPageClamped = scroll.nPos == clamped && topLeft.y == 180 - clamped;
+    DestroyWindow(page);
+    return relayoutRestored && rebuildRestored && shorterPageClamped ? 0 : 3;
+}
+
+int TestSettingsHostTabTraversal() {
+    HWND host = CreateWindowExW(0, L"#32770", L"", WS_POPUP | WS_VISIBLE,
+        0, 0, 360, 220, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+    if (!host) return 1;
+    HWND page = CreateWindowExW(WS_EX_CONTROLPARENT, L"#32770", L"",
+        WS_CHILD | WS_VISIBLE, 0, 0, 250, 150, host, nullptr,
+        GetModuleHandleW(nullptr), nullptr);
+    HWND first = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+        10, 10, 100, 20, page, nullptr, GetModuleHandleW(nullptr), nullptr);
+    HWND last = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+        10, 40, 100, 20, page, nullptr, GetModuleHandleW(nullptr), nullptr);
+    HWND apply = CreateWindowExW(0, L"BUTTON", L"Apply", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+        10, 170, 80, 25, host, nullptr, GetModuleHandleW(nullptr), nullptr);
+    int result = 0;
+    if (!page || !first || !last || !apply) {
+        result = 2;
+    } else {
+        SetFocus(last);
+        MSG tab = {};
+        tab.hwnd = last;
+        tab.message = WM_KEYDOWN;
+        tab.wParam = VK_TAB;
+        tab.lParam = 1;
+        if (!IsDialogMessageW(host, &tab) || GetFocus() != apply) result = 3;
+    }
+    DestroyWindow(host);
+    return result;
+}
+
 int main() {
     wchar_t testDataDirectory[2] = {};
     if (GetEnvironmentVariableW(
@@ -7348,6 +7475,16 @@ int main() {
             GetThreadDpiAwarenessContext());
         std::cout << "visual dpi process=" << processDpi
                   << " awareness=" << static_cast<int>(awareness) << "\n";
+    }
+    const int scrollResult = TestSettingsPageScrollRelayout();
+    if (scrollResult != 0) {
+        std::cerr << "settings page scroll relayout failed: " << scrollResult << "\n";
+        return scrollResult;
+    }
+    const int tabResult = TestSettingsHostTabTraversal();
+    if (tabResult != 0) {
+        std::cerr << "settings host tab traversal failed: " << tabResult << "\n";
+        return tabResult;
     }
     const int languageResult = TestLanguageAndToolbarContract();
     if (languageResult != 0) {

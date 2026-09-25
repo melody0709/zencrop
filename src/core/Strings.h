@@ -7,6 +7,10 @@ void InitLanguage();
 void SetLanguage(bool chinese);
 bool IsChinese();
 
+// Whether the OS UI language is Chinese. Used to preview the "Auto" language choice
+// without deriving it from the current preview state.
+bool IsSystemChinese();
+
 const wchar_t* AppName();
 const wchar_t* TrayTip();
 const wchar_t* AlreadyRunning();

@@ -6,7 +6,9 @@ ZenCrop 是对 [PowerToys Crop And Lock](https://github.com/microsoft/PowerToys/
 
 ## v3.1.0 更新重点
 
-- **设置界面现代化重构**: 现代原生设置宿主与子容器解耦架构，字段级原子草稿提交与安全冲突检测，Per-Monitor DPI v2 自适应栅格，完整对齐 6 大 Tab 功能等价。
+- **设置界面全面现代化重构**: 淘汰旧版 Win32 PropertySheet 属性页，升级为原生多容器单窗口架构，560×620 DIP 基准尺寸与按需纵向滚动，字段级原子补丁提交（`CommitSettingsPatch`）彻底避免跨模块全量覆盖；全部写入路径共用 `AssembleSettingsJson` 装配，未被接管的段与未知顶层键不再丢失。
+- **子设置窗口视觉规范统一**: 全部子对话框统一切换为 9pt Segoe UI，单行输入框/复选框 11 DLU（96 DPI 下 22px，与主设置行高一致）、按钮 13 DLU（26px，与主设置按钮一致），尺寸全面收拢至 276 族系，动态折叠 Region 空白断层。
+- **四向自适应智能锚定定位算法**: 统一落地 `PositionWindowNearAnchor`（对标划词翻译，支持右/左/下/上四向自适应排列与工作区绝对钳位），根治此前子窗口飞向显示器右上角及 PropertySheet 强行居中 100% 遮挡主窗口的两大顽疾。
 - **版本全面升级**: 应用、安装包与文档统一升级至 `v3.1.0`。
 
 ## v3.0.0 更新重点

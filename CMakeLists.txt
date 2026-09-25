@@ -129,6 +129,7 @@ add_library(zencrop_core STATIC
     src/core/Settings.h src/core/Settings.cpp
     src/core/ResourceIds.h
     src/core/SettingsHotkeyDraft.h
+    src/core/SettingsPageInit.h
     src/core/Sha256.h src/core/Sha256.cpp
     src/core/ClipboardUtils.h src/core/ClipboardUtils.cpp
     src/core/HttpTransport.h
@@ -403,7 +404,9 @@ target_link_libraries(zencrop_translate PUBLIC
 
 # ── L4 Feature UI static library ───────────────────────────────────────────
 add_library(zencrop_ui STATIC
-    src/ocr/ui/SettingsDialog.h src/ocr/ui/SettingsDialog.cpp
+    src/ocr/ui/SettingsDialog.h src/ocr/ui/SettingsDialogInternal.h src/ocr/ui/SettingsPageLayout.h
+    src/ocr/ui/SettingsDialog.cpp src/ocr/ui/SettingsPages.cpp
+    src/ocr/ui/SettingsSimplePages.cpp src/ocr/ui/SettingsOcrPage.cpp
     src/ocr/ui/OcrResultWindow.h src/ocr/ui/OcrResultWindow.cpp
     src/ocr/ui/OcrProgressWindow.h src/ocr/ui/OcrProgressWindow.cpp
     src/ocr/ui/OcrCopyToastWindow.h src/ocr/ui/OcrCopyToastWindow.cpp

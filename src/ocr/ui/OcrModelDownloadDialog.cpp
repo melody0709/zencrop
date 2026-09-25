@@ -1,6 +1,8 @@
 #include "OcrModelDownloadDialog.h"
 #include "core/ResourceIds.h"
 #include "core/WideFormatNumbers.h"
+#include "core/GdiHandles.h"
+#include "core/Utils.h"
 
 #include "ocr/model_download/OcrModelDownloadCatalog.h"
 #include "ocr/model_download/OcrModelDownloadService.h"
@@ -32,6 +34,7 @@ struct ModelDialogState {
     bool hasResult = false;
     bool completionCaptured = false;
     bool closeWhenStopped = false;
+    zencrop::ScopedHFONT hHintFont;
 };
 
 ModelDialogState* State(HWND dialog)
@@ -278,10 +281,23 @@ INT_PTR CALLBACK ModelDownloadDialogProc(
 {
     switch (message) {
     case WM_INITDIALOG: {
+        PositionWindowNearAnchor(dialog, GetParent(dialog));
         auto* args = reinterpret_cast<ModelDialogArgs*>(lParam);
         auto* state = new ModelDialogState();
         state->output = args ? args->output : nullptr;
         SetWindowLongPtrW(dialog, DWLP_USER, reinterpret_cast<LONG_PTR>(state));
+
+        const UINT dpi = GetDpiForWindow(dialog);
+        state->hHintFont.reset(CreateFontW(-MulDiv(8, dpi, 72), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                                           DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                                           CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI"));
+        if (state->hHintFont) {
+            SendDlgItemMessageW(dialog, IDC_MODEL_DOWNLOAD_SIZE, WM_SETFONT, reinterpret_cast<WPARAM>(state->hHintFont.get()), TRUE);
+            SendDlgItemMessageW(dialog, IDC_MODEL_DOWNLOAD_INSTALLED, WM_SETFONT, reinterpret_cast<WPARAM>(state->hHintFont.get()), TRUE);
+            SendDlgItemMessageW(dialog, IDC_MODEL_DOWNLOAD_STATUS, WM_SETFONT, reinterpret_cast<WPARAM>(state->hHintFont.get()), TRUE);
+            SendDlgItemMessageW(dialog, IDC_MODEL_DOWNLOAD_DETAILS, WM_SETFONT, reinterpret_cast<WPARAM>(state->hHintFont.get()), TRUE);
+        }
+
         SendDlgItemMessageW(dialog, IDC_MODEL_DOWNLOAD_PROGRESS, PBM_SETRANGE32, 0, 10000);
 
         int initialIndex = 0;
@@ -378,6 +394,18 @@ INT_PTR CALLBACK ModelDownloadDialogProc(
             return TRUE;
         }
         break;
+
+    case WM_CTLCOLORSTATIC: {
+        HWND hCtrl = reinterpret_cast<HWND>(lParam);
+        const int id = GetDlgCtrlID(hCtrl);
+        if (id == IDC_MODEL_DOWNLOAD_SIZE || id == IDC_MODEL_DOWNLOAD_INSTALLED || id == IDC_MODEL_DOWNLOAD_STATUS) {
+            HDC hdc = reinterpret_cast<HDC>(wParam);
+            SetBkMode(hdc, TRANSPARENT);
+            SetTextColor(hdc, RGB(110, 110, 110));
+            return reinterpret_cast<INT_PTR>(GetSysColorBrush(COLOR_BTNFACE));
+        }
+        break;
+    }
 
     case WM_CLOSE:
         RequestClose(dialog);

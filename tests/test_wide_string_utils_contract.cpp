@@ -438,17 +438,6 @@ int main() {
         == L"[ToolbarIconRenderer] Loaded PATH_TABLE.tsv: 12 entries\n", "path table count");
     Expect(WideFormatMissingCodepoint(0xE001)
         == L"[ToolbarIconRenderer] Missing codepoint 0xE001\n", "missing cp");
-    Expect(WideFormatGeneralSettingsJson(L"zh", L"true")
-        == L"  \"general\": {\n    \"language\": \"zh\",\n    \"showTitlebar\": true\n  }",
-        "general json");
-    Expect(WideFormatOverlaySettingsJson(L"#FF0000", 2, L"false")
-        == L"  \"overlay\": {\n    \"color\": \"#FF0000\",\n    \"thickness\": 2,\n    \"cropOnTop\": false\n  }",
-        "overlay json");
-    Expect(WideFormatAotSettingsJson(L"true", L"false", L"#00FF00", 80, 3, L"true", 2)
-        == L"  \"alwaysOnTop\": {\n    \"showBorder\": true,\n    \"customColor\": false,\n"
-           L"    \"color\": \"#00FF00\",\n    \"opacity\": 80,\n    \"thickness\": 3,\n"
-           L"    \"roundedCorners\": true,\n    \"inset\": 2\n  }",
-        "aot json");
     Expect(WideFormatHttpJobsEndpointReachable(200)
         == L"Official async jobs endpoint is reachable. (HTTP 200)\n\n"
            L"This test does not submit an OCR job; actual OCR will upload an image and poll by jobId.",
