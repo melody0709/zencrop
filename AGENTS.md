@@ -1,6 +1,6 @@
 # ZenCrop 日常维护规则
 
-架构重构 Stage 0–4、R5 及 C++23 稳定化重构（P0–P6）已于 2026-09-23 全部完成并交付 **v3.0.0**；设置界面现代化重构（UI-A…UI-F）已于 2026-09-25 落地并提交，版本为 **v3.1.0**，但其**实机 UI 验收（多 DPI／双屏／任务栏边／负坐标屏／IME 跨屏）尚未完成**——代码可维护，不得据此宣称 UI-F 已签收。默认处理独立 feature/bug；不要为普通任务读取或回写 EXECUTION、GOAL、ADR、KPI 或历史施工记录，也不要自行重开架构 Stage。
+架构重构 Stage 0–4、R5 及 C++23 稳定化重构（P0–P6）已于 2026-09-23 全部完成并交付 **v3.0.0**；设置界面现代化重构（UI-A…UI-F）已于 2026-09-25 落地并提交，版本为 **v3.1.0**，但其**实机 UI 验收（多 DPI／双屏／任务栏边／负坐标屏／IME 跨屏）尚未完成**——代码可维护，不得据此宣称 UI-F 已签收；设置在 **v3.1.1** 完成读取路径字段表化（见下）。默认处理独立 feature/bug；不要为普通任务读取或回写 EXECUTION、GOAL、ADR、KPI 或历史施工记录，也不要自行重开架构 Stage。
 
 ## 已落地的 C++23 架构规范与守卫（日常维护守则）
 
@@ -15,6 +15,7 @@
   （`SettingsDialog.cpp` 只管宿主生命周期、路由与提交；页面在 `SettingsPages.cpp` / `SettingsSimplePages.cpp` /
   `SettingsOcrPage.cpp`），写盘只能经 L0 `CommitSettingsPatch`，不要新增 `Save*All` 式的整域回写。
   方案与遗留项见 `.plan/refactor/settings-ui-modernization-plan.md`。
+- **设置读写契约**：六段持久化字段（general / alwaysOnTop / overlay / screenshot / ocr / hotkeys）的**读取、写入、字段级合并**共用 `src/core/Settings.cpp` 同一批 `SectionTable` 字段行。`Load*Settings` 只负责取顶层段并调用对应 `Read*Section`，**不得**再逐字段手写键名赋值。与写入故意不同的读取规则（只读夹取范围、非法 token 回退、显式空串、旧别名）就近声明在字段行或该段读取函数的显式后处理里；缺键默认保留结构体当前值，`ocrAlt` 清空、语言与 OCR 值归一化等例外按显式规则处理，**不得**把写入 clamp 当读取规则。方案见 `.plan/refactor/settings-persistence-read-plan.md`。
 
 
 ## ZenCrop 开发参考

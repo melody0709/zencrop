@@ -388,6 +388,19 @@ static std::wstring BuildScreenshotSectionJson(const ScreenshotSettings& setting
 static std::wstring BuildOcrSectionJson(const OcrSettings& settings);
 static std::wstring BuildHotkeySectionJson(const HotkeySettings& settings);
 
+// Section readers, defined below alongside the same field tables. A loader keeps
+// only the "no file / no section" fallback and hands the section text over; every
+// key it knows about is declared in the table, never twice.
+static void ReadGeneralSection(const std::wstring& section, GeneralSettings& settings);
+static void ReadAotSection(const std::wstring& section, AotSettings& settings);
+static void ReadOverlaySection(const std::wstring& section, OverlaySettings& settings);
+static void ReadScreenshotSection(const std::wstring& section, ScreenshotSettings& settings);
+static void ReadOcrSection(const std::wstring& section, OcrSettings& settings);
+static void ReadHotkeySection(const std::wstring& section, HotkeySettings& settings);
+
+// Declared here so the screenshot transform row can read the format back.
+static ScreenshotFormat ParseScreenshotFormat(const std::wstring& value);
+
 GeneralSettings LoadGeneralSettings() {
     GeneralSettings settings;
     std::wstring path = GetSettingsFilePath();
@@ -395,16 +408,10 @@ GeneralSettings LoadGeneralSettings() {
     if (json.empty()) return settings;
 
     std::wstring generalSection = FindTopLevelJsonValue(json, L"general");
+    // A missing section keeps every field at its default.
     if (generalSection.empty()) return settings;
 
-    auto val = FindJsonValue(generalSection, L"language");
-    if (val == L"en") settings.language.value = AppLanguage::English;
-    else if (val == L"zh") settings.language.value = AppLanguage::Chinese;
-    else settings.language.value = AppLanguage::Auto;
-
-    val = FindJsonValue(generalSection, L"showTitlebar");
-    if (!val.empty()) settings.showTitlebar = WideParseJsonBoolToken(val); // OWN-80
-
+    ReadGeneralSection(generalSection, settings);
     return settings;
 }
 
@@ -426,30 +433,10 @@ AotSettings LoadAotSettings() {
     if (json.empty()) return settings;
 
     std::wstring aotSection = FindTopLevelJsonValue(json, L"alwaysOnTop");
-    if (!aotSection.empty()) {
-        auto val = FindJsonValue(aotSection, L"showBorder");
-        if (!val.empty()) settings.showBorder = WideParseJsonBoolToken(val); // OWN-80
-        val = FindJsonValue(aotSection, L"customColor");
-        if (!val.empty()) settings.customColor = WideParseJsonBoolToken(val); // OWN-80
-        val = FindJsonValue(aotSection, L"color");
-        if (!val.empty()) settings.color = ParseColor(val);
-        val = FindJsonValue(aotSection, L"opacity");
-        if (!val.empty()) settings.opacity = WideParseJsonIntToken(val);
-        val = FindJsonValue(aotSection, L"thickness");
-        if (!val.empty()) settings.thickness = WideParseJsonIntToken(val);
-        val = FindJsonValue(aotSection, L"roundedCorners");
-        if (!val.empty()) settings.roundedCorners = WideParseJsonBoolToken(val); // OWN-80
-        val = FindJsonValue(aotSection, L"inset");
-        if (!val.empty()) settings.inset = WideParseJsonIntToken(val);
-    }
+    // A missing section keeps every field at its default.
+    if (aotSection.empty()) return settings;
 
-    if (settings.opacity < 1) settings.opacity = 1;
-    if (settings.opacity > 100) settings.opacity = 100;
-    if (settings.thickness < 1) settings.thickness = 1;
-    if (settings.thickness > 20) settings.thickness = 20;
-    if (settings.inset < 0) settings.inset = 0;
-    if (settings.inset > 20) settings.inset = 20;
-
+    ReadAotSection(aotSection, settings);
     return settings;
 }
 
@@ -471,18 +458,10 @@ OverlaySettings LoadOverlaySettings() {
     if (json.empty()) return settings;
 
     std::wstring overlaySection = FindTopLevelJsonValue(json, L"overlay");
+    // A missing section keeps every field at its default.
     if (overlaySection.empty()) return settings;
 
-    auto val = FindJsonValue(overlaySection, L"color");
-    if (!val.empty()) settings.color = ParseColor(val);
-    val = FindJsonValue(overlaySection, L"thickness");
-    if (!val.empty()) settings.thickness = WideParseJsonIntToken(val);
-    val = FindJsonValue(overlaySection, L"cropOnTop");
-    if (!val.empty()) settings.cropOnTop = WideParseJsonBoolToken(val); // OWN-80
-
-    if (settings.thickness < 1) settings.thickness = 1;
-    if (settings.thickness > 10) settings.thickness = 10;
-
+    ReadOverlaySection(overlaySection, settings);
     return settings;
 }
 
@@ -533,31 +512,11 @@ HotkeySettings LoadHotkeySettings() {
     if (json.empty()) return settings;
 
     std::wstring hotkeySection = FindTopLevelJsonValue(json, L"hotkeys");
+    // A missing section keeps the new-install defaults, alternate OCR key
+    // included. A section that exists clears ocrAlt unless it carries that key.
     if (hotkeySection.empty()) return settings;
 
-    std::wstring sub = FindJsonValue(hotkeySection, L"reparent");
-    if (!sub.empty()) settings.reparent = ParseHotkeySection(sub);
-    sub = FindJsonValue(hotkeySection, L"thumbnail");
-    if (!sub.empty()) settings.thumbnail = ParseHotkeySection(sub);
-    sub = FindJsonValue(hotkeySection, L"viewport");
-    if (!sub.empty()) settings.viewport = ParseHotkeySection(sub);
-    sub = FindJsonValue(hotkeySection, L"closeReparent");
-    if (!sub.empty()) settings.closeReparent = ParseHotkeySection(sub);
-    sub = FindJsonValue(hotkeySection, L"alwaysOnTop");
-    if (!sub.empty()) settings.alwaysOnTop = ParseHotkeySection(sub);
-    sub = FindJsonValue(hotkeySection, L"screenshot");
-    if (!sub.empty()) settings.screenshot = ParseHotkeySection(sub);
-    sub = FindJsonValue(hotkeySection, L"ocr");
-    if (!sub.empty()) settings.ocr = ParseHotkeySection(sub);
-    sub = FindJsonValue(hotkeySection, L"ocrAlt");
-    if (!sub.empty()) {
-        settings.ocrAlt = ParseHotkeySection(sub);
-    } else {
-        settings.ocrAlt = {};
-    }
-    sub = FindJsonValue(hotkeySection, L"selectionTranslate");
-    if (!sub.empty()) settings.selectionTranslate = ParseHotkeySection(sub);
-
+    ReadHotkeySection(hotkeySection, settings);
     return settings;
 }
 
@@ -631,10 +590,33 @@ MergeOutcome MergeMember(const Struct& baseline, const Struct& pending,
         forceOverwrite);
 }
 
+// ---------------------------------------------------------------------------
+// Field read rules.
+//
+// A field row drives the writer, the patch merge and the loader. Reading keeps
+// the loaded value when a key is missing, so a read rule is declared only for
+// fields where that is not enough, and it is deliberately separate from the
+// write rule: read ranges and invalid-token fallbacks differ from the write
+// clamp (annotationMosaicStrength reads 0..100 and is written clamped to 0..28),
+// and a field may clamp on read while its writer does not.
+// ---------------------------------------------------------------------------
+
 template <typename Struct>
 struct BoolField {
     const wchar_t* key;
     bool Struct::* member;
+    // Read: a token that is neither true/1/false/0 falls back to this value.
+    bool readInvalidFallback = false;
+};
+
+// Read-back rule of one integer field.
+struct IntRead {
+    bool clamp = false;
+    int lo = 0;
+    int hi = 0;
+    // Read: a token that is not a number keeps the value already loaded instead
+    // of parsing through 0 before the clamp.
+    bool invalidKeepsValue = false;
 };
 
 template <typename Struct>
@@ -644,6 +626,7 @@ struct IntField {
     bool clamp = false;
     int lo = 0;
     int hi = 0;
+    IntRead read;
 };
 
 template <typename Struct>
@@ -652,6 +635,12 @@ struct StringField {
     std::wstring Struct::* member;
     // Written instead of an empty string.
     const wchar_t* whenEmpty = nullptr;
+    // Read: an explicitly empty string clears the field instead of reading like a
+    // missing key.
+    bool readExplicitEmpty = false;
+    // Read: canonicalization for keys whose text is not the member value (an id
+    // alias or an enum name). Null reads the raw text.
+    void (*readValue)(const std::wstring& raw, Struct& s) = nullptr;
 };
 
 template <typename Struct>
@@ -664,6 +653,9 @@ template <typename Struct>
 struct HotkeyField {
     const wchar_t* key;
     HotkeyConfig Struct::* member;
+    // Read: a missing key clears the hotkey instead of keeping the loaded value
+    // (the alternate OCR key stays off unless the section carries it).
+    bool readClearsWhenMissing = false;
 };
 
 // A field whose JSON text is not the plain member value: enums, clamped
@@ -673,6 +665,15 @@ struct TransformField {
     const wchar_t* key;
     std::wstring (*valueText)(const Struct&);
     MergeOutcome (*merge)(const Struct&, const Struct&, Struct&, bool);
+    // Read: receives the unescaped token text -- empty when the key is missing or
+    // explicitly empty -- and owns that case, because a few fields must resolve to
+    // a value even without a token.
+    void (*readValue)(const std::wstring& raw, Struct&);
+
+    TransformField(const wchar_t* key, std::wstring (*valueText)(const Struct&),
+        MergeOutcome (*merge)(const Struct&, const Struct&, Struct&, bool),
+        void (*readValue)(const std::wstring&, Struct&))
+        : key(key), valueText(valueText), merge(merge), readValue(readValue) {}
 };
 
 // A literal the section carries for older builds. Written, never merged and
@@ -860,6 +861,84 @@ void AssignOwnedFields(Struct& dst, const Struct& src,
     AssignFieldGroup(dst, src, owned.hotkeys);
 }
 
+// Reads one field back from its section text. Every kind except transforms starts
+// from the token text and only assigns when the key carries a value, so a missing
+// key -- or an explicitly empty string -- keeps the value already loaded.
+template <typename Struct, typename Field>
+void ReadOneField(const std::wstring& section, const Field& field, Struct& s) {
+    if constexpr (std::is_same_v<Field, ConstantField<Struct>>) {
+        // A literal the section carries for older builds: written, never a setting.
+    } else if constexpr (std::is_same_v<Field, BoolField<Struct>>) {
+        const std::wstring raw = FindJsonValue(section, field.key);
+        if (!raw.empty()) {
+            s.*(field.member) = WideParseJsonBoolToken(raw, field.readInvalidFallback); // OWN-80
+        }
+    } else if constexpr (std::is_same_v<Field, IntField<Struct>>) {
+        const std::wstring raw = FindJsonValue(section, field.key);
+        if (!raw.empty()) {
+            s.*(field.member) = WideParseJsonIntToken(
+                raw, field.read.invalidKeepsValue ? s.*(field.member) : 0);
+        }
+        if (field.read.clamp) {
+            s.*(field.member) = ClampSettingsInt(
+                s.*(field.member), field.read.lo, field.read.hi);
+        }
+    } else if constexpr (std::is_same_v<Field, StringField<Struct>>) {
+        const std::wstring raw = FindJsonValue(section, field.key);
+        if (!raw.empty() ||
+            (field.readExplicitEmpty && HasJsonKey(section, field.key))) {
+            if (field.readValue) {
+                field.readValue(raw, s);
+            } else {
+                s.*(field.member) = raw;
+            }
+        }
+    } else if constexpr (std::is_same_v<Field, ColorField<Struct>>) {
+        const std::wstring raw = FindJsonValue(section, field.key);
+        if (!raw.empty()) {
+            s.*(field.member) = ParseColor(raw);
+        }
+    } else if constexpr (std::is_same_v<Field, HotkeyField<Struct>>) {
+        const std::wstring raw = FindJsonValue(section, field.key);
+        if (!raw.empty()) {
+            s.*(field.member) = ParseHotkeySection(raw);
+        } else if (field.readClearsWhenMissing) {
+            s.*(field.member) = HotkeyConfig{};
+        }
+    } else {
+        static_assert(std::is_same_v<Field, TransformField<Struct>>,
+            "ReadOneField has no rule for this field kind");
+        field.readValue(FindJsonValue(section, field.key), s);
+    }
+}
+
+template <typename Struct, typename Field>
+void ReadFieldGroup(const std::wstring& section, std::span<const Field> fields,
+    Struct& s) {
+    for (const Field& field : fields) ReadOneField(section, field, s);
+}
+
+template <typename Struct>
+void ReadFieldSet(const std::wstring& section, const FieldSet<Struct>& set,
+    Struct& s) {
+    ReadFieldGroup(section, set.bools, s);
+    ReadFieldGroup(section, set.ints, s);
+    ReadFieldGroup(section, set.strings, s);
+    ReadFieldGroup(section, set.colors, s);
+    ReadFieldGroup(section, set.hotkeys, s);
+    ReadFieldGroup(section, set.transforms, s);
+    ReadFieldGroup(section, set.constants, s);
+}
+
+// A section is read through both groups: `external` fields are written here but
+// merged by another owner, and they must still load. Only the merge skips them.
+template <typename Struct>
+void ReadSectionFields(const SectionTable<Struct>& table,
+    const std::wstring& section, Struct& s) {
+    ReadFieldSet(section, table.owned, s);
+    ReadFieldSet(section, table.external, s);
+}
+
 // --- Tables -----------------------------------------------------------------
 
 const BoolField<GeneralSettings> kGeneralOwnedBools[] = {
@@ -875,7 +954,13 @@ const TransformField<GeneralSettings> kGeneralOwnedTransforms[] = {
           default: return L"\"auto\"";
           }
       },
-      &MergeMember<&GeneralSettings::language, GeneralSettings> },
+      &MergeMember<&GeneralSettings::language, GeneralSettings>,
+      // An unreadable or missing id resolves to Auto, including an empty token.
+      [](const std::wstring& raw, GeneralSettings& s) {
+          s.language.value = raw == L"en" ? AppLanguage::English
+              : raw == L"zh" ? AppLanguage::Chinese
+              : AppLanguage::Auto;
+      } },
 };
 
 const SectionTable<GeneralSettings> kGeneralTable = {
@@ -884,16 +969,22 @@ const SectionTable<GeneralSettings> kGeneralTable = {
     {},
 };
 
+static void ReadGeneralSection(const std::wstring& section, GeneralSettings& settings) {
+    ReadSectionFields(kGeneralTable, section, settings);
+}
+
 const BoolField<AotSettings> kAotOwnedBools[] = {
     { L"showBorder", &AotSettings::showBorder },
     { L"customColor", &AotSettings::customColor },
     { L"roundedCorners", &AotSettings::roundedCorners },
 };
 
+// The writer does not clamp these, the reader does: neither a hand-edited nor a
+// legacy file may load a border outside the documented range.
 const IntField<AotSettings> kAotOwnedInts[] = {
-    { L"opacity", &AotSettings::opacity },
-    { L"thickness", &AotSettings::thickness },
-    { L"inset", &AotSettings::inset },
+    { L"opacity", &AotSettings::opacity, false, 0, 0, { true, 1, 100 } },
+    { L"thickness", &AotSettings::thickness, false, 0, 0, { true, 1, 20 } },
+    { L"inset", &AotSettings::inset, false, 0, 0, { true, 0, 20 } },
 };
 
 const ColorField<AotSettings> kAotOwnedColors[] = {
@@ -906,12 +997,17 @@ const SectionTable<AotSettings> kAotTable = {
     {},
 };
 
+static void ReadAotSection(const std::wstring& section, AotSettings& settings) {
+    ReadSectionFields(kAotTable, section, settings);
+}
+
 const BoolField<OverlaySettings> kOverlayOwnedBools[] = {
     { L"cropOnTop", &OverlaySettings::cropOnTop },
 };
 
+// As in alwaysOnTop: the read clamps, the write path does not.
 const IntField<OverlaySettings> kOverlayOwnedInts[] = {
-    { L"thickness", &OverlaySettings::thickness },
+    { L"thickness", &OverlaySettings::thickness, false, 0, 0, { true, 1, 10 } },
 };
 
 const ColorField<OverlaySettings> kOverlayOwnedColors[] = {
@@ -924,6 +1020,10 @@ const SectionTable<OverlaySettings> kOverlayTable = {
     {},
 };
 
+static void ReadOverlaySection(const std::wstring& section, OverlaySettings& settings) {
+    ReadSectionFields(kOverlayTable, section, settings);
+}
+
 const HotkeyField<HotkeySettings> kHotkeyOwnedHotkeys[] = {
     { L"reparent", &HotkeySettings::reparent },
     { L"thumbnail", &HotkeySettings::thumbnail },
@@ -932,7 +1032,8 @@ const HotkeyField<HotkeySettings> kHotkeyOwnedHotkeys[] = {
     { L"alwaysOnTop", &HotkeySettings::alwaysOnTop },
     { L"screenshot", &HotkeySettings::screenshot },
     { L"ocr", &HotkeySettings::ocr },
-    { L"ocrAlt", &HotkeySettings::ocrAlt },
+    // The alternate OCR key must stay off unless a present section says otherwise.
+    { L"ocrAlt", &HotkeySettings::ocrAlt, true },
     { L"selectionTranslate", &HotkeySettings::selectionTranslate },
 };
 
@@ -941,6 +1042,10 @@ const SectionTable<HotkeySettings> kHotkeyTable = {
     { {}, {}, {}, {}, kHotkeyOwnedHotkeys, {}, {} },
     {},
 };
+
+static void ReadHotkeySection(const std::wstring& section, HotkeySettings& settings) {
+    ReadSectionFields(kHotkeyTable, section, settings);
+}
 
 // The settings window owns these twelve fields; the provider manager owns the
 // rest of the translation section and writes it through the codec.
@@ -973,45 +1078,70 @@ const SectionTable<TranslationSettings> kTranslationTable = {
     {},
 };
 
+// An unreadable token reads true: these flags are booleans in every build that
+// writes them, so a corrupted value must not silently switch a recognition step
+// back off.
 const BoolField<OcrSettings> kOcrOwnedBools[] = {
-    { L"cloudUseChartRecognition", &OcrSettings::paddleCloudUseChartRecognition },
-    { L"enableDocParsing", &OcrSettings::enableDocParsing },
-    { L"enableImageCrop", &OcrSettings::enableImageCrop },
-    { L"docRecognizeCharts", &OcrSettings::docRecognizeCharts },
-    { L"docRecognizeImages", &OcrSettings::docRecognizeImages },
-    { L"docRecognizeSeals", &OcrSettings::docRecognizeSeals },
-    { L"docIgnorePageDecorations", &OcrSettings::docIgnorePageDecorations },
-    { L"docKeepFootnotes", &OcrSettings::docKeepFootnotes },
-    { L"docUsePhysicalSorting", &OcrSettings::docUsePhysicalSorting },
-    { L"resultOnTop", &OcrSettings::resultOnTop },
+    { L"cloudUseChartRecognition", &OcrSettings::paddleCloudUseChartRecognition, true },
+    { L"enableDocParsing", &OcrSettings::enableDocParsing, true },
+    { L"enableImageCrop", &OcrSettings::enableImageCrop, true },
+    { L"docRecognizeCharts", &OcrSettings::docRecognizeCharts, true },
+    { L"docRecognizeImages", &OcrSettings::docRecognizeImages, true },
+    { L"docRecognizeSeals", &OcrSettings::docRecognizeSeals, true },
+    { L"docIgnorePageDecorations", &OcrSettings::docIgnorePageDecorations, true },
+    { L"docKeepFootnotes", &OcrSettings::docKeepFootnotes, true },
+    { L"docUsePhysicalSorting", &OcrSettings::docUsePhysicalSorting, true },
+    { L"resultOnTop", &OcrSettings::resultOnTop, true },
 };
 
+// The ranges below are read ranges: the writer stores what the runtime produced,
+// while a load must never hand the engines an out-of-range knob. The local port
+// is deliberately read as entered, with no clamp at all.
 const IntField<OcrSettings> kOcrOwnedInts[] = {
-    { L"altHotkeyIdleTimeoutMin", &OcrSettings::altHotkeyIdleTimeoutMin },
+    { L"altHotkeyIdleTimeoutMin", &OcrSettings::altHotkeyIdleTimeoutMin,
+      false, 0, 0, { true, 0, 240 } },
     { L"paddleLocalPort", &OcrSettings::paddleLocalPort },
-    { L"paddleLocalIdleTimeoutMin", &OcrSettings::paddleLocalIdleTimeoutMin },
-    { L"ocrFontSize", &OcrSettings::ocrFontSize },
-    { L"ppocrv6CpuThreads", &OcrSettings::ppocrv6CpuThreads },
-    { L"ppocrv6RecBatchSize", &OcrSettings::ppocrv6RecBatchSize },
-    { L"ppocrv6DetLimitSideLen", &OcrSettings::ppocrv6DetLimitSideLen },
-    { L"ppocrv6DetMaxSideLimit", &OcrSettings::ppocrv6DetMaxSideLimit },
-    { L"ppocrv6DetThreshPct", &OcrSettings::ppocrv6DetThreshPct },
-    { L"ppocrv6DetBoxThreshPct", &OcrSettings::ppocrv6DetBoxThreshPct },
-    { L"ppocrv6DetUnclipRatioPct", &OcrSettings::ppocrv6DetUnclipRatioPct },
-    { L"ppocrv6RecScoreThreshPct", &OcrSettings::ppocrv6RecScoreThreshPct },
+    { L"paddleLocalIdleTimeoutMin", &OcrSettings::paddleLocalIdleTimeoutMin,
+      false, 0, 0, { true, 0, 240 } },
+    { L"ocrFontSize", &OcrSettings::ocrFontSize, false, 0, 0, { true, 8, 32 } },
+    { L"ppocrv6CpuThreads", &OcrSettings::ppocrv6CpuThreads, false, 0, 0, { true, 1, 16 } },
+    { L"ppocrv6RecBatchSize", &OcrSettings::ppocrv6RecBatchSize, false, 0, 0, { true, 0, 8 } },
+    { L"ppocrv6DetLimitSideLen", &OcrSettings::ppocrv6DetLimitSideLen,
+      false, 0, 0, { true, 64, 4096 } },
+    { L"ppocrv6DetMaxSideLimit", &OcrSettings::ppocrv6DetMaxSideLimit,
+      false, 0, 0, { true, 1024, 8000 } },
+    { L"ppocrv6DetThreshPct", &OcrSettings::ppocrv6DetThreshPct, false, 0, 0, { true, 0, 100 } },
+    { L"ppocrv6DetBoxThreshPct", &OcrSettings::ppocrv6DetBoxThreshPct,
+      false, 0, 0, { true, 0, 100 } },
+    { L"ppocrv6DetUnclipRatioPct", &OcrSettings::ppocrv6DetUnclipRatioPct,
+      false, 0, 0, { true, 100, 300 } },
+    { L"ppocrv6RecScoreThreshPct", &OcrSettings::ppocrv6RecScoreThreshPct,
+      false, 0, 0, { true, 0, 100 } },
 };
 
 const StringField<OcrSettings> kOcrOwnedStrings[] = {
     { L"language", &OcrSettings::language },
     { L"mode", &OcrSettings::mode },
-    { L"paddleApiUrl", &OcrSettings::paddleApiUrl },
+    { L"paddleApiUrl", &OcrSettings::paddleApiUrl, nullptr, false,
+      // A bare host reads as the jobs endpoint, trailing slashes are stripped.
+      [](const std::wstring& raw, OcrSettings& s) {
+          s.paddleApiUrl = NormalizePaddleOcrJobsUrl(raw);
+      } },
     { L"paddleToken", &OcrSettings::paddleToken },
     { L"paddleLocalModelDir", &OcrSettings::paddleLocalModelDir },
     { L"paddleLocalPrompt", &OcrSettings::paddleLocalPrompt },
     { L"docLayoutModelPath", &OcrSettings::docLayoutModelPath },
     { L"ppocrv6ModelDir", &OcrSettings::ppocrv6ModelDir },
-    { L"ppocrv6Variant", &OcrSettings::ppocrv6Variant },
-    { L"ppocrv6DetLimitType", &OcrSettings::ppocrv6DetLimitType },
+    { L"ppocrv6Variant", &OcrSettings::ppocrv6Variant, nullptr, false,
+      // Only "medium" survives; any other persisted text reads as "small".
+      [](const std::wstring& raw, OcrSettings& s) {
+          s.ppocrv6Variant = raw == L"medium" ? L"medium" : L"small";
+      } },
+    { L"ppocrv6DetLimitType", &OcrSettings::ppocrv6DetLimitType, nullptr, false,
+      // As above: anything that is not "max" reads as "min".
+      [](const std::wstring& raw, OcrSettings& s) {
+          s.ppocrv6DetLimitType = raw == L"max" ? L"max" : L"min";
+      } },
 };
 
 const TransformField<OcrSettings> kOcrOwnedTransforms[] = {
@@ -1021,24 +1151,42 @@ const TransformField<OcrSettings> kOcrOwnedTransforms[] = {
           if (route == L"current") route = L"paddle_local_doc";
           return L"\"" + EscapeJsonString(route) + L"\"";
       },
-      &MergeMember<&OcrSettings::altHotkeyRoute, OcrSettings> },
+      &MergeMember<&OcrSettings::altHotkeyRoute, OcrSettings>,
+      // Legacy aliases and unknown routes all land on the document route.
+      [](const std::wstring& raw, OcrSettings& s) {
+          if (raw.empty()) return;
+          const std::wstring route = NormalizeOcrRoute(raw);
+          s.altHotkeyRoute = (route == L"current") ? L"paddle_local_doc" : route;
+      } },
     { L"timeoutMs",
       [](const OcrSettings& s) -> std::wstring {
           return std::to_wstring(NormalizeOcrTimeoutMs(s.timeoutMs));
       },
-      &MergeMember<&OcrSettings::timeoutMs, OcrSettings> },
+      &MergeMember<&OcrSettings::timeoutMs, OcrSettings>,
+      // Always resolves to a valid timeout, a missing token included.
+      [](const std::wstring& raw, OcrSettings& s) {
+          s.timeoutMs = NormalizeOcrTimeoutMs(WideParseJsonIntToken(raw, s.timeoutMs));
+      } },
     { L"localRasterMaxPixelEdge",
       [](const OcrSettings& s) -> std::wstring {
           return std::to_wstring(ClampPdfRenderMaxPixelEdge(
               static_cast<int>(s.localRasterMaxPixelEdge)));
       },
-      &MergeMember<&OcrSettings::localRasterMaxPixelEdge, OcrSettings> },
+      &MergeMember<&OcrSettings::localRasterMaxPixelEdge, OcrSettings>,
+      [](const std::wstring& raw, OcrSettings& s) {
+          if (raw.empty()) return;
+          s.localRasterMaxPixelEdge = ClampPdfRenderMaxPixelEdge(WideParseJsonIntToken(raw));
+      } },
     { L"localRasterMaxMegapixels",
       [](const OcrSettings& s) -> std::wstring {
           return std::to_wstring(ClampPdfRenderMaxMegapixels(
               static_cast<int>(s.localRasterMaxMegapixels)));
       },
-      &MergeMember<&OcrSettings::localRasterMaxMegapixels, OcrSettings> },
+      &MergeMember<&OcrSettings::localRasterMaxMegapixels, OcrSettings>,
+      [](const std::wstring& raw, OcrSettings& s) {
+          if (raw.empty()) return;
+          s.localRasterMaxMegapixels = ClampPdfRenderMaxMegapixels(WideParseJsonIntToken(raw));
+      } },
     { L"layoutModelFamily",
       [](const OcrSettings& s) -> std::wstring {
           std::wstring family = s.layoutModelFamily;
@@ -1047,7 +1195,16 @@ const TransformField<OcrSettings> kOcrOwnedTransforms[] = {
           }
           return L"\"" + EscapeJsonString(family) + L"\"";
       },
-      &MergeMember<&OcrSettings::layoutModelFamily, OcrSettings> },
+      &MergeMember<&OcrSettings::layoutModelFamily, OcrSettings>,
+      [](const std::wstring& raw, OcrSettings& s) {
+          if (raw == L"pp_doclayout_v3" || raw == L"pp-doclayoutv3" || raw == L"v3") {
+              s.layoutModelFamily = L"pp_doclayout_v3";
+          } else if (raw == L"pp_doclayout_v2" || raw == L"pp-doclayoutv2" || raw == L"v2") {
+              s.layoutModelFamily = L"pp_doclayout_v2";
+          } else if (!raw.empty()) {
+              s.layoutModelFamily = L"auto";
+          }
+      } },
     { L"layoutThresholdProfile",
       [](const OcrSettings& s) -> std::wstring {
           std::wstring profile = s.layoutThresholdProfile;
@@ -1059,7 +1216,20 @@ const TransformField<OcrSettings> kOcrOwnedTransforms[] = {
           }
           return L"\"" + EscapeJsonString(profile) + L"\"";
       },
-      &MergeMember<&OcrSettings::layoutThresholdProfile, OcrSettings> },
+      &MergeMember<&OcrSettings::layoutThresholdProfile, OcrSettings>,
+      [](const std::wstring& raw, OcrSettings& s) {
+          if (raw == L"balanced") {
+              s.layoutThresholdProfile = L"balanced";
+          } else if (raw == L"official-like" || raw == L"official_like" || raw == L"official") {
+              // Persist the canonical name while accepting both historical spellings.
+              s.layoutThresholdProfile = L"official";
+          } else if (raw == L"recall") {
+              s.layoutThresholdProfile = L"recall";
+          } else if (!raw.empty()) {
+              // Unknown/corrupt values must not silently lower every threshold.
+              s.layoutThresholdProfile = L"official";
+          }
+      } },
     { L"paddleDocGroupingMode",
       [](const OcrSettings& s) -> std::wstring {
           std::wstring mode = s.paddleDocGroupingMode;
@@ -1068,18 +1238,37 @@ const TransformField<OcrSettings> kOcrOwnedTransforms[] = {
           }
           return L"\"" + EscapeJsonString(mode) + L"\"";
       },
-      &MergeMember<&OcrSettings::paddleDocGroupingMode, OcrSettings> },
+      &MergeMember<&OcrSettings::paddleDocGroupingMode, OcrSettings>,
+      [](const std::wstring& raw, OcrSettings& s) {
+          if (raw == L"legacy_union_ab" || raw == L"legacy-union-ab") {
+              s.paddleDocGroupingMode = L"legacy_union_ab";
+          } else if (raw == L"none") {
+              s.paddleDocGroupingMode = L"none";
+          } else if (!raw.empty()) {
+              s.paddleDocGroupingMode = L"official_group";
+          }
+      } },
     { L"paddleVlMaxTokens",
       [](const OcrSettings& s) -> std::wstring {
           return std::to_wstring(s.paddleVlMaxTokens == 8192 ? 8192 : 4096);
       },
-      &MergeMember<&OcrSettings::paddleVlMaxTokens, OcrSettings> },
+      &MergeMember<&OcrSettings::paddleVlMaxTokens, OcrSettings>,
+      // Normalized even without a token: only 4096 and 8192 are supported.
+      [](const std::wstring& raw, OcrSettings& s) {
+          s.paddleVlMaxTokens = WideParseJsonIntToken(raw) == 8192 ? 8192 : 4096;
+      } },
     { L"ppocrv6Preset",
       [](const OcrSettings& s) -> std::wstring {
           return L"\"" + EscapeJsonString(PPOcrV6PresetIdName(
               ParsePPOcrV6PresetId(s.ppocrv6Preset))) + L"\"";
       },
-      &MergeMember<&OcrSettings::ppocrv6Preset, OcrSettings> },
+      &MergeMember<&OcrSettings::ppocrv6Preset, OcrSettings>,
+      // The persisted id is kept verbatim; an absent or explicitly empty id leaves
+      // the scheme-1 default in place for ReadOcrSection to normalize.
+      [](const std::wstring& raw, OcrSettings& s) {
+          if (raw.empty()) return;
+          s.ppocrv6Preset = raw;
+      } },
 };
 
 // ppocrv6Provider is written as a fixed literal: the loader, the commit path
@@ -1095,6 +1284,29 @@ const SectionTable<OcrSettings> kOcrTable = {
     {},
 };
 
+// What a per-field rule cannot express: the legacy inverted key is consulted only
+// when the current key has no value, and both derived values are recomputed after
+// every input they depend on has been read.
+static void ReadOcrSection(const std::wstring& section, OcrSettings& settings) {
+    ReadSectionFields(kOcrTable, section, settings);
+
+    if (FindJsonValue(section, L"docIgnorePageDecorations").empty()) {
+        const std::wstring includeRaw = FindJsonValue(section, L"docIncludeIgnoredRegions");
+        if (!includeRaw.empty()) {
+            // OWN-80: pure bool parse; alternate key inverts include->ignore.
+            settings.docIgnorePageDecorations = !WideParseJsonBoolToken(includeRaw, true);
+        }
+    }
+    settings.docIncludeIgnoredRegions = !settings.docIgnorePageDecorations;
+
+    // The named preset is re-derived from the knobs, so it is normalized only once
+    // all of them are loaded. The field row left either the persisted id or -- when
+    // the key was absent or empty -- the scheme-1 default, which is the same value
+    // the loader has always normalized: a legacy id keeps its knobs as Custom,
+    // while a default is only re-checked against the knobs it claims to match.
+    NormalizeLoadedPPOcrV6Preset(settings, settings.ppocrv6Preset);
+}
+
 // Screenshot fields the settings window owns. The rest of the section belongs
 // to the annotation editor and must survive a commit untouched.
 const BoolField<ScreenshotSettings> kScreenshotOwnedBools[] = {
@@ -1103,10 +1315,14 @@ const BoolField<ScreenshotSettings> kScreenshotOwnedBools[] = {
     { L"longShotAutoCrop", &ScreenshotSettings::longShotAutoCrop },
 };
 
+// A read range is declared per field rather than borrowed from the write clamp:
+// the two are allowed to differ (annotationMosaicStrength below), several fields
+// clamp only on read, and an unreadable token either parses through 0 or keeps
+// the value already loaded.
 const IntField<ScreenshotSettings> kScreenshotOwnedInts[] = {
-    { L"jpegQuality", &ScreenshotSettings::jpegQuality, true, 1, 100 },
+    { L"jpegQuality", &ScreenshotSettings::jpegQuality, true, 1, 100, { true, 1, 100 } },
     { L"longShotAfterInitAction", &ScreenshotSettings::longShotAfterInitAction,
-      true, 0, 3 },
+      true, 0, 3, { true, 0, 3, true } },
 };
 
 const StringField<ScreenshotSettings> kScreenshotOwnedStrings[] = {
@@ -1118,7 +1334,12 @@ const TransformField<ScreenshotSettings> kScreenshotOwnedTransforms[] = {
       [](const ScreenshotSettings& s) -> std::wstring {
           return L"\"" + std::wstring(ScreenshotFormatToJsonValue(s.format)) + L"\"";
       },
-      &MergeMember<&ScreenshotSettings::format, ScreenshotSettings> },
+      &MergeMember<&ScreenshotSettings::format, ScreenshotSettings>,
+      // An unknown or missing id reads as PNG.
+      [](const std::wstring& raw, ScreenshotSettings& s) {
+          if (raw.empty()) return;
+          s.format = ParseScreenshotFormat(raw);
+      } },
 };
 
 static std::wstring BuildGeneralSectionJson(const GeneralSettings& settings) {
@@ -1207,213 +1428,10 @@ OcrSettings LoadOcrSettings() {
     if (json.empty()) return settings;
 
     std::wstring ocrSection = FindTopLevelJsonValue(json, L"ocr");
+    // A missing section keeps every field at its default.
     if (ocrSection.empty()) return settings;
 
-    auto val = FindJsonValue(ocrSection, L"language");
-    if (!val.empty()) settings.language = val;
-    
-    val = FindJsonValue(ocrSection, L"mode");
-    if (!val.empty()) settings.mode = val;
-
-    val = FindJsonValue(ocrSection, L"altHotkeyRoute");
-    if (!val.empty()) {
-        std::wstring route = NormalizeOcrRoute(val);
-        settings.altHotkeyRoute = (route == L"current") ? L"paddle_local_doc" : route;
-    }
-
-    val = FindJsonValue(ocrSection, L"altHotkeyIdleTimeoutMin");
-    if (!val.empty()) settings.altHotkeyIdleTimeoutMin = WideParseJsonIntToken(val);
-    if (settings.altHotkeyIdleTimeoutMin < 0) settings.altHotkeyIdleTimeoutMin = 0;
-    if (settings.altHotkeyIdleTimeoutMin > 240) settings.altHotkeyIdleTimeoutMin = 240;
-    
-    val = FindJsonValue(ocrSection, L"paddleApiUrl");
-    if (!val.empty()) settings.paddleApiUrl = NormalizePaddleOcrJobsUrl(val);
-    
-    val = FindJsonValue(ocrSection, L"paddleToken");
-    if (!val.empty()) settings.paddleToken = val;
-
-    val = FindJsonValue(ocrSection, L"cloudUseChartRecognition");
-    if (!val.empty()) settings.paddleCloudUseChartRecognition = WideParseJsonBoolToken(val, true); // OWN-80
-    
-    val = FindJsonValue(ocrSection, L"timeoutMs");
-    if (!val.empty()) {
-        settings.timeoutMs = NormalizeOcrTimeoutMs(
-            WideParseJsonIntToken(val, settings.timeoutMs));
-    } else {
-        settings.timeoutMs = NormalizeOcrTimeoutMs(settings.timeoutMs);
-    }
-    
-    val = FindJsonValue(ocrSection, L"paddleLocalModelDir");
-    if (!val.empty()) settings.paddleLocalModelDir = val;
-    
-    val = FindJsonValue(ocrSection, L"paddleLocalPort");
-    if (!val.empty()) settings.paddleLocalPort = WideParseJsonIntToken(val);
-
-    val = FindJsonValue(ocrSection, L"paddleLocalIdleTimeoutMin");
-    if (!val.empty()) settings.paddleLocalIdleTimeoutMin = WideParseJsonIntToken(val);
-    if (settings.paddleLocalIdleTimeoutMin < 0) settings.paddleLocalIdleTimeoutMin = 0;
-    if (settings.paddleLocalIdleTimeoutMin > 240) settings.paddleLocalIdleTimeoutMin = 240;
-    
-    val = FindJsonValue(ocrSection, L"paddleLocalPrompt");
-    if (!val.empty()) settings.paddleLocalPrompt = val;
-
-    val = FindJsonValue(ocrSection, L"paddleVlMaxTokens");
-    settings.paddleVlMaxTokens = WideParseJsonIntToken(val) == 8192 ? 8192 : 4096;
-
-    val = FindJsonValue(ocrSection, L"enableDocParsing");
-    if (!val.empty()) settings.enableDocParsing = WideParseJsonBoolToken(val, true); // OWN-80
-
-    val = FindJsonValue(ocrSection, L"enableImageCrop");
-    if (!val.empty()) settings.enableImageCrop = WideParseJsonBoolToken(val, true); // OWN-80
-
-    val = FindJsonValue(ocrSection, L"localRasterMaxPixelEdge");
-    if (!val.empty()) {
-        settings.localRasterMaxPixelEdge =
-            ClampPdfRenderMaxPixelEdge(WideParseJsonIntToken(val));
-    }
-
-    val = FindJsonValue(ocrSection, L"localRasterMaxMegapixels");
-    if (!val.empty()) {
-        settings.localRasterMaxMegapixels =
-            ClampPdfRenderMaxMegapixels(WideParseJsonIntToken(val));
-    }
-
-    val = FindJsonValue(ocrSection, L"docLayoutModelPath");
-    if (!val.empty()) settings.docLayoutModelPath = val;
-
-    val = FindJsonValue(ocrSection, L"layoutModelFamily");
-    if (val == L"pp_doclayout_v3" || val == L"pp-doclayoutv3" || val == L"v3") {
-        settings.layoutModelFamily = L"pp_doclayout_v3";
-    } else if (val == L"pp_doclayout_v2" || val == L"pp-doclayoutv2" || val == L"v2") {
-        settings.layoutModelFamily = L"pp_doclayout_v2";
-    } else if (!val.empty()) {
-        settings.layoutModelFamily = L"auto";
-    }
-
-    val = FindJsonValue(ocrSection, L"layoutThresholdProfile");
-    if (val == L"balanced") {
-        settings.layoutThresholdProfile = L"balanced";
-    } else if (val == L"official-like" || val == L"official_like" || val == L"official") {
-        // Persist the canonical name while accepting both historical spellings.
-        settings.layoutThresholdProfile = L"official";
-    } else if (val == L"recall") {
-        settings.layoutThresholdProfile = L"recall";
-    } else if (!val.empty()) {
-        // Unknown/corrupt values must not silently lower every threshold.
-        settings.layoutThresholdProfile = L"official";
-    }
-
-    val = FindJsonValue(ocrSection, L"paddleDocGroupingMode");
-    if (val == L"legacy_union_ab" || val == L"legacy-union-ab") {
-        settings.paddleDocGroupingMode = L"legacy_union_ab";
-    } else if (val == L"none") {
-        settings.paddleDocGroupingMode = L"none";
-    } else if (!val.empty()) {
-        settings.paddleDocGroupingMode = L"official_group";
-    }
-
-    val = FindJsonValue(ocrSection, L"docRecognizeCharts");
-    if (!val.empty()) settings.docRecognizeCharts = WideParseJsonBoolToken(val, true); // OWN-80
-
-    val = FindJsonValue(ocrSection, L"docRecognizeImages");
-    if (!val.empty()) settings.docRecognizeImages = WideParseJsonBoolToken(val, true); // OWN-80
-
-    val = FindJsonValue(ocrSection, L"docRecognizeSeals");
-    if (!val.empty()) settings.docRecognizeSeals = WideParseJsonBoolToken(val, true); // OWN-80
-
-    val = FindJsonValue(ocrSection, L"docIgnorePageDecorations");
-    // OWN-80: pure bool parse; alternate key inverts include→ignore.
-    if (!val.empty()) {
-        settings.docIgnorePageDecorations = WideParseJsonBoolToken(val, true);
-    } else {
-        val = FindJsonValue(ocrSection, L"docIncludeIgnoredRegions");
-        if (!val.empty()) {
-            settings.docIgnorePageDecorations = !WideParseJsonBoolToken(val, true);
-        }
-    }
-    settings.docIncludeIgnoredRegions = !settings.docIgnorePageDecorations;
-
-    val = FindJsonValue(ocrSection, L"docKeepFootnotes");
-    if (!val.empty()) settings.docKeepFootnotes = WideParseJsonBoolToken(val, true); // OWN-80
-
-    val = FindJsonValue(ocrSection, L"docUsePhysicalSorting");
-    if (!val.empty()) settings.docUsePhysicalSorting = WideParseJsonBoolToken(val, true); // OWN-80
-
-    val = FindJsonValue(ocrSection, L"ocrFontSize");
-    if (!val.empty()) settings.ocrFontSize = WideParseJsonIntToken(val);
-    if (settings.ocrFontSize < 8) settings.ocrFontSize = 8;
-    if (settings.ocrFontSize > 32) settings.ocrFontSize = 32;
-
-    val = FindJsonValue(ocrSection, L"resultOnTop");
-    if (!val.empty()) settings.resultOnTop = WideParseJsonBoolToken(val, true); // OWN-80
-
-    val = FindJsonValue(ocrSection, L"ppocrv6ModelDir");
-    if (!val.empty()) settings.ppocrv6ModelDir = val;
-
-    val = FindJsonValue(ocrSection, L"ppocrv6Variant");
-    if (val == L"medium") settings.ppocrv6Variant = L"medium";
-    else if (!val.empty()) settings.ppocrv6Variant = L"small";
-
-    val = FindJsonValue(ocrSection, L"ppocrv6Provider");
-    if (!val.empty()) settings.ppocrv6Provider = L"cpu";
-
-    val = FindJsonValue(ocrSection, L"ppocrv6CpuThreads");
-    if (!val.empty()) settings.ppocrv6CpuThreads = WideParseJsonIntToken(val);
-    if (settings.ppocrv6CpuThreads < 1) settings.ppocrv6CpuThreads = 1;
-    if (settings.ppocrv6CpuThreads > 16) settings.ppocrv6CpuThreads = 16;
-
-    val = FindJsonValue(ocrSection, L"ppocrv6RecBatchSize");
-    if (!val.empty()) settings.ppocrv6RecBatchSize = WideParseJsonIntToken(val);
-    // 0 = Auto (runtime resolves to 6); clamp upper to 8.
-    if (settings.ppocrv6RecBatchSize < 0) settings.ppocrv6RecBatchSize = 0;
-    if (settings.ppocrv6RecBatchSize > 8) settings.ppocrv6RecBatchSize = 8;
-
-    val = FindJsonValue(ocrSection, L"ppocrv6DetLimitSideLen");
-    if (!val.empty()) settings.ppocrv6DetLimitSideLen = WideParseJsonIntToken(val);
-    // Official PaddleX 3.7 min/64; do not silently raise 64 → 320.
-    if (settings.ppocrv6DetLimitSideLen < 64) settings.ppocrv6DetLimitSideLen = 64;
-    if (settings.ppocrv6DetLimitSideLen > 4096) settings.ppocrv6DetLimitSideLen = 4096;
-
-    const std::wstring persistedPPOcrV6Preset =
-        FindJsonValue(ocrSection, L"ppocrv6Preset");
-
-    val = FindJsonValue(ocrSection, L"ppocrv6DetLimitType");
-    if (val == L"max") settings.ppocrv6DetLimitType = L"max";
-    else if (!val.empty()) settings.ppocrv6DetLimitType = L"min";
-
-    val = FindJsonValue(ocrSection, L"ppocrv6DetMaxSideLimit");
-    if (!val.empty()) settings.ppocrv6DetMaxSideLimit = WideParseJsonIntToken(val);
-    if (settings.ppocrv6DetMaxSideLimit < 1024) settings.ppocrv6DetMaxSideLimit = 1024;
-    if (settings.ppocrv6DetMaxSideLimit > 8000) settings.ppocrv6DetMaxSideLimit = 8000;
-
-    val = FindJsonValue(ocrSection, L"ppocrv6DetThreshPct");
-    if (!val.empty()) settings.ppocrv6DetThreshPct = WideParseJsonIntToken(val);
-    if (settings.ppocrv6DetThreshPct < 0) settings.ppocrv6DetThreshPct = 0;
-    if (settings.ppocrv6DetThreshPct > 100) settings.ppocrv6DetThreshPct = 100;
-
-    val = FindJsonValue(ocrSection, L"ppocrv6DetBoxThreshPct");
-    if (!val.empty()) settings.ppocrv6DetBoxThreshPct = WideParseJsonIntToken(val);
-    if (settings.ppocrv6DetBoxThreshPct < 0) settings.ppocrv6DetBoxThreshPct = 0;
-    if (settings.ppocrv6DetBoxThreshPct > 100) settings.ppocrv6DetBoxThreshPct = 100;
-
-    val = FindJsonValue(ocrSection, L"ppocrv6DetUnclipRatioPct");
-    if (!val.empty()) settings.ppocrv6DetUnclipRatioPct = WideParseJsonIntToken(val);
-    if (settings.ppocrv6DetUnclipRatioPct < 100) settings.ppocrv6DetUnclipRatioPct = 100;
-    if (settings.ppocrv6DetUnclipRatioPct > 300) settings.ppocrv6DetUnclipRatioPct = 300;
-
-    val = FindJsonValue(ocrSection, L"ppocrv6RecScoreThreshPct");
-    if (!val.empty()) settings.ppocrv6RecScoreThreshPct = WideParseJsonIntToken(val);
-    if (settings.ppocrv6RecScoreThreshPct < 0) settings.ppocrv6RecScoreThreshPct = 0;
-    if (settings.ppocrv6RecScoreThreshPct > 100) settings.ppocrv6RecScoreThreshPct = 100;
-
-    // Normalize only after every owned knob has loaded. Legacy preset ids used
-    // different semantics, so their exact values are preserved as Custom.
-    if (!persistedPPOcrV6Preset.empty()) {
-        NormalizeLoadedPPOcrV6Preset(settings, persistedPPOcrV6Preset);
-    } else {
-        DowngradePPOcrV6PresetIfDiverged(settings);
-    }
-
+    ReadOcrSection(ocrSection, settings);
     return settings;
 }
 
@@ -1444,18 +1462,6 @@ static ScreenshotFormat ParseScreenshotFormat(const std::wstring& value) {
     return ScreenshotFormat::Png;
 }
 
-static void LoadScreenshotInt(const std::wstring& section, const wchar_t* key,
-    int& target, int minValue, int maxValue) {
-    std::wstring val = FindJsonValue(section, key);
-    // OWN-77: pure clamped int parse (WideStringUtils).
-    if (!val.empty()) target = WideParseClampedIntToken(val, target, minValue, maxValue);
-}
-
-static void LoadScreenshotBool(const std::wstring& section, const wchar_t* key, bool& target) {
-    std::wstring val = FindJsonValue(section, key);
-    if (!val.empty()) target = WideParseJsonBoolToken(val); // OWN-80
-}
-
 ScreenshotSettings LoadScreenshotSettings() {
     ScreenshotSettings settings;
 
@@ -1464,164 +1470,19 @@ ScreenshotSettings LoadScreenshotSettings() {
     if (json.empty()) return settings;
 
     std::wstring screenshotSection = FindTopLevelJsonValue(json, L"screenshot");
+    // A missing section keeps every field at its default.
     if (screenshotSection.empty()) return settings;
 
-    auto val = FindJsonValue(screenshotSection, L"format");
-    if (!val.empty()) settings.format = ParseScreenshotFormat(val);
-
-    val = FindJsonValue(screenshotSection, L"jpegQuality");
-    if (!val.empty()) settings.jpegQuality = WideParseJsonIntToken(val);
-    if (settings.jpegQuality < 1) settings.jpegQuality = 1;
-    if (settings.jpegQuality > 100) settings.jpegQuality = 100;
-
-    val = FindJsonValue(screenshotSection, L"includeCursor");
-    if (!val.empty()) settings.includeCursor = WideParseJsonBoolToken(val); // OWN-80
-
-    val = FindJsonValue(screenshotSection, L"quickSaveDir");
-    if (!val.empty()) settings.quickSaveDir = val;
-
-    val = FindJsonValue(screenshotSection, L"fileNameTemplate");
-    if (!val.empty()) settings.fileNameTemplate = val;
-
-    val = FindJsonValue(screenshotSection, L"warnAlphaLossForJpegBmp");
-    if (!val.empty()) settings.warnAlphaLossForJpegBmp = WideParseJsonBoolToken(val, true); // OWN-80
-
-    LoadScreenshotInt(screenshotSection, L"annotationActiveTool", settings.annotationActiveTool, 0, 13);
-    LoadScreenshotInt(screenshotSection, L"annotationGeometryTool", settings.annotationGeometryTool, 1, 13);
-    LoadScreenshotInt(screenshotSection, L"annotationMarkerTool", settings.annotationMarkerTool, 1, 13);
-    LoadScreenshotInt(screenshotSection, L"annotationArrowTool", settings.annotationArrowTool, 1, 13);
-    LoadScreenshotInt(screenshotSection, L"annotationTextTool", settings.annotationTextTool, 1, 13);
-    LoadScreenshotInt(screenshotSection, L"annotationMosaicTool", settings.annotationMosaicTool, 1, 13);
-    LoadScreenshotInt(screenshotSection, L"annotationColorIndex", settings.annotationColorIndex, 0, 6);
-    LoadScreenshotInt(screenshotSection, L"annotationGeometryColorIndex", settings.annotationGeometryColorIndex, 0, 6);
-    LoadScreenshotInt(screenshotSection, L"annotationMarkerColorIndex", settings.annotationMarkerColorIndex, 0, 6);
-    LoadScreenshotBool(screenshotSection, L"annotationUsesCustomColor", settings.annotationUsesCustomColor);
-    val = FindJsonValue(screenshotSection, L"annotationCustomColor");
-    if (!val.empty()) settings.annotationCustomColor = ParseColor(val);
-    LoadScreenshotInt(screenshotSection, L"annotationColorAlpha", settings.annotationColorAlpha, 0, 100);
-    LoadScreenshotInt(screenshotSection, L"annotationColorPickerMode", settings.annotationColorPickerMode, 0, 2);
-    LoadScreenshotInt(screenshotSection, L"annotationLineStyle", settings.annotationLineStyle, 1, 5);
-    LoadScreenshotInt(screenshotSection, L"annotationGeometryPenWidth", settings.annotationGeometryPenWidth, 1, 32);
-    LoadScreenshotInt(screenshotSection, L"annotationGeometryRoundedRadius", settings.annotationGeometryRoundedRadius, 0, 0x32);
-    LoadScreenshotInt(screenshotSection, L"annotationPencilPenWidth", settings.annotationPencilPenWidth, 1, 32);
-    LoadScreenshotInt(screenshotSection, L"annotationMarkerPenWidth", settings.annotationMarkerPenWidth, 1, 32);
-    LoadScreenshotInt(screenshotSection, L"annotationArrowPenWidth", settings.annotationArrowPenWidth, 1, 32);
-    LoadScreenshotInt(screenshotSection, L"annotationArrowShape", settings.annotationArrowShape, 1, 8);
-    LoadScreenshotInt(screenshotSection, L"annotationBrokenLineMode", settings.annotationBrokenLineMode, 0, 1);
-    LoadScreenshotBool(screenshotSection, L"annotationBrokenLineArrow", settings.annotationBrokenLineArrow);
-    LoadScreenshotInt(screenshotSection, L"annotationBrokenLineStartArrowType", settings.annotationBrokenLineStartArrowType, 0, 11);
-    LoadScreenshotInt(screenshotSection, L"annotationBrokenLineEndArrowType", settings.annotationBrokenLineEndArrowType, 0, 11);
-    LoadScreenshotInt(screenshotSection, L"annotationMagnifierPenWidth", settings.annotationMagnifierPenWidth, 1, 32);
-    LoadScreenshotInt(screenshotSection, L"annotationMagnifierRoundedRadius", settings.annotationMagnifierRoundedRadius, 0, 0x32);
-    LoadScreenshotBool(screenshotSection, L"annotationMagnifierEllipse", settings.annotationMagnifierEllipse);
-    LoadScreenshotBool(screenshotSection, L"annotationMagnifierEraseMark", settings.annotationMagnifierEraseMark);
-    LoadScreenshotBool(screenshotSection, L"annotationMagnifierAntiAlias", settings.annotationMagnifierAntiAlias);
-    LoadScreenshotBool(screenshotSection, L"annotationMagnifierShadow", settings.annotationMagnifierShadow);
-    LoadScreenshotInt(screenshotSection, L"annotationMagnifierLinkType", settings.annotationMagnifierLinkType, 0, 3);
-    LoadScreenshotInt(screenshotSection, L"annotationMagnifierMagnification", settings.annotationMagnifierMagnification, 100, 400);
-    LoadScreenshotInt(screenshotSection, L"annotationMosaicPenWidth", settings.annotationMosaicPenWidth, 1, 32);
-    LoadScreenshotInt(screenshotSection, L"annotationEraserPenWidth", settings.annotationEraserPenWidth, 1, 32);
-    LoadScreenshotInt(screenshotSection, L"annotationSerialPenWidth", settings.annotationSerialPenWidth, 1, 32);
-    LoadScreenshotInt(screenshotSection, L"annotationMosaicStrength", settings.annotationMosaicStrength, 0, 100);
-    LoadScreenshotInt(screenshotSection, L"annotationMarkerBlendMode", settings.annotationMarkerBlendMode, 0, 1);
-    LoadScreenshotInt(screenshotSection, L"annotationMosaicMode", settings.annotationMosaicMode, 0, 1);
-    LoadScreenshotInt(screenshotSection, L"annotationSerialType", settings.annotationSerialType, 0, 4);
-    LoadScreenshotBool(screenshotSection, L"annotationHighLightStroke", settings.annotationHighLightStroke);
-    LoadScreenshotInt(screenshotSection, L"annotationHighLightOpacity", settings.annotationHighLightOpacity, 0, 100);
-    val = FindJsonValue(screenshotSection, L"annotationHighLightStrokeColor");
-    if (!val.empty()) settings.annotationHighLightStrokeColor = ParseColor(val);
-    LoadScreenshotBool(screenshotSection, L"annotationAutoMosaicSync", settings.annotationAutoMosaicSync);
-    LoadScreenshotBool(screenshotSection, L"annotationTextOutline", settings.annotationTextOutline);
-    LoadScreenshotInt(screenshotSection, L"annotationTextOutlineSize", settings.annotationTextOutlineSize, 1, 0x32);
-    val = FindJsonValue(screenshotSection, L"annotationTextOutlineColor");
-    if (!val.empty()) settings.annotationTextOutlineColor = ParseColor(val);
-    LoadScreenshotBool(screenshotSection, L"annotationTextBackground", settings.annotationTextBackground);
-    val = FindJsonValue(screenshotSection, L"annotationTextBackgroundColor");
-    if (!val.empty()) settings.annotationTextBackgroundColor = ParseColor(val);
-    LoadScreenshotInt(screenshotSection, L"annotationTextBackgroundOpacity", settings.annotationTextBackgroundOpacity, 0, 100);
-    LoadScreenshotInt(screenshotSection, L"annotationTextBackgroundRounded", settings.annotationTextBackgroundRounded, 0, 0x1e);
-    LoadScreenshotInt(screenshotSection, L"annotationTextBackgroundPadding", settings.annotationTextBackgroundPadding, 0, 0x32);
-    LoadScreenshotBool(screenshotSection, L"annotationTextBold", settings.annotationTextBold);
-    LoadScreenshotBool(screenshotSection, L"annotationTextItalics", settings.annotationTextItalics);
-    val = FindJsonValue(screenshotSection, L"annotationTextFontFamily");
-    if (!val.empty()) settings.annotationTextFontFamily = val;
-    LoadScreenshotInt(screenshotSection, L"annotationTextFontSize", settings.annotationTextFontSize, 8, 96);
-    if (HasJsonKey(screenshotSection, L"annotationWatermarkText")) {
-        settings.annotationWatermarkText = FindJsonValue(screenshotSection, L"annotationWatermarkText");
-    }
-    val = FindJsonValue(screenshotSection, L"annotationWatermarkColor");
-    if (!val.empty()) settings.annotationWatermarkColor = ParseColor(val);
-    LoadScreenshotBool(screenshotSection, L"annotationWatermarkBold", settings.annotationWatermarkBold);
-    LoadScreenshotBool(screenshotSection, L"annotationWatermarkItalics", settings.annotationWatermarkItalics);
-    LoadScreenshotInt(screenshotSection, L"annotationWatermarkOpacity", settings.annotationWatermarkOpacity, 0, 100);
-    LoadScreenshotInt(screenshotSection, L"annotationWatermarkFontSize", settings.annotationWatermarkFontSize, 8, 96);
-    LoadScreenshotInt(screenshotSection, L"annotationWatermarkGap", settings.annotationWatermarkGap, 0, 200);
-    LoadScreenshotInt(screenshotSection, L"annotationWatermarkAngle", settings.annotationWatermarkAngle, -90, 90);
-    val = FindJsonValue(screenshotSection, L"annotationWatermarkFontFamily");
-    if (!val.empty()) settings.annotationWatermarkFontFamily = val;
-    LoadScreenshotInt(screenshotSection, L"annotationWatermarkPosition", settings.annotationWatermarkPosition, 0, 7);
-    LoadScreenshotBool(screenshotSection, L"postProcessEnabledEveryScreenshot", settings.postProcessEnabledEveryScreenshot);
-    LoadScreenshotInt(screenshotSection, L"postProcessMode", settings.postProcessMode, 1, 2);
-    LoadScreenshotInt(screenshotSection, L"roundedCornerRadius", settings.roundedCornerRadius, 0, 0x3c);
-    LoadScreenshotInt(screenshotSection, L"postProcessShadowSize", settings.postProcessShadowSize, 0, 100);
-    val = FindJsonValue(screenshotSection, L"postProcessShadowColor");
-    if (!val.empty()) settings.postProcessShadowColor = ParseColor(val);
-    LoadScreenshotInt(screenshotSection, L"postProcessBorderSize", settings.postProcessBorderSize, 0, 100);
-    val = FindJsonValue(screenshotSection, L"postProcessBorderColor");
-    if (!val.empty()) settings.postProcessBorderColor = ParseColor(val);
-    if (HasJsonKey(screenshotSection, L"functionAreaAlwaysShow")) {
-        settings.functionAreaAlwaysShow = FindJsonValue(screenshotSection, L"functionAreaAlwaysShow");
-    }
-    if (HasJsonKey(screenshotSection, L"functionAreaMorePanel")) {
-        settings.functionAreaMorePanel = FindJsonValue(screenshotSection, L"functionAreaMorePanel");
-    }
-    if (HasJsonKey(screenshotSection, L"functionAreaAlwaysHide")) {
-        settings.functionAreaAlwaysHide = FindJsonValue(screenshotSection, L"functionAreaAlwaysHide");
-    }
-
-    LoadScreenshotBool(screenshotSection, L"hoverMagnifierEnabled", settings.hoverMagnifierEnabled);
-    std::wstring hoverPowerValue = FindJsonValue(screenshotSection, L"hoverMagnifierPower");
-    if (!hoverPowerValue.empty()) {
-        LoadScreenshotInt(screenshotSection, L"hoverMagnifierPower", settings.hoverMagnifierPower, 1, 100);
-        // Migrate early prototype defaults. 100 was based on a wrong visual
-        // inference and samples only ~1.65x0.99 source pixels, over-zooming the
-        // grid into a mostly flat color block. 11 is ZenCrop's 1:1 default
-        // screenshot: one source pixel per 15x9 grid cell.
-        if (settings.hoverMagnifierPower == 8 ||
-            settings.hoverMagnifierPower == 16 ||
-            settings.hoverMagnifierPower == 100) {
-            settings.hoverMagnifierPower = 11;
-        }
-    }
-    LoadScreenshotInt(screenshotSection, L"hoverMagnifierColorFormat", settings.hoverMagnifierColorFormat, 0, 5);
-    if (settings.hoverMagnifierColorFormat == 0) {
-        settings.hoverMagnifierColorFormat = 3;
-    }
-    LoadScreenshotBool(screenshotSection, L"hoverMagnifierShowCoord", settings.hoverMagnifierShowCoord);
-
-    LoadScreenshotBool(screenshotSection, L"longShotSuperLongWarningNoAsk", settings.longShotSuperLongWarningNoAsk);
-    LoadScreenshotBool(screenshotSection, L"longShotMaxLengthWarningNoAsk", settings.longShotMaxLengthWarningNoAsk);
-    LoadScreenshotBool(screenshotSection, L"longShotMatchFailWarningNoAsk", settings.longShotMatchFailWarningNoAsk);
-    LoadScreenshotBool(screenshotSection, L"longShotStopClearConfirmNoAsk", settings.longShotStopClearConfirmNoAsk);
-    const bool hasLongShotBehaviorVersion =
-        HasJsonKey(screenshotSection, L"longShotBehaviorVersion");
-    LoadScreenshotInt(screenshotSection, L"longShotAfterInitAction", settings.longShotAfterInitAction, 0, 3);
-    // Early long-shot development builds persisted 0 before capture/preview
-    // were usable, leaving upgraded users in an apparently inert mode. Migrate
-    // that legacy value once; versioned settings can still explicitly choose
-    // 0 or 3 for manual Start/Stop behavior.
-    if (!hasLongShotBehaviorVersion && settings.longShotAfterInitAction == 0) {
-        settings.longShotAfterInitAction = 1;
-    }
-    LoadScreenshotBool(screenshotSection, L"longShotAutoCrop", settings.longShotAutoCrop);
-
+    ReadScreenshotSection(screenshotSection, settings);
     return settings;
 }
 
 // Annotation, hover-magnifier and post-processing fields: written here, owned
 // and merged by the annotation editor / hover magnifier paths.
+// Only the alpha-loss warning reads an unreadable token as true; the flags it
+// guards (this warning plus the long-shot prompts) are on by default.
 const BoolField<ScreenshotSettings> kScreenshotExternalBools[] = {
-    { L"warnAlphaLossForJpegBmp", &ScreenshotSettings::warnAlphaLossForJpegBmp },
+    { L"warnAlphaLossForJpegBmp", &ScreenshotSettings::warnAlphaLossForJpegBmp, true },
     { L"annotationUsesCustomColor", &ScreenshotSettings::annotationUsesCustomColor },
     { L"annotationBrokenLineArrow", &ScreenshotSettings::annotationBrokenLineArrow },
     { L"annotationMagnifierEllipse", &ScreenshotSettings::annotationMagnifierEllipse },
@@ -1649,68 +1510,79 @@ const BoolField<ScreenshotSettings> kScreenshotExternalBools[] = {
       &ScreenshotSettings::longShotStopClearConfirmNoAsk },
 };
 
+// The read range repeats the write clamp on purpose: the two must be able to
+// differ (annotationMosaicStrength reads 0..100 and is written clamped to 0..28)
+// and an unreadable token keeps the value already loaded, which is what the
+// annotation editor has always done with these rows.
 const IntField<ScreenshotSettings> kScreenshotExternalInts[] = {
-    { L"annotationActiveTool", &ScreenshotSettings::annotationActiveTool, true, 0, 13 },
-    { L"annotationGeometryTool", &ScreenshotSettings::annotationGeometryTool, true, 1, 13 },
-    { L"annotationMarkerTool", &ScreenshotSettings::annotationMarkerTool, true, 1, 13 },
-    { L"annotationArrowTool", &ScreenshotSettings::annotationArrowTool, true, 1, 13 },
-    { L"annotationTextTool", &ScreenshotSettings::annotationTextTool, true, 1, 13 },
-    { L"annotationMosaicTool", &ScreenshotSettings::annotationMosaicTool, true, 1, 13 },
-    { L"annotationColorIndex", &ScreenshotSettings::annotationColorIndex, true, 0, 6 },
-    { L"annotationGeometryColorIndex", &ScreenshotSettings::annotationGeometryColorIndex, true, 0, 6 },
-    { L"annotationMarkerColorIndex", &ScreenshotSettings::annotationMarkerColorIndex, true, 0, 6 },
-    { L"annotationColorAlpha", &ScreenshotSettings::annotationColorAlpha, true, 0, 100 },
-    { L"annotationColorPickerMode", &ScreenshotSettings::annotationColorPickerMode, true, 0, 2 },
-    { L"annotationLineStyle", &ScreenshotSettings::annotationLineStyle, true, 1, 5 },
-    { L"annotationGeometryPenWidth", &ScreenshotSettings::annotationGeometryPenWidth, true, 1, 32 },
-    { L"annotationGeometryRoundedRadius", &ScreenshotSettings::annotationGeometryRoundedRadius, true, 0, 0x32 },
-    { L"annotationPencilPenWidth", &ScreenshotSettings::annotationPencilPenWidth, true, 1, 32 },
-    { L"annotationMarkerPenWidth", &ScreenshotSettings::annotationMarkerPenWidth, true, 1, 32 },
-    { L"annotationArrowPenWidth", &ScreenshotSettings::annotationArrowPenWidth, true, 1, 32 },
-    { L"annotationArrowShape", &ScreenshotSettings::annotationArrowShape, true, 1, 8 },
-    { L"annotationBrokenLineMode", &ScreenshotSettings::annotationBrokenLineMode, true, 0, 1 },
-    { L"annotationBrokenLineStartArrowType", &ScreenshotSettings::annotationBrokenLineStartArrowType, true, 0, 11 },
-    { L"annotationBrokenLineEndArrowType", &ScreenshotSettings::annotationBrokenLineEndArrowType, true, 0, 11 },
-    { L"annotationMagnifierPenWidth", &ScreenshotSettings::annotationMagnifierPenWidth, true, 1, 32 },
-    { L"annotationMagnifierRoundedRadius", &ScreenshotSettings::annotationMagnifierRoundedRadius, true, 0, 0x32 },
-    { L"annotationMagnifierLinkType", &ScreenshotSettings::annotationMagnifierLinkType, true, 0, 3 },
-    { L"annotationMagnifierMagnification", &ScreenshotSettings::annotationMagnifierMagnification, true, 100, 400 },
-    { L"annotationMosaicPenWidth", &ScreenshotSettings::annotationMosaicPenWidth, true, 1, 32 },
-    { L"annotationEraserPenWidth", &ScreenshotSettings::annotationEraserPenWidth, true, 1, 32 },
-    { L"annotationSerialPenWidth", &ScreenshotSettings::annotationSerialPenWidth, true, 1, 32 },
-    { L"annotationMosaicStrength", &ScreenshotSettings::annotationMosaicStrength, true, 0, 28 },
-    { L"annotationMarkerBlendMode", &ScreenshotSettings::annotationMarkerBlendMode, true, 0, 1 },
-    { L"annotationMosaicMode", &ScreenshotSettings::annotationMosaicMode, true, 0, 1 },
-    { L"annotationSerialType", &ScreenshotSettings::annotationSerialType, true, 0, 4 },
-    { L"annotationHighLightOpacity", &ScreenshotSettings::annotationHighLightOpacity, true, 0, 100 },
-    { L"annotationTextOutlineSize", &ScreenshotSettings::annotationTextOutlineSize, true, 1, 0x32 },
-    { L"annotationTextBackgroundOpacity", &ScreenshotSettings::annotationTextBackgroundOpacity, true, 0, 100 },
-    { L"annotationTextBackgroundRounded", &ScreenshotSettings::annotationTextBackgroundRounded, true, 0, 0x1e },
-    { L"annotationTextBackgroundPadding", &ScreenshotSettings::annotationTextBackgroundPadding, true, 0, 0x32 },
-    { L"annotationTextFontSize", &ScreenshotSettings::annotationTextFontSize, true, 8, 96 },
-    { L"annotationWatermarkOpacity", &ScreenshotSettings::annotationWatermarkOpacity, true, 0, 100 },
-    { L"annotationWatermarkFontSize", &ScreenshotSettings::annotationWatermarkFontSize, true, 8, 96 },
-    { L"annotationWatermarkGap", &ScreenshotSettings::annotationWatermarkGap, true, 0, 200 },
-    { L"annotationWatermarkAngle", &ScreenshotSettings::annotationWatermarkAngle, true, -90, 90 },
-    { L"annotationWatermarkPosition", &ScreenshotSettings::annotationWatermarkPosition, true, 0, 7 },
-    { L"postProcessMode", &ScreenshotSettings::postProcessMode, true, 1, 2 },
-    { L"roundedCornerRadius", &ScreenshotSettings::roundedCornerRadius, true, 0, 0x3c },
-    { L"postProcessShadowSize", &ScreenshotSettings::postProcessShadowSize, true, 0, 100 },
-    { L"postProcessBorderSize", &ScreenshotSettings::postProcessBorderSize, true, 0, 100 },
-    { L"hoverMagnifierPower", &ScreenshotSettings::hoverMagnifierPower, true, 1, 100 },
-    { L"hoverMagnifierColorFormat", &ScreenshotSettings::hoverMagnifierColorFormat, true, 0, 5 },
+    { L"annotationActiveTool", &ScreenshotSettings::annotationActiveTool, true, 0, 13, { true, 0, 13, true } },
+    { L"annotationGeometryTool", &ScreenshotSettings::annotationGeometryTool, true, 1, 13, { true, 1, 13, true } },
+    { L"annotationMarkerTool", &ScreenshotSettings::annotationMarkerTool, true, 1, 13, { true, 1, 13, true } },
+    { L"annotationArrowTool", &ScreenshotSettings::annotationArrowTool, true, 1, 13, { true, 1, 13, true } },
+    { L"annotationTextTool", &ScreenshotSettings::annotationTextTool, true, 1, 13, { true, 1, 13, true } },
+    { L"annotationMosaicTool", &ScreenshotSettings::annotationMosaicTool, true, 1, 13, { true, 1, 13, true } },
+    { L"annotationColorIndex", &ScreenshotSettings::annotationColorIndex, true, 0, 6, { true, 0, 6, true } },
+    { L"annotationGeometryColorIndex", &ScreenshotSettings::annotationGeometryColorIndex, true, 0, 6, { true, 0, 6, true } },
+    { L"annotationMarkerColorIndex", &ScreenshotSettings::annotationMarkerColorIndex, true, 0, 6, { true, 0, 6, true } },
+    { L"annotationColorAlpha", &ScreenshotSettings::annotationColorAlpha, true, 0, 100, { true, 0, 100, true } },
+    { L"annotationColorPickerMode", &ScreenshotSettings::annotationColorPickerMode, true, 0, 2, { true, 0, 2, true } },
+    { L"annotationLineStyle", &ScreenshotSettings::annotationLineStyle, true, 1, 5, { true, 1, 5, true } },
+    { L"annotationGeometryPenWidth", &ScreenshotSettings::annotationGeometryPenWidth, true, 1, 32, { true, 1, 32, true } },
+    { L"annotationGeometryRoundedRadius", &ScreenshotSettings::annotationGeometryRoundedRadius, true, 0, 0x32, { true, 0, 0x32, true } },
+    { L"annotationPencilPenWidth", &ScreenshotSettings::annotationPencilPenWidth, true, 1, 32, { true, 1, 32, true } },
+    { L"annotationMarkerPenWidth", &ScreenshotSettings::annotationMarkerPenWidth, true, 1, 32, { true, 1, 32, true } },
+    { L"annotationArrowPenWidth", &ScreenshotSettings::annotationArrowPenWidth, true, 1, 32, { true, 1, 32, true } },
+    { L"annotationArrowShape", &ScreenshotSettings::annotationArrowShape, true, 1, 8, { true, 1, 8, true } },
+    { L"annotationBrokenLineMode", &ScreenshotSettings::annotationBrokenLineMode, true, 0, 1, { true, 0, 1, true } },
+    { L"annotationBrokenLineStartArrowType", &ScreenshotSettings::annotationBrokenLineStartArrowType, true, 0, 11, { true, 0, 11, true } },
+    { L"annotationBrokenLineEndArrowType", &ScreenshotSettings::annotationBrokenLineEndArrowType, true, 0, 11, { true, 0, 11, true } },
+    { L"annotationMagnifierPenWidth", &ScreenshotSettings::annotationMagnifierPenWidth, true, 1, 32, { true, 1, 32, true } },
+    { L"annotationMagnifierRoundedRadius", &ScreenshotSettings::annotationMagnifierRoundedRadius, true, 0, 0x32, { true, 0, 0x32, true } },
+    { L"annotationMagnifierLinkType", &ScreenshotSettings::annotationMagnifierLinkType, true, 0, 3, { true, 0, 3, true } },
+    { L"annotationMagnifierMagnification", &ScreenshotSettings::annotationMagnifierMagnification, true, 100, 400, { true, 100, 400, true } },
+    { L"annotationMosaicPenWidth", &ScreenshotSettings::annotationMosaicPenWidth, true, 1, 32, { true, 1, 32, true } },
+    { L"annotationEraserPenWidth", &ScreenshotSettings::annotationEraserPenWidth, true, 1, 32, { true, 1, 32, true } },
+    { L"annotationSerialPenWidth", &ScreenshotSettings::annotationSerialPenWidth, true, 1, 32, { true, 1, 32, true } },
+    { L"annotationMosaicStrength", &ScreenshotSettings::annotationMosaicStrength, true, 0, 28, { true, 0, 100, true } },
+    { L"annotationMarkerBlendMode", &ScreenshotSettings::annotationMarkerBlendMode, true, 0, 1, { true, 0, 1, true } },
+    { L"annotationMosaicMode", &ScreenshotSettings::annotationMosaicMode, true, 0, 1, { true, 0, 1, true } },
+    { L"annotationSerialType", &ScreenshotSettings::annotationSerialType, true, 0, 4, { true, 0, 4, true } },
+    { L"annotationHighLightOpacity", &ScreenshotSettings::annotationHighLightOpacity, true, 0, 100, { true, 0, 100, true } },
+    { L"annotationTextOutlineSize", &ScreenshotSettings::annotationTextOutlineSize, true, 1, 0x32, { true, 1, 0x32, true } },
+    { L"annotationTextBackgroundOpacity", &ScreenshotSettings::annotationTextBackgroundOpacity, true, 0, 100, { true, 0, 100, true } },
+    { L"annotationTextBackgroundRounded", &ScreenshotSettings::annotationTextBackgroundRounded, true, 0, 0x1e, { true, 0, 0x1e, true } },
+    { L"annotationTextBackgroundPadding", &ScreenshotSettings::annotationTextBackgroundPadding, true, 0, 0x32, { true, 0, 0x32, true } },
+    { L"annotationTextFontSize", &ScreenshotSettings::annotationTextFontSize, true, 8, 96, { true, 8, 96, true } },
+    { L"annotationWatermarkOpacity", &ScreenshotSettings::annotationWatermarkOpacity, true, 0, 100, { true, 0, 100, true } },
+    { L"annotationWatermarkFontSize", &ScreenshotSettings::annotationWatermarkFontSize, true, 8, 96, { true, 8, 96, true } },
+    { L"annotationWatermarkGap", &ScreenshotSettings::annotationWatermarkGap, true, 0, 200, { true, 0, 200, true } },
+    { L"annotationWatermarkAngle", &ScreenshotSettings::annotationWatermarkAngle, true, -90, 90, { true, -90, 90, true } },
+    { L"annotationWatermarkPosition", &ScreenshotSettings::annotationWatermarkPosition, true, 0, 7, { true, 0, 7, true } },
+    { L"postProcessMode", &ScreenshotSettings::postProcessMode, true, 1, 2, { true, 1, 2, true } },
+    { L"roundedCornerRadius", &ScreenshotSettings::roundedCornerRadius, true, 0, 0x3c, { true, 0, 0x3c, true } },
+    { L"postProcessShadowSize", &ScreenshotSettings::postProcessShadowSize, true, 0, 100, { true, 0, 100, true } },
+    { L"postProcessBorderSize", &ScreenshotSettings::postProcessBorderSize, true, 0, 100, { true, 0, 100, true } },
+    { L"hoverMagnifierPower", &ScreenshotSettings::hoverMagnifierPower, true, 1, 100, { true, 1, 100, true } },
+    { L"hoverMagnifierColorFormat", &ScreenshotSettings::hoverMagnifierColorFormat, true, 0, 5, { true, 0, 5, true } },
 };
 
+// readExplicitEmpty marks the text fields where an empty string is a real value:
+// clearing the watermark or one of the toolbar lists must survive a reload, and
+// the writer stores them as "" rather than omitting the key.
 const StringField<ScreenshotSettings> kScreenshotExternalStrings[] = {
     { L"fileNameTemplate", &ScreenshotSettings::fileNameTemplate },
     { L"annotationTextFontFamily", &ScreenshotSettings::annotationTextFontFamily,
       L"Microsoft YaHei" },
-    { L"annotationWatermarkText", &ScreenshotSettings::annotationWatermarkText },
+    { L"annotationWatermarkText", &ScreenshotSettings::annotationWatermarkText,
+      nullptr, true },
     { L"annotationWatermarkFontFamily",
       &ScreenshotSettings::annotationWatermarkFontFamily, L"Microsoft YaHei" },
-    { L"functionAreaAlwaysShow", &ScreenshotSettings::functionAreaAlwaysShow },
-    { L"functionAreaMorePanel", &ScreenshotSettings::functionAreaMorePanel },
-    { L"functionAreaAlwaysHide", &ScreenshotSettings::functionAreaAlwaysHide },
+    { L"functionAreaAlwaysShow", &ScreenshotSettings::functionAreaAlwaysShow,
+      nullptr, true },
+    { L"functionAreaMorePanel", &ScreenshotSettings::functionAreaMorePanel,
+      nullptr, true },
+    { L"functionAreaAlwaysHide", &ScreenshotSettings::functionAreaAlwaysHide,
+      nullptr, true },
 };
 
 const ColorField<ScreenshotSettings> kScreenshotExternalColors[] = {
@@ -1735,6 +1607,30 @@ const SectionTable<ScreenshotSettings> kScreenshotTable = {
       kScreenshotExternalStrings, kScreenshotExternalColors, {},
       {}, kScreenshotExternalConstants },
 };
+
+// Read-time migrations, which are one-shot fixes rather than per-field rules.
+static void ReadScreenshotSection(const std::wstring& section, ScreenshotSettings& settings) {
+    ReadSectionFields(kScreenshotTable, section, settings);
+
+    // Early prototypes wrote 8/16/100 for a wrong sample window; 11 is the 1:1
+    // calibration, and it is the value the reader already holds without a key.
+    if (settings.hoverMagnifierPower == 8 ||
+        settings.hoverMagnifierPower == 16 ||
+        settings.hoverMagnifierPower == 100) {
+        settings.hoverMagnifierPower = 11;
+    }
+    if (settings.hoverMagnifierColorFormat == 0) {
+        settings.hoverMagnifierColorFormat = 3;
+    }
+    // Early long-shot development builds persisted 0 before capture/preview were
+    // usable, leaving upgraded users in an apparently inert mode. Migrate that
+    // legacy value once; versioned settings can still explicitly choose 0 or 3 for
+    // manual Start/Stop behavior.
+    if (!HasJsonKey(section, L"longShotBehaviorVersion") &&
+        settings.longShotAfterInitAction == 0) {
+        settings.longShotAfterInitAction = 1;
+    }
+}
 
 static std::wstring BuildScreenshotSectionJson(const ScreenshotSettings& settings) {
     return BuildSectionJson(kScreenshotTable, settings);

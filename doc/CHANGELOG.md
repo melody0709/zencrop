@@ -1,5 +1,16 @@
 # Changelog
 
+## V3.1.1 (2026-09-25)
+
+### 设置持久化读取路径字段表化 (Settings Read Path)
+
+- **读取与写入、合并同源**: `src/core/Settings.cpp` 的六段读取（general / alwaysOnTop / overlay / screenshot / ocr / hotkeys）不再逐字段手写键名，改为调用与写入、`CommitSettingsPatch` 字段级合并同一批 `SectionTable` 字段行。此前"写入有一行、读取漏一个分支"会让字段在下次启动静默回到默认值，现在键名只有一处权威，新增普通字段不再需要手写 `Load*Settings` 赋值。
+- **与写入故意不同的读取规则就近声明**: 字段行新增只读元数据——整数读取夹取范围（可与写入范围不同：`annotationMosaicStrength` 读 0–100、写 0–28）、非法/`null` token 的回退（解析为 0 再夹取，或保留已加载值）、布尔非法 token 的回退值（`warnAlphaLossForJpegBmp` 与 OCR 各开关回退 `true`）、字符串"显式空串即清空"与取值归一化回调（`ppocrv6Variant`/`ppocrv6DetLimitType` 的枚举归一、`paddleApiUrl` 的 URL 归一）、热键缺键清空，以及 `TransformField` 的读取回调（`language` 的枚举映射、`altHotkeyRoute` 路由别名、`timeoutMs`/`paddleVlMaxTokens` 归一化、版面档位与分组模式的旧别名、`ppocrv6Preset` 原样暂存）。缺键默认保留结构体默认值，绝不套用写入 clamp。
+- **段级例外保持显式分支**: 整段缺失回落到全新安装默认值（尤其 `hotkeys`）、段内缺 `ocrAlt` 强制清空、`docIncludeIgnoredRegions = !docIgnorePageDecorations` 恒等派生、`ppocrv6Preset` 必须在全部旋钮读完后才归一（缺键或空值时归一的是默认 id，与旧 `DowngradePPOcrV6PresetIfDiverged` 分支等价）、截图旧版迁移（`longShotBehaviorVersion`、放大镜旧值、色彩格式）仍是读取后处理，没有藏进每行元数据。
+- **读取覆盖 owned + external**: 截图段多数整数字段归标注编辑器所有（`external`），读取同样覆盖，合并且仍只遍历 `owned`；常量字段（`ppocrv6Provider`、`longShotBehaviorVersion`）只写不赋值。
+- **读取语义契约用例**: `test_startup_registration_contract` 新增手写 JSON 样本，钉住缺文件/缺段、缺键/显式空串/非法 token、Always On Top 与 Overlay 边界值、`ocrAlt` 三种配置形态、OCR 旧路由/版面/变体别名与预设归一化、`paddleVlMaxTokens` 缺键归一、`paddleLocalPort` 不夹取、截图 `annotationMosaicStrength` 读写差异、`jpegQuality` 与标注整数（`annotationGeometryPenWidth`）的非法 token 差异行为、水印/工具条字符串的显式空串清空语义。这些用例在原读取实现上先行跑绿，用于约束迁移前后行为一致；本轮迁移正是由它们抓出两处 `ppocrv6Preset` 缺键回归后才转绿。
+- **版本全面升级**: 应用、安装包与文档统一升级至 `v3.1.1`。
+
 ## V3.1.0 (2026-09-24)
 
 ### 设置界面全面现代化重构 (Settings UI Modernization)

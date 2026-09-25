@@ -1,8 +1,14 @@
-# ZenCrop v3.1.0
+# ZenCrop v3.1.1
 
 [English](../README.md)
 
 ZenCrop 是对 [PowerToys Crop And Lock](https://github.com/microsoft/PowerToys/tree/main/src/modules/CropAndLock/) 的独立、**增强型**重构实现，并融合了丰富的截图标注、长截图、多引擎 OCR 和 OCR 工作台。
+
+## v3.1.1 更新重点
+
+- **设置读取与写入共用同一字段表**: `settings.cpp` 的六段读取（general / alwaysOnTop / overlay / screenshot / ocr / hotkeys）改为经既有的 `SectionTable` 字段表取回，与写入、字段级合并同源。此前新增字段可能写入正常却在下次启动被静默还原为默认值（漏改读取分支），现在每行字段同时是读取依据。与写入故意不同的读取规则——只读夹取范围、非法 token 回退、显式空串、旧别名与一次性迁移——就近声明在字段行上；段级例外（整段缺失、`ocrAlt` 缺键）保持显式分支，不藏进策略标志。
+- **新增读取语义契约用例**: 缺文件/缺段、缺键/显式空串/非法 token、Always On Top 与 Overlay 边界、`hotkeys.ocrAlt` 三种形态、OCR 旧别名与预设归一化、截图旧版迁移及读写夹取差异（马赛克强度读 0–100、写 0–28）全部由手写 JSON 样本钉住。
+- **版本全面升级**: 应用、安装包与文档统一升级至 `v3.1.1`。
 
 ## v3.1.0 更新重点
 

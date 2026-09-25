@@ -600,6 +600,325 @@ void TestCommitPatchWriteFailureReportsIoError() {
 }
 
 // ---------------------------------------------------------------------------
+// Read-semantics contract.
+//
+// TestSectionJsonShape pins the byte format of the write tables; this block pins
+// what each loader does with the JSON it finds, from hand-written samples with
+// independently stated expectations. Covered: missing file and missing section,
+// missing key versus explicit empty string versus unreadable token, the documented
+// value boundaries, the three hotkeys.ocrAlt shapes, OCR legacy aliases and preset
+// normalization, and the screenshot migrations plus its read/write clamp split.
+// ---------------------------------------------------------------------------
+
+// New-install hotkeys, kept by a missing file or a missing hotkeys section.
+HotkeySettings InstallDefaultHotkeys() {
+    HotkeySettings h;
+    h.reparent = { false, true, false, true, 'X' };
+    h.thumbnail = { false, true, false, true, 'C' };
+    h.viewport = { false, true, false, true, 'V' };
+    h.closeReparent = { false, true, false, true, 'Z' };
+    h.alwaysOnTop = { false, false, false, true, 'T' };
+    h.screenshot = { false, false, true, true, 'S' };
+    h.ocr = { false, false, true, false, 'X' };
+    h.ocrAlt = { false, false, true, true, 'X' };
+    h.selectionTranslate = { false, false, true, false, 'A' };
+    return h;
+}
+
+void TestReadDefaultsWithoutFileOrSection() {
+    ScopedIsolatedSettingsFile env;
+
+    // No settings file at all.
+    Expect(LoadGeneralSettings() == GeneralSettings(), "general keeps its defaults without a settings file");
+    Expect(LoadAotSettings() == AotSettings(), "alwaysOnTop keeps its defaults without a settings file");
+    Expect(LoadOverlaySettings() == OverlaySettings(), "overlay keeps its defaults without a settings file");
+    Expect(LoadScreenshotSettings() == ScreenshotSettings(), "screenshot keeps its defaults without a settings file");
+    Expect(LoadOcrSettings() == OcrSettings(), "ocr keeps its defaults without a settings file");
+    Expect(LoadHotkeySettings() == InstallDefaultHotkeys(), "hotkeys keep the install defaults without a settings file");
+
+    // A file carrying none of the known sections.
+    env.Write(L"{\n  \"customExtension\": {\n    \"pluginName\": \"Alpha\"\n  }\n}");
+    Expect(LoadGeneralSettings() == GeneralSettings(), "general keeps its defaults when its section is absent");
+    Expect(LoadAotSettings() == AotSettings(), "alwaysOnTop keeps its defaults when its section is absent");
+    Expect(LoadOverlaySettings() == OverlaySettings(), "overlay keeps its defaults when its section is absent");
+    Expect(LoadScreenshotSettings() == ScreenshotSettings(), "screenshot keeps its defaults when its section is absent");
+    Expect(LoadOcrSettings() == OcrSettings(), "ocr keeps its defaults when its section is absent");
+    Expect(LoadHotkeySettings() == InstallDefaultHotkeys(), "hotkeys keep the install defaults when their section is absent");
+
+    // Present but empty sections. Every field keeps its default except the one
+    // documented key that a present section must explicitly carry: ocrAlt.
+    env.Write(
+        L"{\n"
+        L"  \"general\": {},\n  \"alwaysOnTop\": {},\n  \"overlay\": {},\n"
+        L"  \"screenshot\": {},\n  \"ocr\": {},\n  \"hotkeys\": {}\n"
+        L"}"
+    );
+    Expect(LoadGeneralSettings() == GeneralSettings(), "an empty general section keeps its defaults");
+    Expect(LoadAotSettings() == AotSettings(), "an empty alwaysOnTop section keeps its defaults");
+    Expect(LoadOverlaySettings() == OverlaySettings(), "an empty overlay section keeps its defaults");
+    Expect(LoadScreenshotSettings() == ScreenshotSettings(), "an empty screenshot section keeps its defaults");
+    Expect(LoadOcrSettings() == OcrSettings(), "an empty ocr section keeps its defaults");
+    HotkeySettings emptySectionHotkeys = InstallDefaultHotkeys();
+    emptySectionHotkeys.ocrAlt = {};
+    Expect(LoadHotkeySettings() == emptySectionHotkeys,
+        "an empty hotkeys section keeps the install defaults except ocrAlt");
+}
+
+void TestReadMissingKeyEmptyStringAndInvalidTokens() {
+    ScopedIsolatedSettingsFile env;
+    const auto loadGeneral = [&env](const std::wstring& fields) {
+        env.Write(L"{\n  \"general\": {\n    " + fields + L"\n  }\n}");
+        return LoadGeneralSettings();
+    };
+    const auto loadAot = [&env](const std::wstring& fields) {
+        env.Write(L"{\n  \"alwaysOnTop\": {\n    " + fields + L"\n  }\n}");
+        return LoadAotSettings();
+    };
+    const auto loadOverlay = [&env](const std::wstring& fields) {
+        env.Write(L"{\n  \"overlay\": {\n    " + fields + L"\n  }\n}");
+        return LoadOverlaySettings();
+    };
+
+    Expect(loadGeneral(L"\"language\": \"en\",\n    \"showTitlebar\": true").language.value == AppLanguage::English,
+        "language reads a known id");
+    Expect(loadGeneral(L"\"language\": \"en\",\n    \"showTitlebar\": true").showTitlebar == true,
+        "showTitlebar reads true");
+    Expect(loadGeneral(L"\"language\": \"fr\"").language.value == AppLanguage::Auto,
+        "an unknown language id reads as auto");
+
+    // An unreadable bool token reads false, even for a field defaulting to true.
+    Expect(loadAot(L"\"showBorder\": \"on\"").showBorder == false,
+        "an unreadable showBorder token reads false");
+    Expect(loadAot(L"\"customColor\": \"maybe\"").customColor == false,
+        "an unreadable customColor token reads false");
+    Expect(loadOverlay(L"\"cropOnTop\": \"yes\"").cropOnTop == false,
+        "an unreadable cropOnTop token reads false");
+
+    // Integers clamp on read; a missing key leaves the default alone.
+    const AotSettings clamped = loadAot(L"\"opacity\": 0,\n    \"thickness\": 99,\n    \"inset\": -3");
+    Expect(clamped.opacity == 1, "an opacity below its floor reads as that floor");
+    Expect(clamped.thickness == 20, "a thickness above its ceiling reads as that ceiling");
+    Expect(clamped.inset == 0, "a negative inset reads as 0");
+
+    const AotSettings unreadable = loadAot(L"\"opacity\": \"abc\"");
+    Expect(unreadable.opacity == 1, "an unreadable opacity reads as 1");
+    Expect(unreadable.thickness == 4, "a missing thickness key keeps its default");
+    Expect(unreadable.inset == 1, "a missing inset key keeps its default");
+
+    Expect(loadAot(L"\"opacity\": \"\"").opacity == 100,
+        "an explicitly empty int reads like a missing key");
+
+    const AotSettings bounded = loadAot(L"\"opacity\": 100,\n    \"thickness\": 1");
+    Expect(bounded.opacity == 100, "opacity keeps its documented ceiling");
+    Expect(bounded.thickness == 1, "thickness keeps its documented floor");
+
+    // Colors reuse the shared hex parser; an unreadable value is the red fallback.
+    Expect(loadAot(L"\"color\": \"#010203\"").color == RGB(1, 2, 3), "a color reads from its hex text");
+    Expect(loadAot(L"\"color\": \"not-a-color\"").color == RGB(255, 0, 0),
+        "an unreadable color reads as the red fallback");
+
+    Expect(loadOverlay(L"\"thickness\": 0").thickness == 1, "an overlay thickness below its floor reads as 1");
+    Expect(loadOverlay(L"\"thickness\": 11").thickness == 10, "an overlay thickness above its ceiling reads as 10");
+}
+
+void TestReadHotkeyShapes() {
+    ScopedIsolatedSettingsFile env;
+
+    // A file without a hotkeys section keeps the new-install defaults, the
+    // alternate OCR key included.
+    env.Write(L"{\n  \"general\": {\n    \"language\": \"en\"\n  }\n}");
+    Expect(LoadHotkeySettings() == InstallDefaultHotkeys(),
+        "a file without a hotkeys section keeps the install defaults");
+
+    // The section exists without an ocrAlt key: that key is cleared, and the keys
+    // the section omits keep their defaults.
+    env.Write(
+        L"{\n  \"hotkeys\": {\n"
+        L"    \"reparent\": {\"win\": true, \"ctrl\": true, \"shift\": false, \"alt\": false, \"key\": 82}\n"
+        L"  }\n}"
+    );
+    HotkeySettings hotkeys = LoadHotkeySettings();
+    Expect(hotkeys.reparent == HotkeyConfig{ true, true, false, false, 'R' },
+        "a listed hotkey replaces its default");
+    Expect(hotkeys.thumbnail == InstallDefaultHotkeys().thumbnail, "an unlisted hotkey keeps its default");
+    Expect(hotkeys.ocrAlt.IsEmpty(), "a missing ocrAlt key clears the alternate OCR hotkey");
+
+    // A hotkey object parses from an empty config, so modifiers it does not list
+    // stay off and an empty object clears the key.
+    env.Write(
+        L"{\n  \"hotkeys\": {\n"
+        L"    \"ocrAlt\": {\"key\": 80},\n"
+        L"    \"ocr\": {}\n"
+        L"  }\n}"
+    );
+    hotkeys = LoadHotkeySettings();
+    Expect(hotkeys.ocrAlt == HotkeyConfig{ false, false, false, false, 'P' },
+        "a partially specified ocrAlt object parses from an empty config");
+    Expect(hotkeys.ocr.IsEmpty(), "an empty hotkey object clears the key");
+}
+
+void TestReadOcrAliasesAndPresetNormalization() {
+    ScopedIsolatedSettingsFile env;
+    const auto loadOcr = [&env](const std::wstring& fields) {
+        env.Write(L"{\n  \"ocr\": {\n    " + fields + L"\n  }\n}");
+        return LoadOcrSettings();
+    };
+
+    // Legacy route aliases and unknown routes all land on the document route.
+    Expect(loadOcr(L"\"altHotkeyRoute\": \"paddle_doc\"").altHotkeyRoute == L"paddle_local_doc",
+        "the paddle_doc route alias reads as paddle_local_doc");
+    Expect(loadOcr(L"\"altHotkeyRoute\": \"doc_parsing\"").altHotkeyRoute == L"paddle_local_doc",
+        "the doc_parsing route alias reads as paddle_local_doc");
+    Expect(loadOcr(L"\"altHotkeyRoute\": \"current\"").altHotkeyRoute == L"paddle_local_doc",
+        "the legacy current route reads as paddle_local_doc");
+    Expect(loadOcr(L"\"altHotkeyRoute\": \"gibberish\"").altHotkeyRoute == L"paddle_local_doc",
+        "an unknown route reads as paddle_local_doc");
+    Expect(loadOcr(L"\"altHotkeyRoute\": \"paddle_cloud\"").altHotkeyRoute == L"paddle_cloud",
+        "a known route is kept");
+
+    // The cloud URL is normalized; a bare host falls back to the jobs endpoint.
+    Expect(loadOcr(L"\"paddleApiUrl\": \"https://example.invalid/custom/\"").paddleApiUrl ==
+        L"https://example.invalid/custom", "trailing slashes are stripped from the cloud URL");
+    Expect(loadOcr(L"\"paddleApiUrl\": \"https://paddleocr.aistudio-app.com\"").paddleApiUrl ==
+        L"https://paddleocr.aistudio-app.com/api/v2/ocr/jobs", "the bare cloud host reads as the jobs endpoint");
+
+    // Layout family, threshold profile and grouping aliases.
+    Expect(loadOcr(L"\"layoutModelFamily\": \"pp-doclayoutv3\"").layoutModelFamily == L"pp_doclayout_v3",
+        "the pp-doclayoutv3 alias reads as pp_doclayout_v3");
+    Expect(loadOcr(L"\"layoutModelFamily\": \"v2\"").layoutModelFamily == L"pp_doclayout_v2",
+        "the v2 alias reads as pp_doclayout_v2");
+    Expect(loadOcr(L"\"layoutModelFamily\": \"mystery\"").layoutModelFamily == L"auto",
+        "an unknown layout family reads as auto");
+    Expect(loadOcr(L"\"layoutThresholdProfile\": \"official_like\"").layoutThresholdProfile == L"official",
+        "the official_like alias reads as official");
+    Expect(loadOcr(L"\"layoutThresholdProfile\": \"mystery\"").layoutThresholdProfile == L"official",
+        "an unknown threshold profile reads as official");
+    Expect(loadOcr(L"\"layoutThresholdProfile\": \"recall\"").layoutThresholdProfile == L"recall",
+        "the recall profile is kept");
+    Expect(loadOcr(L"\"paddleDocGroupingMode\": \"legacy-union-ab\"").paddleDocGroupingMode == L"legacy_union_ab",
+        "the legacy-union-ab alias reads as legacy_union_ab");
+    Expect(loadOcr(L"\"paddleDocGroupingMode\": \"mystery\"").paddleDocGroupingMode == L"official_group",
+        "an unknown grouping mode reads as official_group");
+    Expect(loadOcr(L"\"ppocrv6Variant\": \"mystery\"").ppocrv6Variant == L"small",
+        "an unknown PP-OCRv6 variant reads as small");
+    Expect(loadOcr(L"\"ppocrv6DetLimitType\": \"mystery\"").ppocrv6DetLimitType == L"min",
+        "an unknown det limit type reads as min");
+
+    // Integers clamp on read, except the port which is read as entered.
+    const OcrSettings clamped = loadOcr(
+        L"\"ocrFontSize\": 99,\n    \"ppocrv6DetLimitSideLen\": 10,\n"
+        L"    \"ppocrv6DetUnclipRatioPct\": 50,\n    \"ppocrv6RecBatchSize\": 99,\n"
+        L"    \"timeoutMs\": 5,\n    \"paddleLocalPort\": 70000");
+    Expect(clamped.ocrFontSize == 32, "an ocrFontSize above its ceiling reads as 32");
+    Expect(clamped.ppocrv6DetLimitSideLen == 64, "a det limit side length below its floor reads as 64");
+    Expect(clamped.ppocrv6DetUnclipRatioPct == 100, "an unclip ratio below its floor reads as 100");
+    Expect(clamped.ppocrv6RecBatchSize == 8, "a rec batch size above its ceiling reads as 8");
+    Expect(clamped.timeoutMs == 120000, "a timeout below its floor reads as the 2 minute minimum");
+    Expect(clamped.paddleLocalPort == 70000, "the local port reads without a clamp");
+
+    // The token budget is normalized to 4096/8192, a missing key included.
+    Expect(loadOcr(L"\"language\": \"ja\"").paddleVlMaxTokens == 4096,
+        "paddleVlMaxTokens normalizes to 4096 when its key is absent");
+    Expect(loadOcr(L"\"paddleVlMaxTokens\": 8192").paddleVlMaxTokens == 8192,
+        "paddleVlMaxTokens keeps 8192");
+    Expect(loadOcr(L"\"paddleVlMaxTokens\": 1234").paddleVlMaxTokens == 4096,
+        "an unsupported paddleVlMaxTokens reads as 4096");
+
+    // docIncludeIgnoredRegions is derived, and the legacy inverted key is honoured.
+    const OcrSettings derived = loadOcr(L"\"docIgnorePageDecorations\": false");
+    Expect(derived.docIgnorePageDecorations == false, "docIgnorePageDecorations reads as stored");
+    Expect(derived.docIncludeIgnoredRegions == true, "docIncludeIgnoredRegions mirrors docIgnorePageDecorations");
+    const OcrSettings derivedDefault = loadOcr(L"\"language\": \"ja\"");
+    Expect(derivedDefault.docIgnorePageDecorations == true, "the ignore-page-decorations default is on");
+    Expect(derivedDefault.docIncludeIgnoredRegions == false, "the derived flag also holds when neither key is present");
+    const OcrSettings legacyKey = loadOcr(L"\"docIncludeIgnoredRegions\": false");
+    Expect(legacyKey.docIgnorePageDecorations == true, "the legacy include key inverts into docIgnorePageDecorations");
+    Expect(legacyKey.docIncludeIgnoredRegions == false, "the legacy include key reads back as stored");
+
+    // The named preset is normalized only against the knobs read alongside it.
+    Expect(loadOcr(L"\"ppocrv6Preset\": \"fast_cpu\"").ppocrv6Preset == L"custom",
+        "a legacy preset id reads as custom");
+    Expect(loadOcr(
+        L"\"ppocrv6Preset\": \"balanced\",\n    \"ppocrv6DetLimitType\": \"min\",\n"
+        L"    \"ppocrv6DetLimitSideLen\": 64,\n    \"ppocrv6DetMaxSideLimit\": 4000,\n"
+        L"    \"ppocrv6DetThreshPct\": 20,\n    \"ppocrv6DetBoxThreshPct\": 45,\n"
+        L"    \"ppocrv6DetUnclipRatioPct\": 140,\n    \"ppocrv6RecScoreThreshPct\": 0,\n"
+        L"    \"ppocrv6RecBatchSize\": 1").ppocrv6Preset == L"balanced",
+        "a preset id whose knobs match is kept");
+    Expect(loadOcr(L"\"ppocrv6Preset\": \"balanced\",\n    \"ppocrv6DetLimitSideLen\": 320").ppocrv6Preset == L"custom",
+        "a preset id whose knobs diverged reads as custom");
+    Expect(loadOcr(L"\"ppocrv6DetLimitSideLen\": 320").ppocrv6Preset == L"custom",
+        "divergent knobs without a preset key read as custom");
+}
+
+void TestReadScreenshotMigrationsAndClampSplit() {
+    ScopedIsolatedSettingsFile env;
+    const auto loadScreenshot = [&env](const std::wstring& fields) {
+        env.Write(L"{\n  \"screenshot\": {\n    " + fields + L"\n  }\n}");
+        return LoadScreenshotSettings();
+    };
+
+    // The mosaic strength reads 0..100 but is written clamped to 0..28, so the
+    // read range must not be taken from the write table.
+    Expect(loadScreenshot(L"\"annotationMosaicStrength\": 100").annotationMosaicStrength == 100,
+        "the mosaic strength reads up to its own ceiling of 100");
+    Expect(loadScreenshot(L"\"annotationMosaicStrength\": 500").annotationMosaicStrength == 100,
+        "the mosaic strength reads clamped to 100");
+    Expect(loadScreenshot(L"\"annotationMosaicStrength\": -4").annotationMosaicStrength == 0,
+        "the mosaic strength reads clamped to 0");
+
+    ScreenshotSettings maxStrength;
+    maxStrength.annotationMosaicStrength = 100;
+    SaveScreenshotSettings(maxStrength);
+    Expect(env.Read().find(L"\"annotationMosaicStrength\": 28") != std::wstring::npos,
+        "the mosaic strength is written clamped to its own ceiling of 28");
+
+    // Unreadable integer tokens differ per field: jpegQuality parses through 0,
+    // a pen width keeps the value already loaded.
+    const ScreenshotSettings unreadable = loadScreenshot(
+        L"\"jpegQuality\": \"abc\",\n    \"annotationGeometryPenWidth\": \"abc\"");
+    Expect(unreadable.jpegQuality == 1, "an unreadable jpegQuality reads as 1");
+    Expect(unreadable.annotationGeometryPenWidth == 4,
+        "an unreadable pen width keeps the value already loaded");
+    Expect(loadScreenshot(L"\"annotationGeometryPenWidth\": 0").annotationGeometryPenWidth == 1,
+        "a pen width below its floor reads as that floor");
+    Expect(loadScreenshot(L"\"annotationGeometryPenWidth\": 99").annotationGeometryPenWidth == 32,
+        "a pen width above its ceiling reads as that ceiling");
+
+    const ScreenshotSettings bounded = loadScreenshot(L"\"jpegQuality\": 0,\n    \"longShotAfterInitAction\": 9");
+    Expect(bounded.jpegQuality == 1, "a jpegQuality below its floor reads as 1");
+    Expect(bounded.longShotAfterInitAction == 3, "a long-shot action above its ceiling reads as 3");
+
+    // The pre-versioned long-shot default is migrated once, and only once.
+    Expect(loadScreenshot(L"\"longShotAfterInitAction\": 0").longShotAfterInitAction == 1,
+        "a versionless long-shot action 0 migrates to 1");
+    Expect(loadScreenshot(L"\"longShotAfterInitAction\": 0,\n    \"longShotBehaviorVersion\": 1")
+        .longShotAfterInitAction == 0, "a versioned long-shot action 0 is preserved");
+
+    // Hover magnifier legacy values migrate only when their key is present.
+    Expect(loadScreenshot(L"\"hoverMagnifierPower\": 100").hoverMagnifierPower == 11,
+        "the legacy magnifier power 100 migrates to 11");
+    Expect(loadScreenshot(L"\"includeCursor\": false").hoverMagnifierPower == 11,
+        "a missing magnifier power keeps the calibrated default of 11");
+    Expect(loadScreenshot(L"\"hoverMagnifierColorFormat\": 0").hoverMagnifierColorFormat == 3,
+        "magnifier color format 0 migrates to 3");
+
+    // Bool tokens fall back per field: most to false, the alpha-loss warning to true.
+    const ScreenshotSettings bools = loadScreenshot(
+        L"\"warnAlphaLossForJpegBmp\": \"nope\",\n    \"hoverMagnifierShowCoord\": \"nope\"");
+    Expect(bools.warnAlphaLossForJpegBmp == true, "an unreadable alpha-loss warning token reads true");
+    Expect(bools.hoverMagnifierShowCoord == false, "an unreadable show-coordinate token reads false");
+
+    // Only the string keys that opt in treat an explicit empty string as a value.
+    const ScreenshotSettings cleared = loadScreenshot(
+        L"\"annotationWatermarkText\": \"\",\n    \"functionAreaAlwaysHide\": \"\",\n"
+        L"    \"annotationTextFontFamily\": \"\"");
+    Expect(cleared.annotationWatermarkText.empty(), "an empty watermark text clears the field");
+    Expect(cleared.functionAreaAlwaysHide.empty(), "an empty toolbar list clears the field");
+    Expect(cleared.annotationTextFontFamily == L"Microsoft YaHei", "an empty font family keeps its default");
+}
+
+// ---------------------------------------------------------------------------
 // Every-field persistence contract.
 //
 // Keep each Maximal* fixture in sync when adding a persisted field. These
@@ -1052,6 +1371,11 @@ int main() {
     TestCommitPatchCreatesMissingTranslationSection();
     TestSaveSettingsPreservesUnrecognizedTopLevel();
     TestCommitPatchWriteFailureReportsIoError();
+    TestReadDefaultsWithoutFileOrSection();
+    TestReadMissingKeyEmptyStringAndInvalidTokens();
+    TestReadHotkeyShapes();
+    TestReadOcrAliasesAndPresetNormalization();
+    TestReadScreenshotMigrationsAndClampSplit();
     TestEveryFieldSurvivesSaveAndLoad();
     TestEveryFieldIsMergedByCommit();
     TestCommitPreservesUneditedScreenshotFields();

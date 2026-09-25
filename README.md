@@ -1,8 +1,14 @@
-# ZenCrop v3.1.0
+# ZenCrop v3.1.1
 
 [中文文档](doc/README_zh.md)
 
 An independent, **enhanced** reimplementation of [PowerToys Crop And Lock](https://github.com/microsoft/PowerToys/tree/main/src/modules/CropAndLock/), with rich screenshot annotation, long screenshot, multi-engine OCR, and OCR Dashboard.
+
+## What's new in v3.1.1
+
+- **Settings reads now share the write field table**: the six section loaders in `settings.cpp` (general / alwaysOnTop / overlay / screenshot / ocr / hotkeys) read their keys back through the same `SectionTable` rows that write and merge them, so a persisted field can no longer be written yet silently re-defaulted on the next start because its read branch was forgotten. Read rules that intentionally differ from the write rules — read-only clamp ranges, invalid-token fallbacks, explicit empty strings, legacy aliases and one-shot migrations — are declared on the field row itself, and the section-level exceptions (a missing whole section, a missing `ocrAlt`) stay visible as explicit branches rather than hidden policy flags.
+- **New read-semantics contract tests**: missing file / missing section, missing key / explicit empty string / invalid token, Always-On-Top and Overlay boundaries, the three `hotkeys.ocrAlt` shapes, OCR legacy aliases and preset normalization, and the Screenshot legacy migrations plus the read-vs-write clamp difference (the mosaic strength reads 0–100 but is written as 0–28) are now pinned by hand-written JSON samples.
+- **Unified Version Bump**: Product version elevated to `v3.1.1` across binaries, installers, portable packages, and documentation.
 
 ## What's new in v3.1.0
 
