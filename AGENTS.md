@@ -1,6 +1,6 @@
 # ZenCrop 日常维护规则
 
-架构重构 Stage 0–4、R5 及 C++23 稳定化重构（P0–P6）已全部完成，版本已升级至 **v3.0.0**。默认处理独立 feature/bug；不要为普通任务读取或回写 EXECUTION、GOAL、ADR、KPI 或历史施工记录，也不要自行重开架构 Stage。
+架构重构 Stage 0–4、R5 及 C++23 稳定化重构（P0–P6）已于 2026-09-23 全部完成并交付 **v3.0.0**；设置界面现代化重构（UI-A…UI-F）已于 2026-09-25 落地并提交，版本为 **v3.1.0**，但其**实机 UI 验收（多 DPI／双屏／任务栏边／负坐标屏／IME 跨屏）尚未完成**——代码可维护，不得据此宣称 UI-F 已签收。默认处理独立 feature/bug；不要为普通任务读取或回写 EXECUTION、GOAL、ADR、KPI 或历史施工记录，也不要自行重开架构 Stage。
 
 ## 已落地的 C++23 架构规范与守卫（日常维护守则）
 
@@ -10,6 +10,11 @@
 - 回滚锚点：`.plan/refactor/rollback-anchors.md`（全阶段原子提交记录与锚点）。
 - **本机环境铁律与历史事故**：`.workbuddy/memory/MEMORY.md`（shell `>>` 会截断已存在文件、`.git` 原子写不可靠、
   生成目录只允许删本次自己新建的文件等）——这些属于会真实造成损坏的约束，动手前务必读。
+- **设置界面契约**：主设置窗口**不是**属性表，页面经 `CreateDialogParamW` 收到 `SettingsPageInit*`（L0），
+  **禁止**依赖 `PROPSHEETPAGEW`/`PSN_APPLY`。新增或修改设置项一律落在 `src/ocr/ui/` 的既有文件里
+  （`SettingsDialog.cpp` 只管宿主生命周期、路由与提交；页面在 `SettingsPages.cpp` / `SettingsSimplePages.cpp` /
+  `SettingsOcrPage.cpp`），写盘只能经 L0 `CommitSettingsPatch`，不要新增 `Save*All` 式的整域回写。
+  方案与遗留项见 `.plan/refactor/settings-ui-modernization-plan.md`。
 
 
 ## ZenCrop 开发参考
