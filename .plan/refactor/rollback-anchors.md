@@ -1,8 +1,8 @@
 # 回滚锚点（Rollback Anchors）
 
-> 规则：每个阶段（P0…P6）**开工前**把当时 `HEAD` 的 SHA 追加到本文件。阶段失败时用
-> `git restore .` 或从锚点开新分支回退，**绝不使用 `git stash`**（本机 `.git` 原子写不可靠，
-> 已有两次事故：`.pack` 被删剩孤儿 `.idx`、refs 丢失）。
+> 规则：每个阶段（P0…P6）或独立切片**开工前**把当时 `HEAD` 的 SHA 记入本文件；完成后再补一行
+> 记录完成提交。阶段失败时用 `git restore .` 或从锚点开新分支回退，**绝不使用 `git stash`**
+> （本机 `.git` 原子写不可靠，已有两次事故：`.pack` 被删剩孤儿 `.idx`、refs 丢失）。
 >
 > 记录格式：`<阶段> | <ISO 时间> | <HEAD SHA> | <说明>`
 
@@ -18,10 +18,14 @@
 | P4 完成 | 2026-09-23 03:16 | `c464ab3f2780e90c8a514d8058dd53a3f552f4eb` | 拆 WideStringUtils 为聚焦域头，引入 PCH，hubHeaderDirectIncluders 降为 0，全量构建与 71 个测试通过 |
 | P5 完成 | 2026-09-23 03:25 | `1ba100e932b6e8a05c3fcda1ef0fa3b3fe5848bb` | 引入 C++23 std::span、std::wstring_view、ComPtr RAII，71 个全套密封测试 100% 通过 |
 | P6 完成 | 2026-09-23 03:26 | `500f711e967406e9ec1914ebfdab0f274cb7ebae` | 版本号全面升级至 v3.0.0，文档同步，P0–P6 全部 7 个阶段闸门全绿 |
+| settings-ui 切片开工 | 2026-09-23 23:28 | `b08d7a6d7c025ded5466ad848a16530d9f74e47c` | 设置界面现代化起点（该提交仅含版本号 3.1.0 与计划文档，不含源码） |
+| settings-ui 完成（UI-A…UI-F） | 2026-09-25 10:52 | `11f2ad8` | 原生多容器宿主替换 PropertySheet；`CommitSettingsPatch` 字段级三方合并 + 字段表同时驱动序列化与合并；`AssembleSettingsJson` 统一装配；27 个新/改源文件与 6 个新 TU；守卫与相关测试通过，**多 DPI／双屏／IME 实机验收仍未做** |
 
 ## 状态说明
 
-- 重构各阶段 P0–P6 均已完成并落地原子提交，回滚锚点已如上表全部固化。
+- 架构重构 P0–P6 与 settings-ui 现代化（UI-A…UI-F）均已落地原子提交，回滚锚点已如上表固化。
+- **settings-ui 的代码已提交，但“六页在真实显示器矩阵下的表现”尚未验收**；正式按 UI-F 签收前
+  须补多 DPI／双屏／左·上任务栏／负坐标屏／IME 跨屏往返的实机验证。
 - 如需回退某一阶段，请使用 `git restore .` 或从锚点 SHA 创建分支，**切勿使用 `git stash`**。
 - 另有独立安全镜像：仓库根 `.bak/`（gitignored，非 Git 快照），刷新方式 `python scripts\python\make_safety_backup.py`。
 
