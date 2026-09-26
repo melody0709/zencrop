@@ -1,8 +1,17 @@
-# ZenCrop v3.1.1
+# ZenCrop v3.1.2
 
 [中文文档](doc/README_zh.md)
 
 An independent, **enhanced** reimplementation of [PowerToys Crop And Lock](https://github.com/microsoft/PowerToys/tree/main/src/modules/CropAndLock/), with rich screenshot annotation, long screenshot, multi-engine OCR, and OCR Dashboard.
+
+## What's new in v3.1.2
+
+- **Focus-aware global-hotkey suspension in Settings**: the settings window no longer swallows the shortcut you are trying to re-record. Outside recording, the already-registered ZenCrop hotkeys stay available, so you can press one to invoke its feature while Settings is open (the Always-On-Top hotkey is the deliberate exception: it ignores the settings window itself). While a shortcut field holds keyboard focus, the application's hotkeys are unregistered, so the field can capture the combination — including one currently bound to another action — instead of the system consuming it or firing the skill. The control notifies its host through standard `WM_COMMAND` (`HKN_SETFOCUS` / `HKN_KILLFOCUS`) and the host forwards to the main window; `WM_KILLFOCUS` uses the documented `wParam` next-focus window, so moving between two shortcut fields keeps the suspension. Focus notifications are posted asynchronously, so a key pressed in the instant before the unregister takes effect can still be consumed; the behavior is pending on-device verification (TC-01…TC-07).
+- **Always-On-Top hotkey no longer pins the Settings window**: when the settings window is in front, the AOT hotkey deliberately ignores it instead of drawing a pin border around the settings window itself.
+- **Deterministic initial focus**: the settings window now puts initial focus on the tab strip, so it cannot land on a shortcut field and leave hotkeys suspended right after opening.
+- **Removed a redundant Always-On-Top refresh**: the hotkey re-registration path no longer calls `UpdateSettings()` (which reads the settings file and repositions every pinned border) on each shortcut-field focus change.
+- **New regression test**: the `HotkeyEdit` focus notifications and the cross-field suspension debounce are now covered by `test_translation_contract`.
+- **Version Source Bumped**: the product version source is now `v3.1.2`, carried into binaries, resources and documentation; installers and portable packages will use this version when next packaged (no `build/packages/3.1.2/` artifact exists yet).
 
 ## What's new in v3.1.1
 

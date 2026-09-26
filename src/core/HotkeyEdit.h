@@ -5,6 +5,12 @@
 // Self-contained Win32 custom edit control for capturing global hotkeys.
 // Extracted from Settings.cpp; no other in-project dependencies.
 
+inline constexpr UINT HKN_SETFOCUS  = 0x0801;
+inline constexpr UINT HKN_KILLFOCUS = 0x0802;
+
+inline constexpr wchar_t kHotkeyEditClassName[] = L"ZenCrop.HotkeyEdit";
+bool IsHotkeyEditWindow(HWND hwnd);
+
 bool IsModifierKey(unsigned char vk);
 HWND CreateHotkeyEdit(HWND parent, int ctrlId, const HotkeyConfig& initial);
 HotkeyConfig GetHotkeyFromEdit(HWND parent, int ctrlId);

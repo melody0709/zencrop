@@ -5,8 +5,30 @@
 #include <mutex>
 
 namespace {
-const wchar_t* HotkeyEditClassName = L"ZenCrop.HotkeyEdit";
 std::once_flag s_hotkeyEditClassReg;
+
+// 拓扑通知：edit -> page (GetParent) -> settings sheet (GetParent(page))
+// 沿用既有 NotifyHotkeyChanged 的父级宿主路由契约。
+void NotifyHotkeyFocus(HWND edit, bool focused) {
+    const HWND page = GetParent(edit);
+    if (!page) return;
+    const HWND sheet = GetParent(page);
+    if (sheet) {
+        SendMessageW(sheet, WM_COMMAND,
+            MAKEWPARAM(GetDlgCtrlID(edit), focused ? HKN_SETFOCUS : HKN_KILLFOCUS),
+            reinterpret_cast<LPARAM>(edit));
+    }
+}
+} // namespace
+
+bool IsHotkeyEditWindow(HWND hwnd) {
+    if (!hwnd) return false;
+    wchar_t clsName[64] = {};
+    GetClassNameW(hwnd, clsName, 64);
+    return _wcsicmp(clsName, kHotkeyEditClassName) == 0;
+}
+
+namespace {
 
 struct HotkeyEditState {
     HotkeyConfig hotkey;
@@ -48,7 +70,7 @@ static void RegisterHotkeyEditClass() {
     wcex.hInstance = GetModuleHandleW(nullptr);
     wcex.hCursor = LoadCursorW(nullptr, IDC_ARROW);
     wcex.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
-    wcex.lpszClassName = HotkeyEditClassName;
+    wcex.lpszClassName = kHotkeyEditClassName;
     wcex.lpfnWndProc = [](HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) -> LRESULT {
         HotkeyEditState* state = (HotkeyEditState*)GetWindowLongPtrW(hwnd, GWLP_USERDATA);
 
@@ -90,6 +112,7 @@ static void RegisterHotkeyEditClass() {
                 state->original = state->hotkey;
                 SyncHotkeyWindowText(hwnd, *state);
                 InvalidateRect(hwnd, nullptr, TRUE);
+                NotifyHotkeyFocus(hwnd, true);
             }
             return 0;
         }
@@ -98,6 +121,15 @@ static void RegisterHotkeyEditClass() {
                 state->capturing = false;
                 SyncHotkeyWindowText(hwnd, *state);
                 InvalidateRect(hwnd, nullptr, TRUE);
+
+                // WM_KILLFOCUS wParam is the window receiving focus (may be NULL).
+                // Use the documented contract rather than GetFocus(), whose value
+                // during this message is not specified and could name this edit,
+                // which would wrongly skip the resume notification.
+                HWND nextFocus = reinterpret_cast<HWND>(wParam);
+                if (!IsHotkeyEditWindow(nextFocus)) {
+                    NotifyHotkeyFocus(hwnd, false);
+                }
             }
             return 0;
         }
@@ -238,7 +270,7 @@ static void RegisterHotkeyEditClass() {
 HWND CreateHotkeyEdit(HWND parent, int ctrlId, const HotkeyConfig& initial) {
     std::call_once(s_hotkeyEditClassReg, []() { RegisterHotkeyEditClass(); });
 
-    HWND edit = CreateWindowExW(0, HotkeyEditClassName, L"",
+    HWND edit = CreateWindowExW(0, kHotkeyEditClassName, L"",
         WS_CHILD | WS_VISIBLE | WS_TABSTOP,
         0, 0, 0, 0, parent, (HMENU)(LONG_PTR)ctrlId,
         GetModuleHandleW(nullptr), nullptr);

@@ -5,6 +5,7 @@
 #include "ViewportWindow.h"
 #include "AlwaysOnTop.h"
 #include "Settings.h"
+#include "core/HotkeyEdit.h"
 #include "ocr/ui/SettingsDialog.h"
 #include "Strings.h"
 #include "OcrEngine.h"
@@ -548,6 +549,10 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         return 0;
     }
     case WM_HOTKEY: {
+        HWND focus = GetFocus();
+        if (IsHotkeyEditWindow(focus)) {
+            return 0;
+        }
         if (wParam == 1) {
             StartCrop(CropMode::Reparent);
         } else if (wParam == 2) {
@@ -571,7 +576,8 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
                 GetClassNameW(target, cn, 64);
                 if (!WideEquals(cn, L"ZenCrop.Main") &&
                     !WideEquals(cn, L"ZenCrop.Overlay") &&
-                    !WideEquals(cn, L"ZenCrop.AlwaysOnTopBorder")) {
+                    !WideEquals(cn, L"ZenCrop.AlwaysOnTopBorder") &&
+                    !WideEquals(cn, kSettingsWindowClassName)) {
                     AlwaysOnTopManager::Instance().TogglePin(target);
                 }
             }
@@ -800,9 +806,20 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         return 0;
     }
     case WM_APP_REREGISTER_HOTKEYS: {
-        AlwaysOnTopManager::Instance().UpdateSettings();
-        UnregisterAppHotkeys(hwnd);
-        RegisterAppHotkeys(hwnd);
+        // No AlwaysOnTopManager::UpdateSettings() here: this message now fires on every
+        // hotkey-edit focus change, and UpdateSettings reads the settings file and
+        // repositions every pinned border. Apply (SettingsDialog.cpp) and the settings
+        // close path (main.cpp WM_COMMAND) already refresh AOT after real settings edits.
+        if (wParam == 1) {
+            // 挂起复核：focus 为 NULL（窗口失焦或未持焦）视为非编辑态，不挂起
+            HWND focus = GetFocus();
+            if (IsHotkeyEditWindow(focus)) {
+                UnregisterAppHotkeys(hwnd);
+            }
+        } else {
+            UnregisterAppHotkeys(hwnd);
+            RegisterAppHotkeys(hwnd);
+        }
         return 0;
     }
     case WM_CLOSE: {

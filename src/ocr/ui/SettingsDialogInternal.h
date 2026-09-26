@@ -10,7 +10,6 @@ namespace settings_ui {
 
 inline constexpr wchar_t kSettingsHotkeyDraftProperty[] = L"ZenCrop.SettingsHotkeyDraft";
 inline constexpr wchar_t kSettingsOcrPendingProp[] = L"ZenCrop.SettingsOcrPending";
-inline constexpr wchar_t kSettingsWindowClassName[] = L"ZenCropSettingsWindowClass";
 inline constexpr wchar_t kSettingsStateProp[] = L"ZenCrop.SettingsState";
 
 struct SettingsState {

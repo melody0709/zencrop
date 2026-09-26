@@ -1,5 +1,19 @@
 # Changelog
 
+## V3.1.2 (2026-09-25)
+
+### 设置界面快捷键焦点感知挂起与现场测试 (Settings Hotkey Focus Suspension)
+
+- **焦点感知的全局热键挂起**: 设置窗口不再“吃掉”正在重录的那个快捷键。非录制状态下，已成功注册的 ZenCrop 热键保持可用，可在设置窗口内直接按下调用对应模块（Always On Top 是刻意例外：它忽略设置窗口自身）；**只有当某个快捷键输入框真正持有键盘焦点时**才在系统层 `UnregisterHotKey`，输入框即可录入组合键——包括“改回原快捷键”“两项快捷键互换”“录入当前绑定给其他功能的组合键”——既不被 `RegisterHotKey` 吞键，也不会误触发技能。此前仅在设置窗口中改键后未 Apply 想改回原键时会彻底无法录入。焦点通知经 `PostMessage` 异步投递，在注销被处理前的一瞬按下的按键仍可能被系统吞掉；该行为待实机验收（TC-01…TC-07）。
+- **标准控件协议通知，L0 出边保持为 0**: `HotkeyEdit`（L0）在 `WM_SETFOCUS` / `WM_KILLFOCUS` 时向宿主设置窗口发送标准 `WM_COMMAND`，携带专有通知码 `HKN_SETFOCUS` / `HKN_KILLFOCUS`（0x0801/0x0802 私有区间，不借用 EDIT 控件的 `EN_*`）。宿主 `SettingsWindowProc` 再转发 `WM_APP_REREGISTER_HOTKEYS(1/0)` 给主窗口；主窗口在挂起请求时复核当前焦点确为 `HotkeyEdit` 才注销，恢复请求则无条件重注册，避免异常时序下的“孤儿挂起”。
+- **`WM_KILLFOCUS` 使用文档化的 `wParam`**: 以“即将获得焦点的窗口”判定是否仍在快捷键控件之间切换（防抖），不再依赖本消息内未定义时序的 `GetFocus()`；若该值误判为旧控件会跳过恢复通知、令热键滞留挂起态。
+- **置顶快捷键排除设置窗口自身**: Always On Top 的置顶目标新增排除 `ZenCropSettingsWindowClass`，设置窗口处于前台时按 AOT 快捷键不再给设置窗口自身套上置顶边框。
+- **初始焦点确定化**: 设置窗口显示后显式把初始焦点落在 Tab 栏，避免初始焦点落到某个快捷键输入框而导致打开即挂起。
+- **移除热键重注册路径上的冗余置顶刷新**: `WM_APP_REREGISTER_HOTKEYS` 不再调用 `AlwaysOnTopManager::UpdateSettings()`。该消息现在每次快捷键框焦点进出都会触发，而 `UpdateSettings()` 会读取设置文件并重排全部置顶边框；Apply 与关闭设置路径已在真正改写设置后各自刷新。
+- **类名常量归位**: `kSettingsWindowClassName` 从 L0 消息头 `AppMessages.h` 移至 `src/ocr/ui/SettingsDialog.h`（L4 公共头，`main.cpp` 已合法 include），并删除 `SettingsDialogInternal.h` 上的 `using` 兼容别名；`AppMessages.h` 补齐 `WM_APP_REREGISTER_HOTKEYS` 的 wParam 契约注释。
+- **回归用例**: `test_translation_contract` 新增 `HotkeyEdit → 宿主` 焦点通知契约（`HKN_SETFOCUS`、离开到非控件/NULL 时的 `HKN_KILLFOCUS`）与输入框间切换防抖（不产生 `HKN_KILLFOCUS`）。`main.cpp` 的注销/恢复与现场调用不在测试目标内，由 TC-01…TC-07 实机走查。
+- **版本源升级**: 产品版本源升至 `v3.1.2`（二进制与文档）；下次打包时安装包与便携包将使用该版本，当前尚无 `build/packages/3.1.2/` 产物。
+
 ## V3.1.1 (2026-09-25)
 
 ### 设置持久化读取路径字段表化 (Settings Read Path)

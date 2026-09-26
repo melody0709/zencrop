@@ -24,6 +24,7 @@ inline constexpr UINT WM_APP_SELECTION_TEXT_ACQUIRED         = WM_APP + 7;
 // wParam: TranslationCoordinator workflow generation (independent of the
 // acquisition generation). lParam: translation::TranslationResult*.
 inline constexpr UINT WM_APP_SELECTION_TRANSLATION_DONE      = WM_APP + 8;
+// wParam: 0 = 恢复/重新注册已保存热键 (Resume/Reregister); 1 = 临时挂起/注销热键 (Suspend)
 inline constexpr UINT WM_APP_REREGISTER_HOTKEYS              = WM_APP + 9;
 inline constexpr UINT WM_APP_SETTINGS_SHEET_SHOW_WINDOW      = WM_APP + 101;
 inline constexpr UINT WM_APP_SETTINGS_SHEET_INIT_LAYOUT      = WM_APP + 102;

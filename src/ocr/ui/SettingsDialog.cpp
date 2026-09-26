@@ -675,6 +675,21 @@ LRESULT CALLBACK SettingsWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
 
     case WM_COMMAND: {
         if (!state) break;
+        int code = HIWORD(wParam);
+        if (code == HKN_SETFOCUS) {
+            HWND mainHwnd = GetParent(hwnd);
+            if (mainHwnd) {
+                PostMessageW(mainHwnd, WM_APP_REREGISTER_HOTKEYS, 1, 0);
+            }
+            return 0;
+        }
+        if (code == HKN_KILLFOCUS) {
+            HWND mainHwnd = GetParent(hwnd);
+            if (mainHwnd) {
+                PostMessageW(mainHwnd, WM_APP_REREGISTER_HOTKEYS, 0, 0);
+            }
+            return 0;
+        }
         switch (LOWORD(wParam)) {
         case IDC_SETTINGS_APPLY:
             ApplySettings(state);
@@ -816,13 +831,17 @@ void ShowSettingsDialog(HWND parent) {
 
     ShowWindow(hwnd, SW_SHOWNORMAL);
     UpdateWindow(hwnd);
+    if (state.hTab && IsWindow(state.hTab)) {
+        SetFocus(state.hTab);
+    }
 
     MSG msg;
     while (IsWindow(hwnd) && GetMessageW(&msg, nullptr, 0, 0)) {
         if (msg.message == WM_KEYDOWN) {
             wchar_t className[64] = {};
             GetClassNameW(msg.hwnd, className, 64);
-            bool isHotkeyEdit = (_wcsicmp(className, L"ZenCrop.HotkeyEdit") == 0);
+            // Reuse the class name we already fetched; IsHotkeyEditWindow would query it again.
+            const bool isHotkeyEdit = (_wcsicmp(className, kHotkeyEditClassName) == 0);
             if (!isHotkeyEdit) {
                 if (HWND openCombo = OpenDropdownComboForMessage(msg)) {
                     // Let the open drop-down consume the key (Esc closes it, Enter selects).

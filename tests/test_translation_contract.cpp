@@ -1025,6 +1025,31 @@ std::wstring ControlText(HWND parent, int id) {
     return text;
 }
 
+// Focus-aware hotkey suspension probe. HotkeyEdit routes HKN_SETFOCUS /
+// HKN_KILLFOCUS to the hosting sheet two levels up (edit -> page -> sheet).
+struct HotkeyFocusNotification {
+    int setFocusCount = 0;
+    int setFocusId = 0;
+    int killFocusCount = 0;
+    int killFocusId = 0;
+};
+
+HotkeyFocusNotification g_hotkeyFocusNotification;
+
+LRESULT CALLBACK HotkeyFocusProbeProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    if (msg == WM_COMMAND) {
+        const int notification = HIWORD(wParam);
+        if (notification == HKN_SETFOCUS) {
+            g_hotkeyFocusNotification.setFocusCount++;
+            g_hotkeyFocusNotification.setFocusId = LOWORD(wParam);
+        } else if (notification == HKN_KILLFOCUS) {
+            g_hotkeyFocusNotification.killFocusCount++;
+            g_hotkeyFocusNotification.killFocusId = LOWORD(wParam);
+        }
+    }
+    return DefWindowProcW(hwnd, msg, wParam, lParam);
+}
+
 int TestCoordinatorMessageChain() {
     const std::wstring dataDirectory = MakeTempDirectory();
     if (dataDirectory.empty()) return 60;
@@ -5483,6 +5508,56 @@ int TestSettingsRoundTrip() {
         return 67;
     }
     DestroyWindow(hotkeyHost);
+
+    // Focus-aware global-hotkey suspension contract: HotkeyEdit notifies its
+    // hosting sheet on focus entry/exit, and keeps the suspension while moving
+    // between two hotkey edits.
+    g_hotkeyFocusNotification = {};
+    WNDCLASSEXW focusProbeClass = { sizeof(focusProbeClass) };
+    focusProbeClass.lpfnWndProc = HotkeyFocusProbeProc;
+    focusProbeClass.hInstance = GetModuleHandleW(nullptr);
+    focusProbeClass.lpszClassName = L"ZenCrop.Test.HotkeyFocusProbe";
+    if (!RegisterClassExW(&focusProbeClass)) return 68;
+    HWND focusSheet = CreateWindowExW(0, L"ZenCrop.Test.HotkeyFocusProbe", L"",
+        WS_OVERLAPPED, 0, 0, 320, 120, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+    HWND focusPage = focusSheet ? CreateWindowExW(0, L"Static", L"", WS_CHILD | WS_VISIBLE,
+        0, 0, 300, 100, focusSheet, nullptr, GetModuleHandleW(nullptr), nullptr) : nullptr;
+    HWND focusEditA = focusPage
+        ? CreateHotkeyEdit(focusPage, 9200, defaultHotkeys.selectionTranslate) : nullptr;
+    HWND focusEditB = focusPage
+        ? CreateHotkeyEdit(focusPage, 9201, defaultHotkeys.reparent) : nullptr;
+    if (!focusSheet || !focusPage || !focusEditA || !focusEditB) {
+        if (focusSheet) DestroyWindow(focusSheet);
+        return 69;
+    }
+    SendMessageW(focusEditA, WM_SETFOCUS, 0, 0);
+    if (g_hotkeyFocusNotification.setFocusCount != 1 ||
+        g_hotkeyFocusNotification.setFocusId != 9200) {
+        DestroyWindow(focusSheet);
+        return 70;
+    }
+    // Moving to the other hotkey edit keeps the suspension: no resume notification.
+    SendMessageW(focusEditA, WM_KILLFOCUS, reinterpret_cast<WPARAM>(focusEditB), 0);
+    if (g_hotkeyFocusNotification.killFocusCount != 0) {
+        DestroyWindow(focusSheet);
+        return 71;
+    }
+    // Leaving to a non-hotkey control resumes.
+    SendMessageW(focusEditA, WM_KILLFOCUS, reinterpret_cast<WPARAM>(focusPage), 0);
+    if (g_hotkeyFocusNotification.killFocusCount != 1 ||
+        g_hotkeyFocusNotification.killFocusId != 9200) {
+        DestroyWindow(focusSheet);
+        return 72;
+    }
+    // A NULL next-focus (focus cleared) also resumes.
+    SendMessageW(focusEditB, WM_SETFOCUS, 0, 0);
+    SendMessageW(focusEditB, WM_KILLFOCUS, 0, 0);
+    if (g_hotkeyFocusNotification.killFocusCount != 2 ||
+        g_hotkeyFocusNotification.killFocusId != 9201) {
+        DestroyWindow(focusSheet);
+        return 73;
+    }
+    DestroyWindow(focusSheet);
 
     DeleteFileW(settingsPath.c_str());
     if (!WriteUtf8(settingsPath,
