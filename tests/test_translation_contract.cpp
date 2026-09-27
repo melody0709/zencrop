@@ -6348,6 +6348,12 @@ int TestExternalSelectionIntegrationProbe() {
         L"ZENCROP_SELECTION_EXTERNAL_EXPECTED_CONTAINS").empty();
     const bool expectSyntheticCopySuppressed = !EnvironmentValue(
         L"ZENCROP_SELECTION_EXTERNAL_EXPECT_COPY_SUPPRESSED").empty();
+    // Reading the text is not the same as placing the window: a text-carrying
+    // UIA result whose line rectangles are empty still degrades the anchor to a
+    // single cursor point. Opt in to also assert that the anchor is a real
+    // region rather than that cursor fallback.
+    const bool expectAnchor = !EnvironmentValue(
+        L"ZENCROP_SELECTION_EXTERNAL_EXPECT_ANCHOR").empty();
 
     uintptr_t windowValue = 0;
     if (!ParseEnvironmentUintPtr(
@@ -6501,13 +6507,47 @@ int TestExternalSelectionIntegrationProbe() {
         }
         return 539;
     }
+    if (expectAnchor) {
+        const RECT cursorAnchor = selection::CursorAnchorRect(snapshot.cursor);
+        const RECT& anchor = result->anchorRect;
+        const bool isCursorFallback =
+            anchor.left == cursorAnchor.left &&
+            anchor.top == cursorAnchor.top &&
+            anchor.right == cursorAnchor.right &&
+            anchor.bottom == cursorAnchor.bottom;
+        const bool hasArea = anchor.right - anchor.left > 1 &&
+            anchor.bottom - anchor.top > 1;
+        const bool meetsTarget = anchor.right > targetRect.left &&
+            anchor.left < targetRect.right &&
+            anchor.bottom > targetRect.top &&
+            anchor.top < targetRect.bottom;
+        if (isCursorFallback || !hasArea || !meetsTarget) {
+            std::wcerr << L"external selection anchor diagnostic: is-cursor-fallback="
+                       << (isCursorFallback ? 1 : 0)
+                       << L" has-area=" << (hasArea ? 1 : 0)
+                       << L" meets-target=" << (meetsTarget ? 1 : 0)
+                       << L" anchor=(" << anchor.left << L"," << anchor.top
+                       << L"," << anchor.right << L"," << anchor.bottom << L")"
+                       << L" cursor=(" << snapshot.cursor.x << L","
+                       << snapshot.cursor.y << L")"
+                       << L" target=(" << targetRect.left << L","
+                       << targetRect.top << L"," << targetRect.right << L","
+                       << targetRect.bottom << L")\n";
+            return 564;
+        }
+        std::wcout << L"external selection anchor: rect=(" << anchor.left
+                   << L"," << anchor.top << L"," << anchor.right << L","
+                   << anchor.bottom << L") size=" << (anchor.right - anchor.left)
+                   << L"x" << (anchor.bottom - anchor.top) << L"\n";
+    }
     std::cout << "external selection integration ok: source="
               << static_cast<int>(result->source)
               << " kind=" << static_cast<int>(result->content.kind)
               << " language=";
     std::wcout << result->content.codeLanguage
                << L" markdown-units=" << result->content.markdown.size()
-               << L" html-units=" << result->content.html.size() << L"\n";
+               << L" html-units=" << result->content.html.size()
+               << L" diagnostic=" << result->diagnosticCode << L"\n";
     return 0;
 }
 

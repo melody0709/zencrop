@@ -30,6 +30,16 @@ constexpr DWORD kUiaTransactionTimeoutMs = 700;
 constexpr DWORD kUiaWorkflowBudgetMs = 850;
 constexpr DWORD kUiaWaitSliceMs = 12;
 constexpr DWORD kUiaWorkerShutdownWaitMs = 500;
+// A cold accessibility provider answers the first query with no text pattern at
+// all while it is still building its tree, and it answers in milliseconds -- it
+// does not consume kUiaWorkflowBudgetMs. Measured against Edge on an 8000-node
+// page, the first query returned UIA_TEXT_PATTERN_UNAVAILABLE in well under
+// 150ms; the following attempts then returned the selected text with *empty*
+// line rectangles before finally returning real ones. Text without geometry
+// still resolves the anchor to the cursor point, so the retry has to outlast
+// both stages. This gap is an order of magnitude above a single failure latency
+// and still leaves several attempts inside the workflow budget.
+constexpr DWORD kUiaColdRetryBackoffMs = 100;
 constexpr int kMaximumPatternParentDepth = 12;
 constexpr int kMaximumIdentityParentDepth = 32;
 
@@ -685,6 +695,11 @@ SelectionTextAcquirer::SelectionTextAcquirer(HWND deliveryWindow)
                 JoinExitedUiaWorker(quarantinedUia, 0)) {
                 healthyUia = CreateUiaWorker();
             }
+            // A quarantined worker holds a provider call that cannot be
+            // cancelled. Refusing to start a second provider call while it is
+            // in flight is what keeps the number of blocked provider threads at
+            // one: batching past that gate would strand an untracked, still
+            // blocked thread per timed-out attempt.
             if (!healthyUia && !quarantinedUia) {
                 healthyUia = CreateUiaWorker();
             }
@@ -694,6 +709,12 @@ SelectionTextAcquirer::SelectionTextAcquirer(HWND deliveryWindow)
             uia.diagnosticCode = quarantinedUia
                 ? L"UIA_WORKER_QUARANTINED"
                 : L"UIA_WORKER_UNAVAILABLE";
+            int uiaAttempts = 0;
+            // A later Unavailable must not discard text an earlier attempt
+            // already read. NoSelection, Secure, and TooLong stay authoritative;
+            // replacing them could reuse a stale selection or mask a block.
+            CandidateResult lastSuccess;
+            bool haveLastSuccess = false;
 
             enum class UiaWaitStatus {
                 NotStarted,
@@ -704,12 +725,26 @@ SelectionTextAcquirer::SelectionTextAcquirer(HWND deliveryWindow)
             } waitStatus = UiaWaitStatus::NotStarted;
 
             if (healthyUia) {
-                auto job = std::make_shared<UiaThreadJob>(snapshot);
-                if (job->done && SubmitUiaJob(*healthyUia, job)) {
-                    const ULONGLONG uiaDeadline = (std::min)(
-                        snapshot.deadlineTick,
-                        GetTickCount64() +
-                            static_cast<ULONGLONG>(kUiaWorkflowBudgetMs));
+                const ULONGLONG uiaDeadline = (std::min)(
+                    snapshot.deadlineTick,
+                    GetTickCount64() +
+                        static_cast<ULONGLONG>(kUiaWorkflowBudgetMs));
+                // A cold provider fails fast with no pattern at all while its
+                // tree is still being built, which would send the placement
+                // down the cursor-anchor path. Retrying inside the same budget
+                // is what turns that first, geometry-less answer into the real
+                // rectangles.
+                for (;;) {
+                    auto job = std::make_shared<UiaThreadJob>(snapshot);
+                    if (!job->done || !SubmitUiaJob(*healthyUia, job)) {
+                        // Keep an earlier attempt's specific code rather than
+                        // flattening the whole acquisition to a submit failure.
+                        if (uiaAttempts == 0) {
+                            uia.diagnosticCode = L"UIA_WORKER_SUBMIT_FAILED";
+                        }
+                        break;
+                    }
+                    ++uiaAttempts;
                     for (;;) {
                         if (WaitForSingleObject(job->done, 0) ==
                             WAIT_OBJECT_0) {
@@ -746,9 +781,11 @@ SelectionTextAcquirer::SelectionTextAcquirer(HWND deliveryWindow)
                         }
                     }
 
-                    if (waitStatus == UiaWaitStatus::Completed) {
-                        uia = std::move(job->result);
-                    } else {
+                    if (waitStatus != UiaWaitStatus::Completed) {
+                        // The gate above never starts a provider call while a
+                        // quarantined one is still in flight, so this hands the
+                        // only live worker over instead of overwriting a slot
+                        // that is still being tracked.
                         StopUiaWorker(healthyUia.get());
                         quarantinedUia = std::move(healthyUia);
                         uia.status = CandidateStatus::Unavailable;
@@ -763,10 +800,75 @@ SelectionTextAcquirer::SelectionTextAcquirer(HWND deliveryWindow)
                             uia.diagnosticCode = L"UIA_WORKFLOW_TIMEOUT";
                             break;
                         }
+                        break;
                     }
-                } else {
-                    uia.diagnosticCode = L"UIA_WORKER_SUBMIT_FAILED";
+
+                    uia = std::move(job->result);
+                    if (uia.status == CandidateStatus::Success) {
+                        lastSuccess = uia;
+                        haveLastSuccess = true;
+                    }
+                    // A cold provider has two stages to get past: first no
+                    // element exposes a text pattern at all, then one does but
+                    // its line rectangles are still empty. Text without
+                    // geometry still resolves the anchor to the cursor point,
+                    // so the retry may only stop once the anchor can be built.
+                    const bool geometryMissing =
+                        uia.status == CandidateStatus::Unavailable ||
+                        (uia.status == CandidateStatus::Success &&
+                         uia.rectangles.empty());
+                    if (!geometryMissing ||
+                        GetTickCount64() >= uiaDeadline) {
+                        break;
+                    }
+                    // Give the provider time to finish building before asking
+                    // again; retrying faster than it can make progress would
+                    // only add load without shortening the wait. The backoff is
+                    // clamped to the workflow deadline, and the deadline is
+                    // re-checked before the next submit: a job issued past the
+                    // deadline would be judged a timeout and would wrongly
+                    // quarantine a healthy worker.
+                    bool abandoned = false;
+                    const ULONGLONG retryAt = (std::min)(uiaDeadline,
+                        GetTickCount64() +
+                            static_cast<ULONGLONG>(kUiaColdRetryBackoffMs));
+                    while (GetTickCount64() < retryAt) {
+                        bool stopping = false;
+                        {
+                            std::lock_guard<std::mutex> lock(state->mutex);
+                            stopping = state->stopping;
+                        }
+                        if (stopping ||
+                            state->latestGeneration.load(
+                                std::memory_order_acquire) !=
+                            snapshot.generation) {
+                            abandoned = true;
+                            break;
+                        }
+                        Sleep(static_cast<DWORD>((std::min)(
+                            retryAt - GetTickCount64(),
+                            static_cast<ULONGLONG>(kUiaWaitSliceMs))));
+                    }
+                    if (abandoned || GetTickCount64() >= uiaDeadline) break;
                 }
+            }
+            // An unavailable retry must not discard an earlier successful read.
+            // NoSelection remains authoritative if the user cleared the selection.
+            if (haveLastSuccess && uia.status == CandidateStatus::Unavailable) {
+                const std::wstring failedCode = uia.diagnosticCode;
+                uia = std::move(lastSuccess);
+                if (!failedCode.empty()) {
+                    uia.diagnosticCode +=
+                        L";UIA_LAST_ATTEMPT=" + failedCode;
+                }
+            }
+            // Retry count is the only way to tell a cold tree that needed a
+            // couple of attempts from a target that never exposes a pattern and
+            // merely burned the whole budget; the trigger set cannot be narrowed
+            // without it.
+            if (uiaAttempts > 1) {
+                uia.diagnosticCode +=
+                    L";UIA_ATTEMPTS=" + std::to_wstring(uiaAttempts);
             }
 
             if (state->latestGeneration.load(std::memory_order_acquire) !=
