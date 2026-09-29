@@ -7,6 +7,7 @@
 #include "WideFormatConfig.h"
 #include "WideColorUtils.h"
 #include "HotkeyEdit.h"
+#include <nlohmann/json.hpp>
 #include <shlwapi.h>
 #include <shlobj.h>
 #include <commdlg.h>
@@ -19,6 +20,7 @@
 #include <type_traits>
 #include <vector>
 #include <fstream>
+#include <format>
 #include <limits>
 #include <mutex>
 // Feature includes intentionally omitted (Stage 0-E): AlwaysOnTop / TcpHelper /
@@ -311,6 +313,26 @@ static bool FailSettingsWrite(
     return false;
 }
 
+bool BackupSettingsFile(const std::wstring& path, std::wstring* error) {
+    SYSTEMTIME now = {};
+    GetLocalTime(&now);
+    const std::wstring backupBase = path + std::format(
+        L".unreadable-{:04}{:02}{:02}-{:02}{:02}{:02}-{}",
+        now.wYear, now.wMonth, now.wDay,
+        now.wHour, now.wMinute, now.wSecond, GetTickCount64());
+    for (int suffix = 0; suffix < 100; ++suffix) {
+        const std::wstring backup = backupBase +
+            (suffix ? L"-" + std::to_wstring(suffix) : L"") + L".json";
+        if (CopyFileW(path.c_str(), backup.c_str(), TRUE)) return true;
+        const DWORD code = GetLastError();
+        if (code != ERROR_FILE_EXISTS && code != ERROR_ALREADY_EXISTS) {
+            return FailSettingsWrite(error, L"Backing up the settings file", code);
+        }
+    }
+    if (error) *error = L"Could not create a unique settings backup name.";
+    return false;
+}
+
 bool WriteStringToFile(
     const std::wstring& path,
     const std::wstring& content,
@@ -323,6 +345,27 @@ bool WriteStringToFile(
     if (content.size() > static_cast<size_t>((std::numeric_limits<int>::max)())) {
         if (error) *error = L"The settings file is too large to encode.";
         return false;
+    }
+
+    // Every settings writer reaches this function. If the existing JSON is
+    // malformed, the text assembler may be unable to extract a damaged section
+    // at all; preserve the entire original file before replacing it.
+    if (path == GetSettingsFilePath() &&
+        GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES) {
+        std::ifstream existing(path, std::ios::binary);
+        if (!existing) {
+            if (error) *error = L"Could not read the existing settings file.";
+            return false;
+        }
+        const std::string original((std::istreambuf_iterator<char>(existing)), {});
+        if (existing.bad()) {
+            if (error) *error = L"Could not finish reading the existing settings file.";
+            return false;
+        }
+        if (!original.empty() && !nlohmann::json::accept(original) &&
+            !BackupSettingsFile(path, error)) {
+            return false;
+        }
     }
 
     std::string utf8;

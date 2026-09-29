@@ -2,8 +2,9 @@
 
 #include "TranslationBudget.h"
 #include "TranslationCredentialStore.h"
-#include "TranslationProviderCatalog.h"
 #include "TranslationPromptComposer.h"
+#include "TranslationProviderCatalog.h"
+#include "TranslationTextUtils.h"
 
 #include <nlohmann/json.hpp>
 
@@ -23,7 +24,6 @@ namespace translation {
 namespace {
 
 constexpr wchar_t kEndpoint[] = L"https://api.deepseek.com/chat/completions";
-constexpr wchar_t kModelsEndpoint[] = L"https://api.deepseek.com/models";
 // Connect-side timeout only. The receive timeout comes from the resolved
 // TranslationBudget so a long generation is not capped by the connect value.
 constexpr int kConnectTimeoutMs = 15000;
@@ -125,31 +125,32 @@ ErrorCode ErrorCodeForStatus(int status) {
     }
 }
 
-bool IsJsonContentType(const std::wstring& contentType) {
-    if (contentType.empty()) return false;
-    std::wstring lower = contentType;
-    std::transform(lower.begin(), lower.end(), lower.begin(),
-        [](wchar_t value) { return static_cast<wchar_t>(towlower(value)); });
-    const size_t parameters = lower.find(L';');
-    if (parameters != std::wstring::npos) lower.resize(parameters);
-    const size_t first = lower.find_first_not_of(L" \t\r\n");
-    if (first == std::wstring::npos) return false;
-    const size_t last = lower.find_last_not_of(L" \t\r\n");
-    lower = lower.substr(first, last - first + 1);
-    if (lower == L"application/json") return true;
-    constexpr wchar_t kApplicationPrefix[] = L"application/";
-    constexpr wchar_t kJsonSuffix[] = L"+json";
-    constexpr size_t kApplicationPrefixLength = (sizeof(kApplicationPrefix) / sizeof(wchar_t)) - 1;
-    constexpr size_t kJsonSuffixLength = (sizeof(kJsonSuffix) / sizeof(wchar_t)) - 1;
-    return lower.rfind(kApplicationPrefix, 0) == 0 &&
-        lower.size() > kApplicationPrefixLength + kJsonSuffixLength &&
-        lower.compare(lower.size() - kJsonSuffixLength, kJsonSuffixLength, kJsonSuffix) == 0;
-}
+// IsJsonContentType() lives in TranslationTextUtils.h: one predicate for the
+// whole module (this engine's copy and the machine translation engine's looser
+// substring test were two chances to drift).
 
 bool IsAllowedDetectedLanguage(const std::wstring& language) {
     return language == L"zh-Hans" || language == L"en" ||
         language == L"zh-Hant" || language == L"ja" || language == L"ko" ||
         language == L"und" || language == L"mul";
+}
+
+// Clamp the stored reasoning mode before anything reads it. A stale mode (a
+// profile written before the model policy changed, or a user-added profile that
+// the settings codec never repairs) fails IsSupportedProviderProfile outright,
+// so the engine would report "the profile is invalid" instead of translating;
+// it would also put a mode this model cannot take on the wire. The
+// OpenAI-compatible engine applies the same rule through
+// EffectiveReasoningMode(); this engine keeps its own copy of the settings
+// because both the budget resolution and the request body read the mode.
+TranslationSettings WithEffectiveReasoningMode(TranslationSettings settings) {
+    for (auto& profile : settings.providerProfiles) {
+        if (profile.id != settings.activeProviderId) continue;
+        profile.reasoningMode =
+            EffectiveReasoningMode(profile, GetCapabilities(profile));
+        break;
+    }
+    return settings;
 }
 
 json BuildRequestBody(const TranslationSettings& settings,
@@ -297,19 +298,21 @@ std::shared_ptr<AsyncHttpRequest> DeepSeekTranslationEngine::Translate(
         InvokeTranslationCallbackSafely(callback, std::move(result));
         return {};
     }
-    const TranslationSettings settings = settings_;
+    const TranslationSettings settings = WithEffectiveReasoningMode(settings_);
     const auto transport = transport_;
     const auto credentialProvider = credentialProvider_;
     // Resolve the same budget the coordinator uses for its retry threshold, so
-    // the two can never disagree about the allowance for one attempt.
-    const auto* activeProfile = FindActiveTranslationProvider(settings_);
+    // the two can never disagree about the allowance for one attempt. It reads
+    // the clamped profile so the tier, the timeout and the request body all
+    // describe the same mode.
+    const auto* activeProfile = FindActiveTranslationProvider(settings);
     const TranslationBudget budget = activeProfile
         ? ResolveTranslationBudget(*activeProfile) : TranslationBudget{};
     auto retryState = std::make_shared<RetryState>();
     retryState->deadline = std::chrono::steady_clock::now() +
         std::chrono::milliseconds(budget.requestDeadlineMs);
     auto operation = IssueTranslate(settings, transport, credentialProvider, normalized,
-        std::move(callback), 0, kMaxOutputTokens, retryState, budget);
+        std::move(callback), kMaxOutputTokens, retryState, budget, false);
     BindRetryOperation(retryState, operation, true);
     return operation;
 }
@@ -320,16 +323,19 @@ std::shared_ptr<AsyncHttpRequest> DeepSeekTranslationEngine::IssueTranslate(
     const std::shared_ptr<ITranslationCredentialProvider>& credentialProvider,
     const TranslationRequest& request,
     Callback callback,
-    int attempt,
     int maxTokens,
     const std::shared_ptr<RetryState>& retryState,
-    const TranslationBudget& budget) {
-    // `attempt` is retained because the operation chain (BindRetryOperation)
-    // and TestConnection's two-step flow still model attempts explicitly, but
-    // the engine no longer retries on its own: the coordinator is the single
-    // retry owner, so two layers can never multiply into four real generations.
-    static_cast<void>(attempt);
-    const auto* profile = FindActiveTranslationProvider(settings);
+    const TranslationBudget& budget,
+    bool diagnosticProbe) {
+    // This engine never retries on its own: the coordinator is the single retry
+    // owner, so two layers can never multiply into four real generations. That
+    // is also why there is no longer an `attempt` parameter (it stopped being
+    // read once TestConnection's /models two-step flow was removed).
+    // Clamp before the profile is validated and before the body is built. Both
+    // callers (Translate and TestConnection) arrive here, so this is the single
+    // choke point; clamping an already-clamped copy is a no-op.
+    const TranslationSettings clampedSettings = WithEffectiveReasoningMode(settings);
+    const auto* profile = FindActiveTranslationProvider(clampedSettings);
     if (!profile) {
         InvokeTranslationCallbackSafely(callback, MakeError(
             ErrorCode::Configuration,
@@ -379,10 +385,16 @@ std::shared_ptr<AsyncHttpRequest> DeepSeekTranslationEngine::IssueTranslate(
     // fast on an exhausted budget -- for a fresh attempt it is always larger
     // than this ceiling.
     options.receiveTimeoutMs = budget.attemptTimeoutMs;
-    options.deadlineMs = budget.attemptTimeoutMs + kWatchdogSlackMs;
+    // Diagnostics takes the budget's declared deadline, like the other two
+    // engines. Deriving it as attempt + slack only *happened* to equal
+    // kConnectionProbeBudget.requestDeadlineMs (15 s + 5 s == 20 s) and would
+    // have diverged silently the moment that budget changed.
+    options.deadlineMs = diagnosticProbe
+        ? budget.requestDeadlineMs
+        : budget.attemptTimeoutMs + kWatchdogSlackMs;
     options.maxResponseBytes = kMaxResponseBytes;
     options.allowRedirects = false;
-    const json requestBody = BuildRequestBody(settings, request, maxTokens);
+    const json requestBody = BuildRequestBody(clampedSettings, request, maxTokens);
     if (requestBody.empty()) {
         SecureClear(key);
         InvokeTranslationCallbackSafely(callback, MakeError(
@@ -433,8 +445,16 @@ TranslationResult DeepSeekTranslationEngine::ParseResponse(
             response.error, request.requestId);
     }
     if (response.statusCode < 200 || response.statusCode >= 300) {
-        return MakeError(ErrorCodeForStatus(response.statusCode),
-            ErrorForStatus(response.statusCode), request.requestId);
+        // Append the provider's own message when it sent one: the status code
+        // alone cannot tell "Model Not Exist" from "insufficient balance" from a
+        // rejected parameter, and DeepSeek puts the actionable sentence in
+        // `{"error":{"message":...}}` exactly like the OpenAI-compatible vendors
+        // (shared parser, so the wording cannot drift between the engines).
+        std::wstring message = ErrorForStatus(response.statusCode);
+        const std::wstring detail = ProviderErrorDetail(response);
+        if (!detail.empty()) message += L" " + detail;
+        return MakeError(ErrorCodeForStatus(response.statusCode), message,
+            request.requestId);
     }
     if (!IsJsonContentType(response.contentType)) {
         return MakeError(ErrorCode::SchemaMismatch,
@@ -567,7 +587,13 @@ TranslationResult DeepSeekTranslationEngine::ParseResponse(
 
 std::shared_ptr<AsyncHttpRequest> DeepSeekTranslationEngine::TestConnection(
     Callback callback) {
-    const auto* profile = FindActiveTranslationProvider(settings_);
+    // Clamp before this function's own profile validation. The probe validates
+    // the profile here *and* inside IssueTranslate, and a stale mode would make
+    // either of them report "the selected reasoning mode is unsupported"
+    // instead of probing (IssueTranslate's clamp cannot help: this early return
+    // hands the caller a null operation).
+    const TranslationSettings settings = WithEffectiveReasoningMode(settings_);
+    const auto* profile = FindActiveTranslationProvider(settings);
     if (!profile) {
         InvokeTranslationCallbackSafely(callback, MakeError(
             ErrorCode::Configuration, L"DeepSeek provider profile is missing.", {}));
@@ -582,92 +608,35 @@ std::shared_ptr<AsyncHttpRequest> DeepSeekTranslationEngine::TestConnection(
             {}));
         return {};
     }
-    std::wstring key;
-    std::wstring credentialError;
-    if (!credentialProvider_ ||
-        !credentialProvider_->ReadCredential(profile->credentialRef, key, credentialError)) {
-        SecureClear(key);
-        InvokeTranslationCallbackSafely(callback, MakeError(
-            ErrorCode::Configuration, credentialError, {}));
-        return {};
-    }
-    std::vector<std::wstring> headers = {
-        L"Authorization: Bearer " + key,
-        L"Accept: application/json",
-    };
-    // Diagnostics, not translation. The probe keeps its own light budget:
-    // reusing the translation budget would let a dead connection spin in the
-    // settings dialog for minutes at the High reasoning tier.
+    // Diagnostics, not translation. The probe is the production path with the
+    // smallest input: same endpoint resolution, same credential lookup, same
+    // request body (reasoning dialect included), same response parser. A green
+    // probe therefore means a real translation parses.
+    //
+    // It must not issue a metadata request. This used to start with
+    // GET /models and reject any model id the listing did not contain, which
+    // rejects working configurations: api.deepseek.com lists `deepseek-flash`
+    // and `deepseek-v4-pro`, while chat/completions (measured 2026-09-28)
+    // accepts `deepseek-v4-flash` with HTTP 200 in ~0.5-0.7s. A vendor model
+    // listing is not a translation requirement, and it is routinely stale or
+    // aliased.
+    //
+    // The output allowance is the production one. A smaller probe cap turns
+    // "the model thought before answering" into a false failure, because the
+    // shared parser maps finish_reason=length to OutputTruncated -- measured:
+    // 64 tokens without a thinking directive returned finish=length with 256
+    // reasoning characters. The 15s probe budget, not the token cap, is what
+    // keeps the probe quick.
     auto retryState = std::make_shared<RetryState>();
     retryState->deadline = std::chrono::steady_clock::now() +
         std::chrono::milliseconds(kConnectionProbeBudget.requestDeadlineMs);
-    HttpRequestOptions options;
-    options.timeoutMs = kConnectionProbeBudget.attemptTimeoutMs;
-    options.deadlineMs = kConnectionProbeBudget.requestDeadlineMs;
-    options.maxResponseBytes = kMaxResponseBytes;
-    options.allowRedirects = false;
-    const TranslationSettings settings = settings_;
-    const std::wstring selectedModel = profile->model;
-    const auto transport = transport_;
-    const auto credentialProvider = credentialProvider_;
-    auto operation = transport->StartGet(kModelsEndpoint, headers, options,
-        [settings, selectedModel, transport, credentialProvider,
-         callback = std::move(callback), retryState]
-        (HttpResponse response) mutable {
-            if (!response.error.empty() || response.statusCode < 200 || response.statusCode >= 300) {
-                const ErrorCode errorCode =
-                    ErrorCodeFromTransportMessage(response.error);
-                SecureClear(response.body);
-                InvokeTranslationCallbackSafely(callback, MakeError(
-                    response.error.empty() ? ErrorCodeForStatus(response.statusCode) : errorCode,
-                    response.error.empty() ? ErrorForStatus(response.statusCode) : response.error, {}));
-                return;
-            }
-            if (!IsJsonContentType(response.contentType)) {
-                SecureClear(response.body);
-                InvokeTranslationCallbackSafely(callback, MakeError(
-                    ErrorCode::SchemaMismatch,
-                    L"DeepSeek models response is not JSON.", {}));
-                return;
-            }
-            try {
-                const json models = json::parse(response.body);
-                bool found = false;
-                if (models.is_object() && models.contains("data") &&
-                    models["data"].is_array()) {
-                    for (const auto& item : models["data"]) {
-                        if (item.value("id", "") == WideToUtf8(selectedModel)) {
-                            found = true;
-                            break;
-                        }
-                    }
-                }
-                if (!found) {
-                    SecureClear(response.body);
-                    InvokeTranslationCallbackSafely(callback, MakeError(
-                        ErrorCode::InvalidRequest,
-                        L"Selected DeepSeek model is not available.", {}));
-                    return;
-                }
-            } catch (const json::exception&) {
-                SecureClear(response.body);
-                InvokeTranslationCallbackSafely(callback, MakeError(
-                    ErrorCode::InvalidJson,
-                    L"DeepSeek models response is invalid JSON.", {}));
-                return;
-            }
-            SecureClear(response.body);
-            TranslationRequest request;
-            request.requestId = NewRequestId();
-            request.sourceLanguage = L"en";
-            request.targetLanguage = L"zh-Hans";
-            request.segments.push_back({L"test", L"Hello"});
-            auto retry = IssueTranslate(settings, transport, credentialProvider, request,
-                std::move(callback), 0, 64, retryState, kConnectionProbeBudget);
-            BindRetryOperation(retryState, retry, false);
-        });
-    SecureClear(key);
-    SecureClearHeaders(headers);
+    TranslationRequest request;
+    request.requestId = NewRequestId();
+    request.sourceLanguage = L"en";
+    request.targetLanguage = L"zh-Hans";
+    request.segments.push_back({L"test", L"Hello"});
+    auto operation = IssueTranslate(settings, transport_, credentialProvider_, request,
+        std::move(callback), kMaxOutputTokens, retryState, kConnectionProbeBudget, true);
     BindRetryOperation(retryState, operation, true);
     return operation;
 }

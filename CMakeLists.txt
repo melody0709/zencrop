@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(ZenCrop VERSION 3.1.3)
+project(ZenCrop VERSION 3.1.4)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -371,9 +371,13 @@ add_library(zencrop_translate STATIC
     src/translation/TranslationCredentialStore.h src/translation/TranslationCredentialStore.cpp
     src/translation/AsyncHttpTransport.h src/translation/AsyncHttpTransport.cpp
     src/translation/LlmModelPolicy.h src/translation/LlmModelPolicy.cpp
+    src/translation/OpenRouterReasoningCatalog.h src/translation/OpenRouterReasoningCatalog.cpp
     src/translation/TranslationBudget.h
     src/translation/TranslationUntranslatable.h src/translation/TranslationUntranslatable.cpp
     src/translation/TranslationDiagnostics.h src/translation/TranslationDiagnostics.cpp
+    src/translation/TranslationTextUtils.h src/translation/TranslationTextUtils.cpp
+    src/translation/TranslationComboUtils.h
+    src/translation/TranslationCredentialRollback.h
     src/translation/TranslationProviderCatalog.h src/translation/TranslationProviderCatalog.cpp
     src/translation/TranslationPromptComposer.h src/translation/TranslationPromptComposer.cpp
     src/translation/OpenAICompatibleTranslationEngine.h src/translation/OpenAICompatibleTranslationEngine.cpp

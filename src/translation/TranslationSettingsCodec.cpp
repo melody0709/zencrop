@@ -49,6 +49,10 @@ void SetError(std::wstring* error, const wchar_t* message) {
     if (error) *error = message ? message : L"Invalid translation settings.";
 }
 
+// Provider "Advanced JSON" budget. Measured in UTF-16 code units (what
+// std::wstring::size() returns), not bytes.
+constexpr size_t kMaxAdvancedOptionsChars = 16 * 1024;
+
 std::wstring StringOr(const json& object, const char* key, const wchar_t* fallback) {
     if (!object.is_object() || !object.contains(key) || !object[key].is_string()) {
         return fallback ? std::wstring(fallback) : std::wstring();
@@ -410,7 +414,13 @@ bool ParseProfile(
         return false;
     }
     profile.reasoningMode = ParseReasoning(reasoningName);
-    if (translation::FindBuiltInProviderPreset(profile.id)) {
+    // Repair a stored mode the current model policy no longer offers -- for any
+    // profile, not only the built-in ones. The offered tiers depend on the model
+    // (an OpenRouter endpoint whose metadata says reasoning is mandatory does not
+    // accept `off`), so a mode that was valid when it was written can become
+    // unsupported, and leaving it in place would fail the whole profile at
+    // `IsSupportedProviderProfile` -- and, worse, be sent to the endpoint.
+    if (translation::FindTranslationProviderPreset(profile.presetKind)) {
         const auto capabilities = translation::GetCapabilities(profile);
         if (!translation::IsReasoningModeSupported(
                 capabilities, profile.reasoningMode)) {
@@ -457,27 +467,14 @@ bool ParseProfile(
         return false;
     }
     if (profile.advancedOptionsJson.empty()) profile.advancedOptionsJson = L"{}";
-    if (profile.advancedOptionsJson.size() > 16 * 1024) {
-        SetError(error, L"Translation provider advanced options exceed 16 KiB.");
+    if (profile.advancedOptionsJson.size() > kMaxAdvancedOptionsChars) {
+        // size() counts UTF-16 code units, not bytes, so the limit is stated in
+        // characters: "16 KiB" would have been wrong by a factor of two.
+        SetError(error, L"Translation provider advanced options exceed "
+            L"16384 characters.");
         return false;
     }
-    try {
-        const json advanced = json::parse(WideToUtf8(profile.advancedOptionsJson));
-        if (!advanced.is_object()) {
-            SetError(error, L"Translation provider advanced options must be a JSON object.");
-            return false;
-        }
-        static const std::set<std::string> allowedAdvanced = {
-            "top_p", "frequency_penalty", "presence_penalty", "seed",
-        };
-        for (auto it = advanced.begin(); it != advanced.end(); ++it) {
-            if (allowedAdvanced.find(it.key()) == allowedAdvanced.end()) {
-                SetError(error, L"Translation provider advanced option is not allowed.");
-                return false;
-            }
-        }
-    } catch (const json::exception&) {
-        SetError(error, L"Translation provider advanced options contain invalid JSON.");
+    if (!ValidateProviderAdvancedOptions(profile.advancedOptionsJson, error)) {
         return false;
     }
     if (value.contains("temperature") && !value["temperature"].is_null()) {
@@ -520,14 +517,58 @@ json SerializeProfile(const TranslationProviderProfile& profile) {
 
 } // namespace
 
+bool ValidateProviderAdvancedOptions(
+    const std::wstring& jsonText,
+    std::wstring* error) {
+    if (error) error->clear();
+    const std::wstring text = jsonText.empty() ? std::wstring(L"{}") : jsonText;
+    if (text.size() > kMaxAdvancedOptionsChars) {
+        SetError(error, L"Translation provider advanced options exceed "
+            L"16384 characters.");
+        return false;
+    }
+    try {
+        const json advanced = json::parse(WideToUtf8(text));
+        if (!advanced.is_object()) {
+            SetError(error, L"Translation provider advanced options must be a JSON object.");
+            return false;
+        }
+        static const std::set<std::string> allowedAdvanced = {
+            "top_p", "frequency_penalty", "presence_penalty", "seed",
+        };
+        for (auto it = advanced.begin(); it != advanced.end(); ++it) {
+            if (allowedAdvanced.find(it.key()) == allowedAdvanced.end()) {
+                // Name the key. The settings page used to fail Apply with
+                // "option is not allowed" and no way to tell which key or what
+                // the accepted set is.
+                const std::wstring message =
+                    L"Translation provider advanced option is not allowed: " +
+                    Utf8ToWide(it.key()) +
+                    L". Allowed: top_p, frequency_penalty, presence_penalty, seed.";
+                SetError(error, message.c_str());
+                return false;
+            }
+        }
+    } catch (const json::exception&) {
+        SetError(error, L"Translation provider advanced options contain invalid JSON.");
+        return false;
+    }
+    return true;
+}
+
 bool ParseTranslationSection(
     const std::wstring& section,
     TranslationSettings& settings,
-    std::wstring* error) {
+    std::wstring* error,
+    bool* droppedEntries) {
     settings = TranslationSettings{};
     settings.providerProfiles.clear();
     settings.customPromptProfiles.clear();
     if (error) error->clear();
+    if (droppedEntries) *droppedEntries = false;
+    const auto dropEntry = [droppedEntries] {
+        if (droppedEntries) *droppedEntries = true;
+    };
     try {
         const json value = json::parse(WideToUtf8(section));
         if (!value.is_object()) {
@@ -580,10 +621,31 @@ bool ParseTranslationSection(
                 // other profile and its credential references). The save path
                 // remains strict; load only keeps entries that are safe to
                 // round-trip.
-                if (!entry.is_object()) continue;
+                if (!entry.is_object()) {
+                    dropEntry();
+                    continue;
+                }
                 TranslationProviderProfile profile;
                 std::wstring profileError;
-                if (!ParseProfile(entry, profile, &profileError)) continue;
+                if (!ParseProfile(entry, profile, &profileError)) {
+                    // A single unusable *optional* field must not delete the
+                    // whole profile. advancedOptionsJson and temperature carry
+                    // no identity: retry once with them cleared so the profile,
+                    // its model and its credential reference survive, and only
+                    // drop the entry when the identity itself is unusable.
+                    TranslationProviderProfile salvaged;
+                    json sanitized = entry;
+                    sanitized["advancedOptionsJson"] = "{}";
+                    sanitized["temperature"] = nullptr;
+                    if (!ParseProfile(sanitized, salvaged, &profileError)) {
+                        dropEntry();
+                        continue;
+                    }
+                    // The profile survived, but its original optional fields
+                    // did not. A later save still needs a copy of those bytes.
+                    dropEntry();
+                    profile = std::move(salvaged);
+                }
                 if (schemaVersion < 4 && profile.temperature.has_value()) {
                     const bool oldDeepSeekDefault =
                         profile.presetKind == L"deepseek" &&
@@ -595,15 +657,25 @@ bool ParseTranslationSection(
                         profile.temperature.reset();
                     }
                 }
-                if (!IsSafeIdentifier(profile.id, 128)) continue;
+                if (!IsSafeIdentifier(profile.id, 128)) {
+                    dropEntry();
+                    continue;
+                }
                 if (profile.id.rfind(L"builtin.", 0) == 0 &&
                     !translation::FindBuiltInProviderPreset(profile.id)) {
+                    dropEntry();
                     continue;
                 }
                 const auto* preset = translation::FindTranslationProviderPreset(
                     profile.presetKind);
-                if (!preset || profile.adapterKind != preset->adapterKind) continue;
-                if (!providerIds.insert(profile.id).second) continue;
+                if (!preset || profile.adapterKind != preset->adapterKind) {
+                    dropEntry();
+                    continue;
+                }
+                if (!providerIds.insert(profile.id).second) {
+                    dropEntry();
+                    continue;
+                }
                 settings.providerProfiles.push_back(std::move(profile));
             }
             settings.activeProviderId = StringOr(
@@ -634,6 +706,7 @@ bool ParseTranslationSection(
                         // entry so valid prompts, providers, and credentials
                         // remain loadable; the persistence path still rejects
                         // malformed prompts before writing them again.
+                        dropEntry();
                         continue;
                     }
                     TranslationPromptProfile prompt;
@@ -650,6 +723,7 @@ bool ParseTranslationSection(
                         prompt.name.empty() || prompt.name.size() > 64 ||
                         prompt.styleInstruction.size() > 4096 ||
                         !promptIds.insert(prompt.id).second) {
+                        dropEntry();
                         continue;
                     }
                     settings.customPromptProfiles.push_back(std::move(prompt));
@@ -896,6 +970,35 @@ bool SaveTranslationSettings(
         return false;
     }
 
+    // A structurally damaged section loads as defaults, so this write replaces
+    // it: a "read - change one flag - write" caller (pin on top, OCR route,
+    // preview zoom) would otherwise drop every provider profile, custom prompt
+    // and credential reference without a trace. The repair still happens -- a
+    // damaged section has to stay repairable -- but the original bytes are kept
+    // aside first so the content remains recoverable by hand.
+    //
+    // A lossy read counts as damaged too: the load path can discard entries or
+    // repair invalid optional fields, and a later save would erase their old values.
+    //
+    // And if the bytes cannot be set aside, nothing is written at all: refusing
+    // the save leaves the file (and the dropped entry inside it) intact, whereas
+    // proceeding would make this write the last one.
+    const std::wstring currentSection =
+        WideJsonFindTopLevelValue(json, L"translation");
+    if (!currentSection.empty()) {
+        TranslationSettings onDisk;
+        std::wstring onDiskError;
+        bool droppedEntries = false;
+        const bool parsed =
+            ParseTranslationSection(currentSection, onDisk, &onDiskError, &droppedEntries);
+        if ((!parsed || droppedEntries) && !BackupSettingsFile(path, error)) {
+            if (error) {
+                *error += L" Nothing was written.";
+            }
+            return false;
+        }
+    }
+
     TranslationSettings normalized = settings;
     if (!NormalizeTranslationSettingsForPersistence(normalized, error)) {
         return false;
@@ -919,7 +1022,11 @@ bool CommitTranslationManagedSettings(
     const std::wstring section = WideJsonFindTopLevelValue(json, L"translation");
     TranslationSettings current;
     current.enabled = true;
-    if (!section.empty() && !ParseTranslationSection(section, current, error)) return false;
+    bool droppedEntries = false;
+    if (!section.empty() &&
+        !ParseTranslationSection(section, current, error, &droppedEntries)) {
+        return false;
+    }
     if (!current.schemaSupported || current.schemaVersion > kTranslationSettingsSchemaVersion) {
         if (error) *error = L"The translation settings use a newer unsupported schema.";
         return false;
@@ -951,6 +1058,17 @@ bool CommitTranslationManagedSettings(
                 current.activePromptId, L"activePromptId")) return false;
     }
     if (changed) {
+        // This writer re-serializes the whole translation section, so it erases a
+        // dropped entry just as thoroughly as SaveTranslationSettings does -- and
+        // the areas are asymmetric (a prompt-only commit still rewrites the
+        // provider list). Same rule: keep the original bytes aside first, and
+        // refuse the write when that is impossible.
+        if (droppedEntries && !BackupSettingsFile(path, error)) {
+            if (error) {
+                *error += L" Nothing was written.";
+            }
+            return false;
+        }
         if (!NormalizeTranslationSettingsForPersistence(current, error)) return false;
         SettingsSections sections;
         sections.translation = BuildTranslationSectionEntry(current);

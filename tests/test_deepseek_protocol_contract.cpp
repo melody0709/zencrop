@@ -570,13 +570,17 @@ int TestTransportErrorWinsOverHttpSuccess() {
     return !result.success && result.code == ErrorCode::Network ? 0 : 1;
 }
 
-int TestConnectionUsesSmallProbe() {
+// Test Connection is the production translation path with the smallest input.
+// It must issue exactly one request (the probe translation), never a vendor
+// model listing -- api.deepseek.com lists `deepseek-flash` while
+// chat/completions accepts `deepseek-v4-flash` (measured 2026-09-28), so a
+// listing gate rejected working configurations -- and it must keep the
+// production output allowance: a smaller cap turns "the model reasoned first"
+// into a false OutputTruncated failure (64 tokens returned finish=length).
+int TestConnectionProbesTheTranslationPath() {
     auto transport = std::make_shared<FakeTransport>();
-    HttpResponse models;
-    models.statusCode = 200;
-    models.contentType = L"application/json";
-    models.body = R"({"data":[{"id":"deepseek-v4-flash"}]})";
-    transport->getResponses.push_back(std::move(models));
+    // No GET fixture on purpose: a listing request would answer 500
+    // "fake response queue exhausted" and fail this test.
     transport->postResponses.push_back(TranslationResponse("test"));
     DeepSeekTranslationEngine engine(
         TestSettings(), transport, std::make_shared<FakeCredentialProvider>());
@@ -596,16 +600,149 @@ int TestConnectionUsesSmallProbe() {
         if (!condition.wait_for(lock, std::chrono::seconds(2), [&] { return completed; })) return 2;
     }
     operation->Join();
-    if (!result.success || transport->records.size() != 2) return 3;
-    const auto& probe = transport->records[1];
-    // The probe is a diagnostics action, not a translation: it keeps its own
-    // light budget (15 s receive / 20 s total) and must never inherit the
-    // translation budget of the active reasoning tier (60 s / 120 s receive).
-    if (transport->records[0].options.deadlineMs != 20000 ||
-        probe.options.deadlineMs != 20000 ||
+    if (!result.success || transport->records.size() != 1) return 3;
+    const auto& probe = transport->records[0];
+    if (!probe.post) return 6;
+    // Diagnostics budget: 15 s receive / 20 s total, never the reasoning tier's
+    // 60 s / 120 s.
+    if (probe.options.deadlineMs != 20000 ||
         probe.options.receiveTimeoutMs != 15000) return 5;
     const json body = json::parse(probe.body);
-    if (body.value("max_tokens", 0) != 64) return 4;
+    if (body.value("max_tokens", 0) != 16384) return 4;
+    return 0;
+}
+
+// A stored mode this profile no longer supports must be clamped, not fatal.
+// The DeepSeek policy supports {Off, Low, High, Max}, so a profile saved with
+// ProviderDefault -- or with a tier a later policy revision dropped -- used to
+// fail IsSupportedProviderProfile: the engine answered "The selected reasoning
+// mode is unsupported by this provider profile." and never sent a request.
+// The clamp (EffectiveReasoningMode) has to run before validation *and* before
+// the body is built, exactly like the OpenAI-compatible engine.
+int TestStaleReasoningModeIsClamped() {
+    TranslationSettings settings = TestSettings();
+    if (settings.providerProfiles.empty()) return 1;
+    settings.providerProfiles.front().reasoningMode =
+        TranslationReasoningMode::ProviderDefault;
+    auto transport = std::make_shared<FakeTransport>();
+    transport->postResponses.push_back(TranslationResponse("s1"));
+    DeepSeekTranslationEngine engine(
+        settings, transport, std::make_shared<FakeCredentialProvider>());
+    const auto result = RunTranslate(engine, TestRequest());
+    if (!result.success) return 2;
+    if (transport->records.size() != 1) return 3;
+    const json body = json::parse(transport->records[0].body);
+    // Clamped to the policy default (Off): thinking is explicitly disabled and
+    // no effort tier is requested.
+    if (!body.contains("thinking") ||
+        body["thinking"].value("type", std::string{}) != "disabled") {
+        return 4;
+    }
+    if (body.contains("reasoning_effort")) return 5;
+
+    // The probe reaches the clamp through a different route: TestConnection
+    // hands `settings_` straight to IssueTranslate, so IssueTranslate itself
+    // must clamp (Translate's own clamp never runs on this path).
+    auto probeTransport = std::make_shared<FakeTransport>();
+    probeTransport->postResponses.push_back(TranslationResponse("test"));
+    DeepSeekTranslationEngine probeEngine(
+        settings, probeTransport, std::make_shared<FakeCredentialProvider>());
+    std::mutex mutex;
+    std::condition_variable condition;
+    bool completed = false;
+    TranslationResult probeResult;
+    auto operation = probeEngine.TestConnection([&](TranslationResult value) {
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            probeResult = std::move(value);
+            completed = true;
+        }
+        condition.notify_one();
+    });
+    if (!operation) return 6;
+    {
+        std::unique_lock<std::mutex> lock(mutex);
+        if (!condition.wait_for(lock, std::chrono::seconds(2), [&] { return completed; })) {
+            return 7;
+        }
+    }
+    operation->Join();
+    if (!probeResult.success) return 8;
+    if (probeTransport->records.size() != 1) return 9;
+    const json probeBody = json::parse(probeTransport->records[0].body);
+    if (!probeBody.contains("thinking") ||
+        probeBody["thinking"].value("type", std::string{}) != "disabled") {
+        return 10;
+    }
+    return 0;
+}
+
+// A non-2xx response must carry the provider's own message: the status code alone
+// cannot tell "Model Not Exist" from "Insufficient Balance" from a rejected
+// parameter, and DeepSeek sends the actionable sentence in
+// `{"error":{"message":...}}` exactly like the OpenAI-compatible vendors. Both
+// engines now share one parser (translation::ProviderErrorDetail).
+int TestProviderErrorDetailIsSurfaced() {
+    struct Case {
+        int status;
+        const char* body;
+        const wchar_t* expected;
+    };
+    const Case cases[] = {
+        {400, R"({"error":{"message":"Model Not Exist"}})", L"Model Not Exist"},
+        {429, R"({"error":{"message":"  Rate limit   reached\n\nretry later "}})",
+            L"Rate limit reached retry later"},
+        {402, R"({"error":{"message":"Insufficient Balance"}})", L"Insufficient Balance"},
+    };
+    const auto assertValidUtf16 = [](const std::wstring& text) {
+        for (size_t i = 0; i < text.size(); ++i) {
+            const wchar_t value = text[i];
+            if (value >= 0xD800 && value <= 0xDBFF) {
+                if (i + 1 >= text.size() ||
+                    text[i + 1] < 0xDC00 || text[i + 1] > 0xDFFF) return false;
+                ++i;
+            } else if (value >= 0xDC00 && value <= 0xDFFF) {
+                return false;
+            }
+        }
+        return true;
+    };
+    for (const auto& test : cases) {
+        auto transport = std::make_shared<FakeTransport>();
+        HttpResponse response;
+        response.statusCode = test.status;
+        response.contentType = L"application/json";
+        response.body = test.body;
+        transport->postResponses.push_back(std::move(response));
+        DeepSeekTranslationEngine engine(
+            TestSettings(), transport, std::make_shared<FakeCredentialProvider>());
+        const auto result = RunTranslate(engine, TestRequest());
+        if (result.success) return 1;
+        if (result.error.find(test.expected) == std::wstring::npos) return 2;
+        if (!assertValidUtf16(result.error)) return 3;
+        if (result.error.find(L"DeepSeek") == std::wstring::npos) return 4;
+    }
+
+    // The 200-code-unit cap must not cut a surrogate pair. One ASCII character
+    // plus 150 emoji = 301 code units, so the cut lands exactly on the high half
+    // of the 100th emoji; keeping it would leave a lone surrogate and blank the
+    // whole message on the next UTF-8 conversion.
+    {
+        std::string message = "A";
+        for (int i = 0; i < 150; ++i) message += "\xF0\x9F\x98\x80";
+        auto transport = std::make_shared<FakeTransport>();
+        HttpResponse response;
+        response.statusCode = 400;
+        response.contentType = L"application/json";
+        response.body = std::string(R"({"error":{"message":")") + message + R"("}})";
+        transport->postResponses.push_back(std::move(response));
+        DeepSeekTranslationEngine engine(
+            TestSettings(), transport, std::make_shared<FakeCredentialProvider>());
+        const auto result = RunTranslate(engine, TestRequest());
+        if (result.success || result.error.size() < 16) return 5;
+        if (!assertValidUtf16(result.error)) return 6;
+        if (result.error.compare(result.error.size() - 3, 3, L"...") != 0) return 7;
+    }
     return 0;
 }
 
@@ -939,29 +1076,23 @@ int TestWinHttpCompletionRaces() {
     return 0;
 }
 
-// TestConnection is the remaining consumer of the engine's follow-up chain: a
-// GET /models whose callback issues a probe translation and binds it to the GET
-// operation. Cancelling the returned (root) operation must stop the in-flight
-// probe as well. The engine's own content retry used to exercise that chain
-// through an empty-content follow-up; this keeps the cancel coverage on the
-// chain that still exists.
-int TestCancelDuringConnectionProbeFollowUp() {
-    struct ProbeFollowUpTransport final : IAsyncHttpTransport {
+// The probe is a single in-flight request now. Cancelling the returned
+// operation must stop it and complete exactly once, and the probe must not
+// reach for a vendor listing even while it is running.
+int TestCancelDuringConnectionProbe() {
+    struct BlockingProbeTransport final : IAsyncHttpTransport {
         std::atomic<int> postCount{0};
+        std::atomic<int> getCount{0};
         std::mutex mutex;
         std::condition_variable condition;
 
         std::shared_ptr<AsyncHttpRequest> StartGet(
             const std::wstring&, const std::vector<std::wstring>&,
             const HttpRequestOptions&, AsyncHttpRequest::Callback callback) override {
-            HttpResponse models;
-            models.statusCode = 200;
-            models.contentType = L"application/json";
-            models.body = R"({"data":[{"id":"deepseek-v4-flash"}]})";
+            getCount.fetch_add(1);
             return AsyncHttpRequest::StartTask(
-                [models = std::move(models)](const std::atomic<bool>&) mutable {
-                    return std::move(models);
-                }, std::move(callback));
+                [](const std::atomic<bool>&) { return HttpResponse{}; },
+                std::move(callback));
         }
 
         std::shared_ptr<AsyncHttpRequest> StartPost(
@@ -979,7 +1110,7 @@ int TestCancelDuringConnectionProbeFollowUp() {
         }
     };
 
-    auto transport = std::make_shared<ProbeFollowUpTransport>();
+    auto transport = std::make_shared<BlockingProbeTransport>();
     DeepSeekTranslationEngine engine(
         TestSettings(), transport, std::make_shared<FakeCredentialProvider>());
     std::mutex mutex;
@@ -1007,6 +1138,8 @@ int TestCancelDuringConnectionProbeFollowUp() {
     }
     operation->Cancel();
     operation->Join();
+    if (transport->getCount.load() != 0) return 5;
+    if (transport->postCount.load() != 1) return 6;
     std::unique_lock<std::mutex> lock(mutex);
     if (!condition.wait_for(lock, std::chrono::seconds(1), [&] { return callbacks == 1; })) return 3;
     return callbacks == 1 && !result.success && result.code == ErrorCode::Cancelled ? 0 : 4;
@@ -1065,6 +1198,41 @@ int TestRealWindowsCredentialStore() {
     return 0;
 }
 
+// Checking "Custom model" must not take the vendor's thinking switch away.
+// The engine builds `thinking` from `profile.reasoningMode` (it never looks at
+// the wire format), so what an unlisted model needs from the preset is the `Off`
+// tier: with the old conservative fallback the stored `off` was rejected by
+// IsSupportedProviderProfile and, once clamped to ProviderDefault, the request
+// carried no `thinking` field at all -- and DeepSeek's own default is thinking
+// (measured 2026-09-28 on deepseek-v4-flash: 94 reasoning tokens with no field,
+// none with `thinking:{type:"disabled"}`).
+int TestCustomModelKeepsThinkingDialect() {
+    TranslationSettings settings = TestSettings();
+    auto* profile = FindActiveTranslationProvider(settings);
+    if (!profile) return 1;
+    profile->model = L"deepseek-v4-future-unlisted";
+    profile->customModel = true;
+
+    const auto capabilities = GetCapabilities(*profile);
+    if (!capabilities.reasoningModes.count(TranslationReasoningMode::Off) ||
+        capabilities.defaultReasoning != TranslationReasoningMode::Off) {
+        return 2;
+    }
+    std::wstring error;
+    if (!IsSupportedProviderProfile(*profile, &error)) return 3;
+
+    auto transport = std::make_shared<FakeTransport>();
+    transport->postResponses.push_back(TranslationResponse());
+    DeepSeekTranslationEngine engine(
+        settings, transport, std::make_shared<FakeCredentialProvider>());
+    const auto result = RunTranslate(engine, TestRequest());
+    if (!result.success) return 4;
+    const json body = json::parse(transport->records[0].body);
+    if (body.value("model", "") != "deepseek-v4-future-unlisted") return 5;
+    if (body["thinking"].value("type", "") != "disabled") return 6;
+    return 0;
+}
+
 } // namespace
 
 int main() {
@@ -1082,7 +1250,9 @@ int main() {
         {"choice cardinality", TestChoiceCardinality},
         {"status and MIME mapping", TestStatusAndMimeMapping},
         {"transport error precedence", TestTransportErrorWinsOverHttpSuccess},
-        {"connection probe", TestConnectionUsesSmallProbe},
+        {"connection probe", TestConnectionProbesTheTranslationPath},
+        {"stale reasoning mode is clamped", TestStaleReasoningModeIsClamped},
+        {"provider error detail", TestProviderErrorDetailIsSurfaced},
         {"cancel exactly once", TestCancelExactlyOnce},
         {"callback exception containment", TestCallbackExceptionIsContained},
         {"rapid cancel/completion race", TestRapidCancelCompletionRace},
@@ -1092,7 +1262,8 @@ int main() {
         {"WinHTTP body limit and disconnect", TestWinHttpBodyLimitAndDisconnect},
         {"WinHTTP cancel and shutdown", TestWinHttpCancelAndShutdown},
         {"WinHTTP completion races", TestWinHttpCompletionRaces},
-        {"cancel during connection probe follow-up", TestCancelDuringConnectionProbeFollowUp},
+        {"cancel during connection probe", TestCancelDuringConnectionProbe},
+        {"custom model keeps thinking dialect", TestCustomModelKeepsThinkingDialect},
         {"Windows credential store", TestRealWindowsCredentialStore},
     };
     for (const auto& test : tests) {

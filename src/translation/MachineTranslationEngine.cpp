@@ -2,6 +2,7 @@
 #include "MachineTranslationEngine.h"
 
 #include "TranslationProviderCatalog.h"
+#include "TranslationTextUtils.h"
 
 #include <nlohmann/json.hpp>
 #include <objbase.h>
@@ -100,12 +101,11 @@ ErrorCode HttpError(int status) {
     return ErrorCode::InvalidRequest;
 }
 
-bool IsJsonContentType(const std::wstring& value) {
-    std::wstring lower = value;
-    std::transform(lower.begin(), lower.end(), lower.begin(), towlower);
-    return lower.find(L"application/json") != std::wstring::npos ||
-        lower.find(L"+json") != std::wstring::npos;
-}
+// The MIME gate is the shared `translation::IsJsonContentType()` now
+// (TranslationTextUtils.h). This file used to test for `application/json` and
+// `+json` as substrings anywhere in the value, which accepted values such as
+// `text/plain; note=application/json`; the strict form is what the two LLM
+// engines already required and no MT preset returns anything else.
 
 std::string UrlEncode(const std::wstring& value) {
     static constexpr char hex[] = "0123456789ABCDEF";
@@ -448,6 +448,14 @@ std::wstring MachineTranslationEngine::Name() const {
 std::shared_ptr<AsyncHttpRequest> MachineTranslationEngine::Translate(
     const TranslationRequest& request,
     Callback callback) {
+    return TranslateInternal(request, std::move(callback),
+        TranslationBudget{kTimeoutMs, kDeadlineMs, 1});
+}
+
+std::shared_ptr<AsyncHttpRequest> MachineTranslationEngine::TranslateInternal(
+    const TranslationRequest& request,
+    Callback callback,
+    const TranslationBudget& budget) {
     const auto* profile = FindActiveTranslationProvider(settings_);
     if (!profile) {
         InvokeTranslationCallbackSafely(callback, Failure(
@@ -580,8 +588,10 @@ std::shared_ptr<AsyncHttpRequest> MachineTranslationEngine::Translate(
     }
     std::string body = requestBody.dump();
     HttpRequestOptions options;
-    options.timeoutMs = kTimeoutMs;
-    options.deadlineMs = kDeadlineMs;
+    // TestConnection passes the diagnostics budget; a real translation passes
+    // the production constants, so this is the only place the two differ.
+    options.timeoutMs = budget.attemptTimeoutMs;
+    options.deadlineMs = budget.requestDeadlineMs;
     options.maxResponseBytes = kMaxResponseBytes;
     options.allowRedirects = false;
     const auto protocol = capabilities.machineProtocol;
@@ -600,11 +610,17 @@ std::shared_ptr<AsyncHttpRequest> MachineTranslationEngine::Translate(
 
 std::shared_ptr<AsyncHttpRequest> MachineTranslationEngine::TestConnection(
     Callback callback) {
+    // Same production path as Translate(), smallest payload, diagnostics
+    // budget. There is no cheaper honest probe for direct-MT vendors: the
+    // unofficial Google/Microsoft community endpoints can only be shown to be
+    // alive by a real request, so the probe keeps issuing one (one short
+    // segment, which is what a vendor bills for).
     TranslationRequest request;
     request.sourceLanguage = L"en";
     request.targetLanguage = L"zh-Hans";
     request.segments.push_back({L"test", L"Hello world."});
-    return Translate(request, std::move(callback));
+    return TranslateInternal(request, std::move(callback),
+        kConnectionProbeBudget);
 }
 
 } // namespace translation

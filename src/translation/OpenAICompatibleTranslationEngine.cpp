@@ -3,6 +3,7 @@
 #include "TranslationBudget.h"
 #include "TranslationPromptComposer.h"
 #include "TranslationProviderCatalog.h"
+#include "TranslationTextUtils.h"
 
 #include <nlohmann/json.hpp>
 
@@ -165,16 +166,15 @@ std::wstring WithTraceId(
     return message + L" (trace " + response.traceId + L")";
 }
 
-bool IsJsonContentType(const std::wstring& contentType) {
-    std::wstring lower = contentType;
-    std::transform(lower.begin(), lower.end(), lower.begin(),
-        [](wchar_t value) { return static_cast<wchar_t>(towlower(value)); });
-    const size_t semicolon = lower.find(L';');
-    if (semicolon != std::wstring::npos) lower.resize(semicolon);
-    return lower == L"application/json" ||
-        (lower.rfind(L"application/", 0) == 0 &&
-         lower.size() > 5 && lower.compare(lower.size() - 5, 5, L"+json") == 0);
-}
+// IsJsonContentType() lives in TranslationTextUtils.h now (one predicate for the
+// whole module), next to the provider-error parser that uses it.
+
+// The provider-error parser itself lives in TranslationTextUtils
+// (ProviderErrorDetail), so the DeepSeek engine surfaces the same detail: both
+// engines talk to vendors that put the actionable sentence in
+// `{"error":{"message":...}}` and the status code alone cannot distinguish
+// "response_format is not supported" from "reasoning is mandatory" from "this
+// :free slug is gone".
 
 const char* ReasoningEffort(TranslationReasoningMode mode) {
     switch (mode) {
@@ -290,27 +290,29 @@ void ApplyReasoningPolicy(
     const TranslationProviderProfile& profile,
     const ProviderCapabilities& capabilities,
     json& body) {
-    const char* effort = ReasoningEffort(profile.reasoningMode);
+    const TranslationReasoningMode mode =
+        EffectiveReasoningMode(profile, capabilities);
+    const char* effort = ReasoningEffort(mode);
     switch (capabilities.reasoningWireFormat) {
     case ReasoningWireFormat::OpenAIResponses:
         body["reasoning"] = {{"effort",
-            profile.reasoningMode == TranslationReasoningMode::Off
+            mode == TranslationReasoningMode::Off
                 ? "none" : (effort ? effort : "low")}};
         break;
     case ReasoningWireFormat::GeminiThinkingBudget:
-        if (profile.reasoningMode == TranslationReasoningMode::Off) {
+        if (mode == TranslationReasoningMode::Off) {
             body["generationConfig"]["thinkingConfig"] = {
                 {"thinkingBudget", 0}, {"includeThoughts", false}};
         }
         break;
     case ReasoningWireFormat::MiniMaxThinking:
-        if (profile.reasoningMode == TranslationReasoningMode::Off) {
+        if (mode == TranslationReasoningMode::Off) {
             body["thinking"] = {{"type", "disabled"}};
             body["reasoning_history"] = "disabled";
         }
         break;
     case ReasoningWireFormat::AlibabaThinking:
-        if (profile.reasoningMode == TranslationReasoningMode::Off) {
+        if (mode == TranslationReasoningMode::Off) {
             body["enable_thinking"] = false;
         }
         break;
@@ -321,7 +323,7 @@ void ApplyReasoningPolicy(
         // Off -> reasoning_tokens 0/0, High -> 506/830 with reasoning actually
         // enabled. Do not express High via thinking_budget: 4096 measured only
         // 27/18 reasoning tokens, contradicting its documented meaning.
-        if (profile.reasoningMode == TranslationReasoningMode::Off) {
+        if (mode == TranslationReasoningMode::Off) {
             body["enable_thinking"] = false;
         } else if (effort) {
             body["enable_thinking"] = true;
@@ -333,7 +335,7 @@ void ApplyReasoningPolicy(
         }
         break;
     case ReasoningWireFormat::DeepSeekThinking:
-        if (profile.reasoningMode == TranslationReasoningMode::Off) {
+        if (mode == TranslationReasoningMode::Off) {
             body["thinking"] = {{"type", "disabled"}};
         } else if (effort) {
             body["thinking"] = {{"type", "enabled"}};
@@ -341,26 +343,26 @@ void ApplyReasoningPolicy(
         }
         break;
     case ReasoningWireFormat::OpenRouterReasoning:
-        if (profile.reasoningMode == TranslationReasoningMode::Off) {
+        if (mode == TranslationReasoningMode::Off) {
             body["reasoning"] = {{"enabled", false}};
         } else if (effort) {
             body["reasoning"] = {{"effort", effort}};
         }
         break;
     case ReasoningWireFormat::OllamaThink:
-        if (profile.reasoningMode == TranslationReasoningMode::Off) {
+        if (mode == TranslationReasoningMode::Off) {
             body["think"] = false;
         } else if (effort) {
             body["think"] = effort;
         }
         break;
     case ReasoningWireFormat::ThinkingDisabled:
-        if (profile.reasoningMode == TranslationReasoningMode::Off) {
+        if (mode == TranslationReasoningMode::Off) {
             body["thinking"] = {{"type", "disabled"}};
         }
         break;
     case ReasoningWireFormat::ThinkingAndHistoryDisabled:
-        if (profile.reasoningMode == TranslationReasoningMode::Off) {
+        if (mode == TranslationReasoningMode::Off) {
             body["thinking"] = {{"type", "disabled"}};
             body["reasoning_history"] = "disabled";
         }
@@ -468,9 +470,13 @@ json BuildRequestBody(
         }
     }
 
-    const bool reasoningActive = profile.reasoningMode !=
+    // Uses the effective (clamped) mode, not the stored one: a stale `off` on an
+    // endpoint that will actually reason must not re-enable the sampler.
+    const TranslationReasoningMode effectiveReasoningMode =
+        EffectiveReasoningMode(profile, capabilities);
+    const bool reasoningActive = effectiveReasoningMode !=
         TranslationReasoningMode::ProviderDefault &&
-        profile.reasoningMode != TranslationReasoningMode::Off;
+        effectiveReasoningMode != TranslationReasoningMode::Off;
     // The profile wins; otherwise the model policy can supply a measured default
     // (a low sampler temperature keeps the model from dropping the tail of the
     // translations array). Reasoning modes stay without a temperature, as before.
@@ -514,8 +520,11 @@ TranslationResult ParseResponse(
                 (response.statusCode == 408 || response.statusCode == 504
                     ? ErrorCode::Timeout
                     : (response.statusCode >= 500 ? ErrorCode::Server : ErrorCode::InvalidRequest)));
-        return fail(code, L"Translation provider request failed (" +
-            std::to_wstring(response.statusCode) + L").");
+        std::wstring message = L"Translation provider request failed (" +
+            std::to_wstring(response.statusCode) + L").";
+        const std::wstring detail = ProviderErrorDetail(response);
+        if (!detail.empty()) message += L" " + detail;
+        return fail(code, message);
     }
     if (!IsJsonContentType(response.contentType)) {
         return fail(ErrorCode::SchemaMismatch,
@@ -776,6 +785,16 @@ OpenAICompatibleTranslationEngine::IssueTranslate(
             L"Active translation provider profile is missing.", request.requestId));
         return {};
     }
+    // A stored reasoning mode can outlive the policy that offered it: the tiers
+    // follow the model (an OpenRouter endpoint whose metadata says reasoning is
+    // mandatory does not accept `off`). Clamp a local copy here rather than
+    // rejecting the profile -- the request is clamped in ApplyReasoningPolicy
+    // anyway, and failing validation would leave the user unable to translate at
+    // all until they reopen the provider page.
+    TranslationProviderProfile clampedProfile = *profile;
+    clampedProfile.reasoningMode = EffectiveReasoningMode(
+        clampedProfile, GetCapabilities(clampedProfile));
+    profile = &clampedProfile;
     std::wstring profileError;
     if (!IsSupportedProviderProfile(*profile, &profileError)) {
         InvokeTranslationCallbackSafely(callback, Error(
@@ -879,7 +898,12 @@ OpenAICompatibleTranslationEngine::IssueTranslate(
     // Must be assigned explicitly: AsyncHttpTransport falls back to timeoutMs
     // when this is 0, which would silently restore the 15 s generation cap.
     options.receiveTimeoutMs = budget.attemptTimeoutMs;
-    options.deadlineMs = budget.attemptTimeoutMs + kWatchdogSlackMs;
+    // The watchdog deadline comes from the budget itself. Deriving it as
+    // attemptTimeoutMs + slack made the probe deadline equal to
+    // requestDeadlineMs only by coincidence (15 s + 5 s == the probe's 20 s);
+    // the probe now uses the same definition as the other engines.
+    options.deadlineMs = budgetOverride ? budget.requestDeadlineMs
+                                       : budget.attemptTimeoutMs + kWatchdogSlackMs;
     options.maxResponseBytes = kMaxResponseBytes;
     options.allowRedirects = false;
     const TranslationAdapterKind adapterKind = profile->adapterKind;

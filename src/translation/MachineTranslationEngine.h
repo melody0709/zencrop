@@ -1,6 +1,7 @@
 #pragma once
 
 #include "AsyncHttpTransport.h"
+#include "TranslationBudget.h"
 #include "TranslationCredentialStore.h"
 #include "TranslationEngine.h"
 
@@ -23,6 +24,15 @@ public:
     std::wstring Name() const override;
 
 private:
+    // The budget is a parameter rather than a constant so TestConnection runs
+    // the exact production path on the diagnostics budget instead of the
+    // translation budget (a dead endpoint used to keep the settings dialog
+    // waiting for the full 60 s deadline).
+    std::shared_ptr<AsyncHttpRequest> TranslateInternal(
+        const TranslationRequest& request,
+        Callback callback,
+        const TranslationBudget& budget);
+
     TranslationSettings settings_;
     std::shared_ptr<IAsyncHttpTransport> transport_;
     std::shared_ptr<ITranslationCredentialProvider> credentialProvider_;

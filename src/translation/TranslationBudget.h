@@ -37,10 +37,13 @@ inline TranslationBudget ResolveTranslationBudget(
     return TranslationBudget{120000, 260000, 2};
 }
 
-// TestConnection is a diagnostics action: a tiny GET /models plus a 64-token
-// probe translation. It must never inherit the translation budget, otherwise a
-// dead connection at the High tier would spin for minutes inside the settings
-// dialog. The probe translation issued by that flow uses this budget too.
+// TestConnection is a diagnostics action: it runs the production request path
+// with a one-segment payload (a real POST -- the community MT endpoints can only
+// be shown to be alive by a real request) and the production output allowance.
+// It must never inherit the translation budget, otherwise a dead connection at
+// the High tier would spin for minutes inside the settings dialog. Every engine
+// takes both its receive timeout and its watchdog deadline from this budget, so
+// the probe cannot drift from the other two implementations.
 inline constexpr TranslationBudget kConnectionProbeBudget{15000, 20000, 1};
 
 } // namespace translation

@@ -1,7 +1,9 @@
 #include "TranslationPromptSettingsPage.h"
 
+#include "TranslationComboUtils.h"
 #include "TranslationPromptComposer.h"
 #include "TranslationSettingsCodec.h"
+#include "TranslationTextUtils.h"
 #include "core/AppMessages.h"
 #include "core/Settings.h"
 #include "core/Strings.h"
@@ -77,6 +79,23 @@ void Fill(HWND h, State& s) {
     }
 }
 
+// Keep the combo caption in step with the name field. The provider page does
+// the same for profiles; without it a renamed prompt kept its old caption until
+// the page was reopened. Insert before deleting so a failed insert cannot lose
+// the entry (the id pointer stays owned by State::ids either way).
+void UpdateComboLabel(HWND h, const std::wstring& id, const std::wstring& name) {
+    HWND combo = GetDlgItem(h, IDC_PROMPT_PROFILE);
+    if (!combo || id.empty()) return;
+    const LRESULT count = SendMessageW(combo, CB_GETCOUNT, 0, 0);
+    for (LRESULT index = 0; index < count; ++index) {
+        auto* value = reinterpret_cast<std::wstring*>(
+            SendMessageW(combo, CB_GETITEMDATA, index, 0));
+        if (!value || *value != id) continue;
+        ReplaceComboItemLabel(combo, static_cast<int>(index), name, value);
+        return;
+    }
+}
+
 std::wstring Selected(HWND h) {
     LRESULT i = SendMessageW(GetDlgItem(h, IDC_PROMPT_PROFILE), CB_GETCURSEL, 0, 0);
     if (i == CB_ERR) return {};
@@ -91,8 +110,13 @@ void Render(HWND h, State& s) {
         s.pending.activePromptId = kDefaultTranslationPromptId;
     }
     s.renderedPromptId = s.pending.activePromptId;
-    Set(h, IDC_PROMPT_NAME, BuiltInPromptName(s.pending.activePromptId));
     const auto* custom = FindCustomPromptProfile(s.pending);
+    // Custom prompts carry their own name; only the built-in ids resolve to a
+    // catalog name. Resolving unconditionally showed "Accurate" (the catalog
+    // fallback for unknown ids) for every custom prompt, and the next read --
+    // any Style edit or Apply -- wrote that name back over the user's.
+    Set(h, IDC_PROMPT_NAME, custom ? custom->name
+                                   : BuiltInPromptName(s.pending.activePromptId));
     Set(h, IDC_PROMPT_STYLE, custom ? custom->styleInstruction :
         BuiltInPromptStyle(s.pending.activePromptId));
     Set(h, IDC_PROMPT_PREVIEW, RenderPromptPreview(s.pending));
@@ -109,8 +133,14 @@ void ReadCustomForId(HWND h, State& s, const std::wstring& id) {
             return p.id == id;
         });
     if (it == s.pending.customPromptProfiles.end()) return;
-    it->name = Read(h, IDC_PROMPT_NAME).substr(0, 64);
-    it->styleInstruction = Read(h, IDC_PROMPT_STYLE).substr(0, 4096);
+    // Truncate by code unit *without* splitting surrogate pairs: the codec
+    // converts names and styles with WC_ERR_INVALID_CHARS, so a lone high
+    // surrogate would serialize as an empty string and the prompt could never be
+    // saved.
+    it->name = Read(h, IDC_PROMPT_NAME);
+    TruncateUtf16Safe(it->name, 64);
+    it->styleInstruction = Read(h, IDC_PROMPT_STYLE);
+    TruncateUtf16Safe(it->styleInstruction, 4096);
 }
 
 void ReadCustom(HWND h, State& s) {
@@ -164,8 +194,15 @@ INT_PTR CALLBACK TranslationPromptSettingsPageProc(HWND h, UINT msg, WPARAM w, L
             Fill(h, *s); Render(h, *s); PropSheet_Changed(GetParent(h), h);
         } else if (id == IDC_PROMPT_COPY && code == BN_CLICKED) {
             ReadCustom(h, *s); TranslationPromptProfile p;
-            p.id = NewId(); p.name = Read(h, IDC_PROMPT_NAME) + L" Copy";
+            p.id = NewId();
+            // The persisted name is limited to 64 characters, and " Copy" has to
+            // fit inside that budget: copying a 64-character name used to build
+            // a 69-character one, which Apply could never save.
+            std::wstring copyBase = Read(h, IDC_PROMPT_NAME);
+            TruncateUtf16Safe(copyBase, 64 - 5);
+            p.name = copyBase + L" Copy";
             p.styleInstruction = Read(h, IDC_PROMPT_STYLE);
+            TruncateUtf16Safe(p.styleInstruction, 4096);
             s->pending.customPromptProfiles.push_back(p); s->pending.activePromptId = p.id;
             Fill(h, *s); Render(h, *s); PropSheet_Changed(GetParent(h), h);
         } else if (id == IDC_PROMPT_DELETE && code == BN_CLICKED) {
@@ -176,16 +213,53 @@ INT_PTR CALLBACK TranslationPromptSettingsPageProc(HWND h, UINT msg, WPARAM w, L
             auto it = std::find_if(s->pending.customPromptProfiles.begin(), s->pending.customPromptProfiles.end(),
                 [&](const auto& p) { return p.id == s->pending.activePromptId; });
             if (it != s->pending.customPromptProfiles.end()) {
-                it->styleInstruction = BuiltInPromptStyle(kDefaultTranslationPromptId);
-                Render(h, *s); PropSheet_Changed(GetParent(h), h);
+                // Reset means "discard my edits to this prompt", not "install
+                // the Accurate wording": the old behaviour overwrote any
+                // prompt's style with the default prompt's text.
+                const auto saved = std::find_if(
+                    s->baseline.customPromptProfiles.begin(),
+                    s->baseline.customPromptProfiles.end(),
+                    [&](const auto& p) { return p.id == it->id; });
+                if (saved != s->baseline.customPromptProfiles.end()) {
+                    it->name = saved->name;
+                    it->styleInstruction = saved->styleInstruction;
+                } else {
+                    it->name = L"Custom prompt";
+                    it->styleInstruction = L"Prefer faithful, fluent translation.";
+                }
+                Fill(h, *s); Render(h, *s); PropSheet_Changed(GetParent(h), h);
             }
         } else if ((id == IDC_PROMPT_NAME || id == IDC_PROMPT_STYLE) && code == EN_CHANGE) {
-            ReadCustom(h, *s); Set(h, IDC_PROMPT_PREVIEW, RenderPromptPreview(s->pending)); PropSheet_Changed(GetParent(h), h);
+            ReadCustom(h, *s); Set(h, IDC_PROMPT_PREVIEW, RenderPromptPreview(s->pending));
+            if (id == IDC_PROMPT_NAME) {
+                UpdateComboLabel(h, s->renderedPromptId, Read(h, IDC_PROMPT_NAME));
+            }
+            PropSheet_Changed(GetParent(h), h);
         }
         return TRUE;
     }
     if (msg == WM_NOTIFY && reinterpret_cast<NMHDR*>(l)->code == PSN_APPLY) {
         ReadCustom(h, *s); std::wstring error;
+        // Validate the fields here so the message names the rule. The codec
+        // reports one generic "identity or length is invalid" for all three.
+        for (const auto& prompt : s->pending.customPromptProfiles) {
+            const wchar_t* problem = nullptr;
+            if (prompt.name.empty()) {
+                problem = S::IsChinese() ? L"\u8bf7\u4e3a\u6bcf\u4e2a\u81ea\u5b9a\u4e49\u63d0\u793a\u8bcd\u586b\u5199\u540d\u79f0\u3002"
+                                         : L"Enter a name for every custom prompt.";
+            } else if (prompt.name.size() > 64) {
+                problem = S::IsChinese() ? L"\u63d0\u793a\u8bcd\u540d\u79f0\u6700\u957f 64 \u4e2a\u5b57\u7b26\u3002"
+                                         : L"Prompt names are limited to 64 characters.";
+            } else if (prompt.styleInstruction.size() > 4096) {
+                problem = S::IsChinese() ? L"\u63d0\u793a\u8bcd\u98ce\u683c\u6700\u957f 4096 \u4e2a\u5b57\u7b26\u3002"
+                                         : L"Prompt style instructions are limited to 4096 characters.";
+            }
+            if (problem) {
+                MessageBoxW(h, problem, L"Prompt", MB_OK | MB_ICONWARNING);
+                SetWindowLongPtrW(h, DWLP_MSGRESULT, PSNRET_INVALID_NOCHANGEPAGE);
+                return TRUE;
+            }
+        }
         TranslationSettings merged;
         if (!CommitTranslationManagedSettings(s->baseline, s->pending,
                 TranslationManagedArea::Prompts, &merged, &error)) {
@@ -196,6 +270,10 @@ INT_PTR CALLBACK TranslationPromptSettingsPageProc(HWND h, UINT msg, WPARAM w, L
         GetSharedSettings().translation = merged;
         s->baseline = merged;
         s->pending = merged;
+        // Persistence may have normalized what it stored; re-render so the
+        // controls and the combo captions match the saved state.
+        Fill(h, *s);
+        Render(h, *s);
         SetWindowLongPtrW(h, DWLP_MSGRESULT, PSNRET_NOERROR);
         return TRUE;
     }

@@ -124,7 +124,13 @@ TranslationSettings ReadPage(HWND page, PageState& state) {
     settings.customPromptProfiles = shared.customPromptProfiles;
     settings.schemaVersion = shared.schemaVersion;
     settings.schemaSupported = shared.schemaSupported;
-    settings.enabled = shared.enabled;
+    // The window owns this flag (Settings.cpp patches it in the translation
+    // section). It used to be copied from shared settings and never written, so
+    // a section that arrived with enabled=false -- a newer schema build, or a
+    // hand edit -- left the coordinator asking the user to "enable screenshot
+    // translation in settings" while the settings window had no such switch.
+    settings.enabled = IsDlgButtonChecked(
+        page, IDC_TRANSLATE_ENABLED) == BST_CHECKED;
     settings.selectionCopyFallbackEnabled = IsDlgButtonChecked(
         page, IDC_TRANSLATE_SELECTION_COPY_FALLBACK) == BST_CHECKED;
     UpdateSelectionCopyFallbackDraft(
@@ -216,6 +222,8 @@ void InitializePage(HWND page, PageState& state) {
             state.hotkeyDraft->selectionCopyFallbackEnabled;
     }
     const TranslationSettings settings = state.draft;
+    SetText(page, IDC_TRANSLATE_ENABLED,
+        S::IsChinese() ? L"启用截图翻译" : L"Enable screenshot translation");
     SetText(page, IDC_TRANSLATE_SELECTION_HOTKEY_LABEL,
         S::IsChinese() ? L"划词翻译快捷键：" : L"Selection hotkey:");
     SetText(page, IDC_TRANSLATE_SELECTION_COPY_FALLBACK,
@@ -275,6 +283,11 @@ void InitializePage(HWND page, PageState& state) {
     AddValue(target, L"Japanese", L"ja", state.targetIds);
     AddValue(target, L"Korean", L"ko", state.targetIds);
     AddValue(route, L"Current OCR settings", L"current", state.ocrRouteIds);
+    // "local" (Windows OCR) is a route the result window writes and the core
+    // settings layer accepts. It was missing here, and SelectComboValue falls
+    // back to index 0 -- so opening this page with `local` stored showed
+    // "Current OCR settings" and pressing OK silently replaced the user's choice.
+    AddValue(route, L"Local (Windows OCR)", L"local", state.ocrRouteIds);
     AddValue(route, L"Local PaddleOCR", L"paddle_local", state.ocrRouteIds);
     AddValue(route, L"Local PaddleOCR (Document)", L"paddle_local_doc", state.ocrRouteIds);
     AddValue(route, L"PP-OCRv6 Local", L"ppocrv6_onnx", state.ocrRouteIds);
@@ -302,6 +315,8 @@ void InitializePage(HWND page, PageState& state) {
     }
     SelectComboValue(prompt, settings.activePromptId);
 
+    CheckDlgButton(page, IDC_TRANSLATE_ENABLED,
+        settings.enabled ? BST_CHECKED : BST_UNCHECKED);
     CheckDlgButton(page, IDC_TRANSLATE_SELECTION_COPY_FALLBACK,
         settings.selectionCopyFallbackEnabled ? BST_CHECKED : BST_UNCHECKED);
     CheckDlgButton(page, IDC_TRANSLATE_SHOW_SOURCE,
@@ -360,16 +375,31 @@ void RefreshManagedCombos(HWND page, PageState& state) {
     };
     const std::wstring preferredProvider = state.draft.activeProviderId;
     const std::wstring preferredPrompt = state.draft.activePromptId;
+    // The manager is a separate editor that has already persisted its result.
+    // When it changed the active provider/prompt, that is the most recent user
+    // decision and has to win over this page's unsaved selection: keeping the
+    // stale draft made the outer Apply conflict with the file the manager had
+    // just written ("settings were modified by another program").
+    const bool managerChangedProvider =
+        managed.activeProviderId != state.managedProviderBaseline;
+    const bool managerChangedPrompt =
+        managed.activePromptId != state.managedPromptBaseline;
     state.draft.providerProfiles = managed.providerProfiles;
-    state.draft.activeProviderId = hasProvider(state.draft, preferredProvider)
-        && preferredProvider != state.managedProviderBaseline
-        ? preferredProvider
-        : (hasProvider(state.draft, managed.activeProviderId)
-            ? managed.activeProviderId : std::wstring());
+    state.draft.activeProviderId = managerChangedProvider &&
+            hasProvider(managed, managed.activeProviderId)
+        ? managed.activeProviderId
+        : (hasProvider(state.draft, preferredProvider) &&
+                   preferredProvider != state.managedProviderBaseline
+               ? preferredProvider
+               : (hasProvider(state.draft, managed.activeProviderId)
+                      ? managed.activeProviderId : std::wstring()));
     state.draft.customPromptProfiles = managed.customPromptProfiles;
-    state.draft.activePromptId = hasPrompt(state.draft, preferredPrompt)
-        && preferredPrompt != state.managedPromptBaseline
-        ? preferredPrompt : managed.activePromptId;
+    state.draft.activePromptId = managerChangedPrompt &&
+            hasPrompt(managed, managed.activePromptId)
+        ? managed.activePromptId
+        : (hasPrompt(state.draft, preferredPrompt) &&
+                   preferredPrompt != state.managedPromptBaseline
+               ? preferredPrompt : managed.activePromptId);
     state.managedProviderBaseline = managed.activeProviderId;
     state.managedPromptBaseline = managed.activePromptId;
     const TranslationSettings& settings = state.draft;

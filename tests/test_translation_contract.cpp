@@ -18,6 +18,10 @@
 #include "ocr/ui/dashboard/DashboardTranslationCache.h"
 #include "ocr/ui/SettingsDialogInternal.h"
 #include "translation/TranslationSettingsCodec.h"
+#include "translation/TranslationComboUtils.h"
+#include "translation/TranslationCredentialRollback.h"
+#include "translation/TranslationTextUtils.h"
+#include "translation/TranslationProviderSettingsPage.h"
 #include "window/AlwaysOnTop.h"
 #include "ocr/LocalRaster.h"
 #include "ocr/engine/OcrEngine.h"
@@ -3234,7 +3238,8 @@ int TestProviderPromptAndSchemaContracts() {
         restoredGoogle == restoredDefaults.providerProfiles.end()) return 184;
 
     for (const auto& kind : {L"openai", L"gemini", L"minimax", L"grok",
-                             L"alibaba-cloud", L"siliconflow", L"xiaomi-mimo"}) {
+                             L"alibaba-cloud", L"siliconflow", L"xiaomi-mimo",
+                             L"deepseek"}) {
         TranslationProviderProfile customModel;
         customModel.id = L"provider.custom." + std::wstring(kind);
         customModel.displayName = L"Custom model contract";
@@ -3249,8 +3254,14 @@ int TestProviderPromptAndSchemaContracts() {
         customModel.credentialRef = L"ZenCrop/Translation/provider/" + customModel.id;
         customModel.model = L"vendor-specific-model";
         customModel.customModel = true;
-        customModel.reasoningMode = TranslationReasoningMode::ProviderDefault;
-        if (!IsSupportedProviderProfile(customModel, &error)) return 173;
+        // The tier has to come from the profile's own capability set: presets whose
+        // thinking switch is a vendor dialect (deepseek, siliconflow, xiaomi-mimo)
+        // offer their own tiers for a custom model too, exactly as they do for a
+        // listed one, so `ProviderDefault` is not universally valid here.
+        customModel.reasoningMode = GetCapabilities(customModel).defaultReasoning;
+        if (!IsReasoningModeSupported(
+                GetCapabilities(customModel), customModel.reasoningMode) ||
+            !IsSupportedProviderProfile(customModel, &error)) return 173;
     }
 
     TranslationSettings customModelRoundTrip;
@@ -3411,8 +3422,15 @@ int TestProviderPromptAndSchemaContracts() {
     auto customDeepSeek = settings.providerProfiles.front();
     customDeepSeek.model = L"deepseek-future-translate-model";
     customDeepSeek.customModel = true;
-    customDeepSeek.reasoningMode = TranslationReasoningMode::ProviderDefault;
-    if (!IsSupportedProviderProfile(customDeepSeek, &error)) return 177;
+    // A custom DeepSeek model keeps the vendor's thinking tiers: the engine reads
+    // `profile.reasoningMode` directly, so the profile has to be able to say `Off`
+    // (the preset default) instead of being forced onto `ProviderDefault`, which
+    // makes the engine send no `thinking` field at all -- and DeepSeek then thinks.
+    customDeepSeek.reasoningMode = GetCapabilities(customDeepSeek).defaultReasoning;
+    if (!GetCapabilities(customDeepSeek).reasoningModes.count(
+            TranslationReasoningMode::Off) ||
+        customDeepSeek.reasoningMode != TranslationReasoningMode::Off ||
+        !IsSupportedProviderProfile(customDeepSeek, &error)) return 177;
     auto credential = std::make_shared<FakeCredentialProvider>();
     auto deepseek = CreateTranslationEngine(settings, error, {}, credential);
     if (!deepseek || dynamic_cast<DeepSeekTranslationEngine*>(deepseek.get()) == nullptr) return 131;
@@ -3531,7 +3549,10 @@ int TestProviderPromptAndSchemaContracts() {
     openrouter.presetKind = L"openrouter";
     openrouter.adapterKind = TranslationAdapterKind::OpenAIChatCompletions;
     openrouter.authMode = TranslationAuthMode::BearerApiKey;
-    openrouter.model = L"openai/gpt-5-mini";
+    // An id outside the reasoning catalog: this contract is about adapter
+    // selection and endpoint resolution, not about the generated capability table
+    // (which `TestExistingProviderWireContracts` pins separately).
+    openrouter.model = L"contract/openrouter-model";
     openrouter.credentialRef = L"ZenCrop/Translation/provider/provider.openrouter.contract";
     openrouter.reasoningMode = TranslationReasoningMode::Off;
     settings.providerProfiles.push_back(openrouter);
@@ -4020,16 +4041,186 @@ int TestExistingProviderWireContracts() {
     }
 
     {
-        const auto profile = WireProfile(L"openrouter", L"openai/gpt-5-mini");
+        // An unlisted model on the OpenRouter preset: the gateway parameter stays,
+        // and a non-mandatory endpoint still gets thinking switched off.
+        const auto profile = WireProfile(L"openrouter", L"contract/openrouter-model");
         CapturedProviderCall call;
         if (!RunCapturedProvider(
-                profile, makeResponse(chatEnvelope("openai/gpt-5-mini")), call) ||
+                profile, makeResponse(chatEnvelope("contract/openrouter-model")), call) ||
             !call.result.success) return 410;
         const auto body = nlohmann::json::parse(call.body);
+        // `contains` first: nlohmann's `operator[]` on a missing key is an
+        // unchecked dereference (JSON_ASSERT is stripped under NDEBUG), so a
+        // regression here would abort the test process instead of failing it.
         if (call.url != L"https://openrouter.ai/api/v1/chat/completions" ||
+            !body.contains("reasoning") || !body["reasoning"].is_object() ||
             body["reasoning"].value("enabled", true) ||
+            body["reasoning"].contains("effort") ||
             body["response_format"].value("type", "") != "json_object" ||
             body.contains("temperature")) return 411;
+    }
+
+    {
+        // OpenRouter endpoints whose model metadata says reasoning is mandatory
+        // answer `{"reasoning":{"enabled":false}}` with HTTP 400
+        // "Reasoning is mandatory for this endpoint and cannot be disabled."
+        // A stored `Off` (this profile's value) must therefore be clamped to the
+        // lowest accepted tier instead of being sent, and `Off` must drop out of
+        // the offered tiers -- otherwise the settings page shows a choice the
+        // request cannot honour.
+        const auto profile = WireProfile(L"openrouter", L"stealth/space-bunny-alpha");
+        const auto capabilities = GetCapabilities(profile);
+        if (capabilities.reasoningModes.count(TranslationReasoningMode::Off) ||
+            capabilities.defaultReasoning != TranslationReasoningMode::Low ||
+            !capabilities.reasoningModes.count(TranslationReasoningMode::Low)) {
+            return 780;
+        }
+        CapturedProviderCall call;
+        if (!RunCapturedProvider(
+                profile, makeResponse(chatEnvelope("stealth/space-bunny-alpha")),
+                call) || !call.result.success) return 781;
+        const auto body = nlohmann::json::parse(call.body);
+        if (!body.contains("reasoning") || !body["reasoning"].is_object() ||
+            body["reasoning"].value("effort", "") != "low" ||
+            body["reasoning"].contains("enabled")) return 782;
+    }
+
+    {
+        // The `reasoning` field is normalized by the OpenRouter gateway for every
+        // model, so it is a provider-level parameter: an unlisted (custom) model
+        // must keep it. Gating it on `customModel` used to drop it entirely, which
+        // left the endpoint on its own default effort (measured `max`: 27.9 s for
+        // a 24-segment batch versus 3.9 s with `effort: "low"`).
+        auto profile = WireProfile(L"openrouter", L"vendor/unlisted-model");
+        profile.customModel = true;
+        CapturedProviderCall call;
+        if (!RunCapturedProvider(
+                profile, makeResponse(chatEnvelope("vendor/unlisted-model")),
+                call) || !call.result.success) return 783;
+        const auto body = nlohmann::json::parse(call.body);
+        if (!body.contains("reasoning") || !body["reasoning"].is_object() ||
+            body["reasoning"].value("enabled", true) ||
+            GetCapabilities(profile).defaultReasoning != TranslationReasoningMode::Off ||
+            !GetCapabilities(profile).reasoningModes.count(TranslationReasoningMode::Off)) {
+            return 784;
+        }
+    }
+
+    {
+        // Table lookup: `:<variant>` slugs absent from the generated table inherit
+        // the base model's answer, matching folds case, and unknown ids stay on the
+        // thinking-off default.
+        const auto mandatory = [](const wchar_t* model) {
+            const auto profile = WireProfile(L"openrouter", model);
+            return GetCapabilities(profile).reasoningModes.count(
+                       TranslationReasoningMode::Off) == 0;
+        };
+        if (!mandatory(L"anthropic/claude-opus-5.5") ||
+            !mandatory(L"anthropic/claude-opus-5.5:nitro") ||
+            !mandatory(L"STEALTH/Space-Bunny-Alpha") ||
+            mandatory(L"vendor/unlisted-model") ||
+            mandatory(L"deepseek/deepseek-v4-flash")) {
+            return 785;
+        }
+        // `Minimal` is back in the OpenRouter tier set, so pin its wire value:
+        // the gateway accepts it for every endpoint and maps a model that does
+        // not list it to the nearest *cheapest* tier (measured: `fireworks/ember-1`
+        // with `max+high+low` answered `minimal` with fewer reasoning tokens than
+        // `low`, not with `high`-sized ones).
+        const auto minimalProfile = WireProfile(
+            L"openrouter", L"contract/openrouter-model",
+            TranslationReasoningMode::Minimal);
+        // Return codes stay unique inside this function so a failure names one
+        // assertion; the file reuses codes across functions by convention.
+        CapturedProviderCall minimalCall;
+        if (!RunCapturedProvider(
+                minimalProfile,
+                makeResponse(chatEnvelope("contract/openrouter-model")),
+                minimalCall) || !minimalCall.result.success) {
+            return 785;
+        }
+        const auto minimalBody = nlohmann::json::parse(minimalCall.body);
+        if (!minimalBody.contains("reasoning") ||
+            !minimalBody["reasoning"].is_object() ||
+            minimalBody["reasoning"].value("effort", "") != "minimal" ||
+            minimalBody["reasoning"].contains("enabled")) {
+            return 794;
+        }
+    }
+
+    {
+        // A non-2xx response has to carry the provider's own message: the status
+        // code alone cannot tell "reasoning is mandatory" from "not a valid model
+        // ID", and each of those has an actionable answer the user can only act on
+        // if it is visible.
+        const auto profile = WireProfile(L"openrouter", L"stealth/space-bunny-alpha");
+        HttpResponse failure;
+        failure.statusCode = 400;
+        failure.contentType = L"application/json";
+        failure.body = nlohmann::json({
+            {"error", {
+                {"message", "Reasoning is mandatory for this endpoint and cannot be disabled."},
+                {"code", 400},
+            }},
+        }).dump();
+        CapturedProviderCall call;
+        if (!RunCapturedProvider(profile, failure, call)) return 786;
+        if (call.result.success ||
+            call.result.code != ErrorCode::InvalidRequest ||
+            call.result.error.find(L"400") == std::wstring::npos ||
+            call.result.error.find(L"Reasoning is mandatory") == std::wstring::npos) {
+            return 787;
+        }
+    }
+
+    {
+        // Vendor dialects a custom model must keep. Xiaomi MiMo's thinking switch
+        // is the endpoint's way of saying "do not think" (measured 2026-09-28:
+        // 5.0 s + reasoning_content without it versus 1.6 s with it, and with
+        // thinking explicitly enabled the content stopped being valid JSON).
+        auto profile = WireProfile(L"xiaomi-mimo", L"mimo-contract-unlisted-model");
+        profile.customModel = true;
+        const auto capabilities = GetCapabilities(profile);
+        if (!capabilities.reasoningModes.count(TranslationReasoningMode::Off) ||
+            capabilities.defaultReasoning != TranslationReasoningMode::Off ||
+            !capabilities.supportsTemperature) {
+            return 790;
+        }
+        CapturedProviderCall call;
+        if (!RunCapturedProvider(
+                profile, makeResponse(chatEnvelope("mimo-contract-unlisted-model")),
+                call) || !call.result.success) return 791;
+        const auto body = nlohmann::json::parse(call.body);
+        if (!body.contains("thinking") || !body["thinking"].is_object() ||
+            body["thinking"].value("type", "") != "disabled" ||
+            body["thinking"].contains("enabled") ||
+            std::abs(body.value("temperature", 0.0) - 0.1) > 0.001 ||
+            body.contains("response_format") || body.contains("enable_thinking")) {
+            return 796;
+        }
+    }
+
+    {
+        // SiliconFlow: `enable_thinking:false` is accepted by models that cannot
+        // think at all, so an unlisted model keeps it. Measured on Qwen/Qwen3.5-9B:
+        // 118.6 s / 2605 reasoning tokens without it, 4.5 s / 0 with it.
+        auto profile = WireProfile(
+            L"siliconflow", L"Qwen/Qwen3-Contract-Unlisted");
+        profile.customModel = true;
+        const auto capabilities = GetCapabilities(profile);
+        if (!capabilities.reasoningModes.count(TranslationReasoningMode::Off) ||
+            capabilities.defaultReasoning != TranslationReasoningMode::Off) {
+            return 792;
+        }
+        CapturedProviderCall call;
+        if (!RunCapturedProvider(
+                profile, makeResponse(chatEnvelope("Qwen/Qwen3-Contract-Unlisted")),
+                call) || !call.result.success) return 793;
+        const auto body = nlohmann::json::parse(call.body);
+        if (body.value("enable_thinking", true) ||
+            body.contains("thinking")) {
+            return 797;
+        }
     }
 
     {
@@ -4931,6 +5122,112 @@ int TestTranslationBudgetAndDiagnosticContracts() {
         }
     }
 
+    // 1e: the direct-MT engines are on the same diagnostic contract. Their
+    // probe is still a real POST /translate (unofficial community endpoints can
+    // only be shown alive by a real request), but it must not inherit the
+    // production 30 s / 60 s timeouts.
+    {
+        const auto* preset = FindTranslationProviderPreset(L"deeplx-custom");
+        if (!preset) return 611;
+        auto profile = CreateTranslationProviderProfile(
+            *preset, L"provider.deeplx.probe.contract");
+        profile.baseUrlOverride = L"https://deeplx.example/v1/translate";
+        TranslationSettings settings;
+        settings.providerProfiles = {profile};
+        settings.activeProviderId = profile.id;
+        auto transport = std::make_shared<CaptureTranslationTransport>();
+        transport->response = makeResponse({{"data", "你好"}});
+        auto engine = std::make_shared<MachineTranslationEngine>(
+            settings, transport, std::make_shared<FakeCredentialProvider>());
+        std::mutex mutex;
+        std::condition_variable condition;
+        bool completed = false;
+        TranslationResult result;
+        auto operation = engine->TestConnection([&](TranslationResult value) {
+            {
+                std::lock_guard<std::mutex> lock(mutex);
+                result = std::move(value);
+                completed = true;
+            }
+            condition.notify_one();
+        });
+        if (operation) {
+            std::unique_lock<std::mutex> lock(mutex);
+            if (!condition.wait_for(lock, std::chrono::seconds(2), [&] { return completed; })) {
+                operation->Cancel();
+                operation->Join();
+                return 612;
+            }
+            operation->Join();
+        }
+        if (!completed || !result.success) return 613;
+        HttpRequestOptions options;
+        {
+            std::lock_guard<std::mutex> lock(transport->mutex);
+            options = transport->postOptions;
+        }
+        if (options.timeoutMs != 15000 || options.deadlineMs != 20000) return 614;
+    }
+
+    // 1f: the DeepSeek probe is the production path, so it must not ask for the
+    // vendor model listing. This transport answers every GET with
+    // "unexpected GET", which makes a listing gate fail the probe -- exactly
+    // the regression that shipped (api.deepseek.com omits `deepseek-v4-flash`
+    // from /models while chat/completions accepts it).
+    {
+        const auto profile = WireProfile(L"deepseek", L"deepseek-v4-flash");
+        TranslationSettings settings;
+        settings.providerProfiles = {profile};
+        settings.activeProviderId = profile.id;
+        auto transport = std::make_shared<CaptureTranslationTransport>();
+        const nlohmann::json probeInner = {
+            {"targetLanguage", "zh-Hans"},
+            {"detectedSourceLanguage", "en"},
+            {"translations", nlohmann::json::array({
+                {{"id", "test"}, {"text", "你好"}},
+            })},
+        };
+        transport->response = makeResponse(nlohmann::json({
+            {"model", "deepseek-v4-flash"},
+            {"choices", nlohmann::json::array({{
+                {"message", {{"role", "assistant"}, {"content", probeInner.dump()}}},
+                {"finish_reason", "stop"}}})},
+        }));
+        auto engine = std::make_shared<DeepSeekTranslationEngine>(
+            settings, transport, std::make_shared<FakeCredentialProvider>());
+        std::mutex mutex;
+        std::condition_variable condition;
+        bool completed = false;
+        TranslationResult result;
+        auto operation = engine->TestConnection([&](TranslationResult value) {
+            {
+                std::lock_guard<std::mutex> lock(mutex);
+                result = std::move(value);
+                completed = true;
+            }
+            condition.notify_one();
+        });
+        if (operation) {
+            std::unique_lock<std::mutex> lock(mutex);
+            if (!condition.wait_for(lock, std::chrono::seconds(2), [&] { return completed; })) {
+                operation->Cancel();
+                operation->Join();
+                return 615;
+            }
+            operation->Join();
+        }
+        if (!completed || !result.success) return 616;
+        std::string body;
+        HttpRequestOptions options;
+        {
+            std::lock_guard<std::mutex> lock(transport->mutex);
+            body = transport->postBody;
+            options = transport->postOptions;
+        }
+        if (options.receiveTimeoutMs != 15000 || options.deadlineMs != 20000) return 617;
+        if (nlohmann::json::parse(body).value("max_tokens", 0) != 16384) return 618;
+    }
+
     // 7: after the migration the SiliconFlow tiers must use the documented
     // top-level parameters. The nested thinking object must be gone for this
     // preset, while the deepseek preset keeps it (that is its documented API).
@@ -5420,6 +5717,294 @@ int TestSiliconFlowRequestContract() {
     return 0;
 }
 
+// The settings pages replace a combo label while saving the profile the user
+// just left -- and at that moment CB_GETCURSEL already points at the entry they
+// just clicked. ReplaceComboItemLabel() must therefore leave the selection
+// alone: an earlier revision shifted it down by one, so clicking entry N landed
+// on entry N-1 and clicking the neighbouring entry was impossible at all.
+// TruncateUtf16Safe() must guarantee well-formed UTF-16, not merely "at most N
+// code units": callers hand it strings they already cut with substr(0, cut),
+// whose size equals the limit, so the tail repair cannot live behind a size-only
+// guard -- it was bypassed in exactly that case (the provider test status
+// preview) until this test was written.
+int TestUtf16TruncateContract() {
+    const std::wstring emoji = L"\xD83D\xDE00";  // U+1F600, a well-formed pair
+    // A pair split by the limit loses its stranded high half.
+    std::wstring split = L"abc" + emoji + L"tail";
+    translation::TruncateUtf16Safe(split, 4);
+    if (split != L"abc") return 1;
+    // The same content already cut to exactly the limit (the preview path: the
+    // string is `cut` long before the helper ever sees it).
+    std::wstring precut = L"abc" + emoji;
+    precut.resize(4);
+    if (precut.size() != 4) return 2;
+    translation::TruncateUtf16Safe(precut, 4);
+    if (precut != L"abc") return 3;
+    // A pair that fits inside the limit is preserved.
+    std::wstring pair = L"ab" + emoji;
+    translation::TruncateUtf16Safe(pair, 4);
+    if (pair != L"ab" + emoji) return 4;
+    // A short string that does not end on a high surrogate is left untouched.
+    std::wstring untouched = L"hello";
+    translation::TruncateUtf16Safe(untouched, 64);
+    if (untouched != L"hello") return 5;
+    // Limits of 0 work and never panic; an empty string stays empty.
+    std::wstring empty;
+    translation::TruncateUtf16Safe(empty, 0);
+    if (!empty.empty()) return 6;
+    std::wstring zero = L"abc";
+    translation::TruncateUtf16Safe(zero, 0);
+    if (!zero.empty()) return 7;
+    // A lone low surrogate cannot be produced by cutting, so it is left alone.
+    std::wstring loneLow = L"ab\xDC00";
+    translation::TruncateUtf16Safe(loneLow, 8);
+    if (loneLow.size() != 3) return 8;
+    return 0;
+}
+
+// The provider page's credential state machine: every pending intent must be
+// cancellable, and the action button must offer that Cancel. While a `Clear` was
+// armed the button still read "Show" (the mapping only special-cased `Replace`),
+// so clicking it revealed the stored key while the clear stayed armed -- the next
+// Apply then deleted the credential the user was looking at.
+// One MIME gate for the whole module (translation::IsJsonContentType). The three
+// engine copies it replaces disagreed at both ends of the range, and both ends are
+// pinned by other contract tests: the DeepSeek test requires `application/jsonp`
+// to be *rejected*, while the machine translation test requires Google community
+// translateHtml's `application/json+protobuf` to be *accepted*. A naive merge in
+// either direction fails one of them (it did, twice, before this predicate was
+// written as "the JSON type plus a subtype suffix").
+int TestJsonContentTypeContract() {
+    const wchar_t* accepted[] = {
+        L"application/json",
+        L"APPLICATION/JSON",
+        L" application/json ",
+        L"application/json; charset=utf-8",
+        L"application/vnd.api+json",
+        L"application/problem+json",
+        // Google community translateHtml (real preset; MT contract).
+        L"application/json+protobuf",
+    };
+    for (const wchar_t* value : accepted) {
+        if (!translation::IsJsonContentType(value)) return 1;
+    }
+    const wchar_t* rejected[] = {
+        L"",
+        L"text/plain",
+        L"text/html; charset=utf-8",
+        // A false positive of the old substring test (and of the LLM engines'
+        // parameter handling, had they not cut at ';' first).
+        L"text/plain; note=application/json",
+        // JSONP is not JSON; the DeepSeek contract pins this one.
+        L"application/jsonp",
+        L"application/",
+        L"+json",
+    };
+    for (const wchar_t* value : rejected) {
+        if (translation::IsJsonContentType(value)) return 2;
+    }
+    // The parameter list is cut at the first ';' and the value is trimmed, so a
+    // parameter that itself contains the token cannot leak into the match.
+    if (translation::IsJsonContentType(L"text/plain; a=+json")) return 3;
+    return 0;
+}
+
+int TestProviderKeyActionLabelContract() {
+    using translation::CredentialIntent;
+    using translation::ProviderKeyActionLabel;
+    if (ProviderKeyActionLabel(false, CredentialIntent::Replace, true) !=
+        std::wstring(L"Cancel")) return 1;
+    if (ProviderKeyActionLabel(false, CredentialIntent::Clear, true) !=
+        std::wstring(L"Cancel")) return 2;
+    if (ProviderKeyActionLabel(false, CredentialIntent::None, true) !=
+        std::wstring(L"Show")) return 3;
+    if (ProviderKeyActionLabel(false, CredentialIntent::None, false) !=
+        std::wstring(L"Set")) return 4;
+    if (ProviderKeyActionLabel(true, CredentialIntent::None, true) !=
+        std::wstring(L"Hide")) return 5;
+    // Revealed wins: the button's job is to undo the reveal first.
+    if (ProviderKeyActionLabel(true, CredentialIntent::Clear, true) !=
+        std::wstring(L"Hide")) return 6;
+    return 0;
+}
+
+// Apply mutates the credential store first and commits the settings second, so a
+// failed commit needs a rollback -- and the rollback can fail too. Two silent
+// failures used to hide there: the in-memory copy of the old key was wiped even
+// when the write-back failed (the key was then gone for good), and the retry
+// recorded only the key, never whether a key existed before, so the "this Apply
+// created the credential" case tried to write an empty key -- which the store
+// rejects -- and the dialog stayed broken even after the underlying fault went
+// away. Driven through a store that fails on demand: the Windows vault has no way
+// to fail one target on purpose, so this cannot be a manual acceptance step.
+int TestCredentialRollbackContract() {
+    struct FakeStore final : translation::ICredentialMutationStore {
+        bool failWrites = false;
+        bool failClears = false;
+        std::vector<std::wstring> writes;
+        std::vector<std::wstring> clears;
+        bool WriteKey(const std::wstring& target, const std::wstring& key,
+            std::wstring& error) override {
+            if (failWrites) {
+                error = L"write failed";
+                return false;
+            }
+            writes.push_back(target + L"=" + key);
+            return true;
+        }
+        bool ClearKey(const std::wstring& target, std::wstring& error) override {
+            if (failClears) {
+                error = L"clear failed";
+                return false;
+            }
+            clears.push_back(target);
+            return true;
+        }
+    };
+
+    // There was a key: the write-back fails, the copy must survive and the retry
+    // must write it back.
+    {
+        FakeStore store;
+        store.failWrites = true;
+        translation::CredentialRollback pending;
+        std::wstring previousKey = L"old-key";
+        std::wstring error;
+        if (translation::RestoreCredential(
+                store, L"target.a", true, previousKey, pending, error)) return 1;
+        if (!pending.pending || !pending.hadPrevious ||
+            pending.key != L"old-key" || pending.target != L"target.a") return 2;
+        if (previousKey != L"old-key") return 3;
+        store.failWrites = false;
+        if (!translation::FlushPendingRestore(store, pending, error)) return 4;
+        if (store.writes.size() != 1 ||
+            store.writes.front() != L"target.a=old-key") return 5;
+        if (pending.pending || !pending.key.empty() || !pending.target.empty()) return 6;
+    }
+    // There was no key: the compensation must *delete* the credential this Apply
+    // created, not write an empty key.
+    {
+        FakeStore store;
+        store.failClears = true;
+        translation::CredentialRollback pending;
+        std::wstring previousKey;
+        std::wstring error;
+        if (translation::RestoreCredential(
+                store, L"target.b", false, previousKey, pending, error)) return 7;
+        if (!pending.pending || pending.hadPrevious) return 8;
+        if (!store.writes.empty()) return 9;
+        store.failClears = false;
+        if (!translation::FlushPendingRestore(store, pending, error)) return 10;
+        if (!store.writes.empty()) return 11;  // the old bug wrote an empty key
+        if (store.clears.size() != 1 || store.clears.front() != L"target.b") return 12;
+        if (pending.pending) return 13;
+    }
+    // Nothing pending: the flush is a no-op.
+    {
+        FakeStore store;
+        translation::CredentialRollback pending;
+        std::wstring error;
+        if (!translation::FlushPendingRestore(store, pending, error)) return 14;
+        if (!store.writes.empty() || !store.clears.empty()) return 15;
+    }
+    // A rollback that succeeds leaves no pending state and wipes the caller's copy.
+    {
+        FakeStore store;
+        translation::CredentialRollback pending;
+        std::wstring previousKey = L"old-key";
+        std::wstring error;
+        if (!translation::RestoreCredential(
+                store, L"target.c", true, previousKey, pending, error)) return 16;
+        if (!previousKey.empty() || pending.pending) return 17;
+        if (store.writes.size() != 1) return 18;
+    }
+    // The "created by this Apply" case that succeeds also stays clean.
+    {
+        FakeStore store;
+        translation::CredentialRollback pending;
+        std::wstring previousKey;
+        std::wstring error;
+        if (!translation::RestoreCredential(
+                store, L"target.d", false, previousKey, pending, error)) return 19;
+        if (pending.pending || store.clears.size() != 1) return 20;
+    }
+    return 0;
+}
+
+int TestComboLabelReplaceKeepsSelection() {
+    HWND owner = CreateWindowExW(0, L"STATIC", L"", WS_POPUP,
+        0, 0, 200, 200, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+    if (!owner) return 1;
+    HWND combo = CreateWindowExW(0, L"COMBOBOX", L"",
+        WS_POPUP | CBS_DROPDOWNLIST | WS_VSCROLL,
+        0, 0, 200, 200, owner, nullptr, GetModuleHandleW(nullptr), nullptr);
+    if (!combo) {
+        DestroyWindow(owner);
+        return 2;
+    }
+    std::vector<std::wstring*> owned;
+    const wchar_t* names[] = {L"a", L"b", L"c", L"d"};
+    for (const wchar_t* name : names) {
+        const LRESULT index = SendMessageW(combo, CB_ADDSTRING, 0,
+            reinterpret_cast<LPARAM>(name));
+        auto* data = new std::wstring(name);
+        SendMessageW(combo, CB_SETITEMDATA, index,
+            reinterpret_cast<LPARAM>(data));
+        owned.push_back(data);
+    }
+    const auto finish = [&](int code) {
+        for (auto* value : owned) delete value;
+        DestroyWindow(combo);
+        DestroyWindow(owner);
+        return code;
+    };
+    const auto selectedIndex = [&] {
+        return static_cast<int>(SendMessageW(combo, CB_GETCURSEL, 0, 0));
+    };
+    const auto itemData = [&](int index) -> const std::wstring* {
+        return reinterpret_cast<const std::wstring*>(
+            SendMessageW(combo, CB_GETITEMDATA, index, 0));
+    };
+    const auto label = [&](int index) {
+        wchar_t buffer[64] = {};
+        SendMessageW(combo, CB_GETLBTEXT, index, reinterpret_cast<LPARAM>(buffer));
+        return std::wstring(buffer);
+    };
+
+    // The regression: selection sits on entry 3 while entry 0 is relabelled.
+    SendMessageW(combo, CB_SETCURSEL, 3, 0);
+    if (!translation::ReplaceComboItemLabel(combo, 0, L"a (Disabled)", owned[0])) {
+        return finish(3);
+    }
+    if (selectedIndex() != 3) return finish(4);
+    if (label(0) != L"a (Disabled)") return finish(5);
+    if (!itemData(0) || *itemData(0) != L"a" ||
+        !itemData(3) || *itemData(3) != L"d") {
+        return finish(6);
+    }
+    // Relabelling the selected entry keeps it selected (its data moved one slot).
+    if (!translation::ReplaceComboItemLabel(combo, 3, L"d (Disabled)", owned[3])) {
+        return finish(7);
+    }
+    if (selectedIndex() != 3) return finish(8);
+    if (!itemData(3) || *itemData(3) != L"d") return finish(9);
+    // Clicking the neighbour entry (0 -> 1) then saving entry 0 must keep 1.
+    SendMessageW(combo, CB_SETCURSEL, 0, 0);
+    SendMessageW(combo, CB_SETCURSEL, 1, 0);
+    if (!translation::ReplaceComboItemLabel(combo, 0, L"a (Enabled)", owned[0])) {
+        return finish(10);
+    }
+    if (selectedIndex() != 1) return finish(11);
+    if (SendMessageW(combo, CB_GETCOUNT, 0, 0) != 4) return finish(12);
+    // Out-of-range indexes are refused instead of corrupting the list.
+    if (translation::ReplaceComboItemLabel(combo, 4, L"e", nullptr) ||
+        translation::ReplaceComboItemLabel(combo, -1, L"e", nullptr)) {
+        return finish(13);
+    }
+    if (SendMessageW(combo, CB_GETCOUNT, 0, 0) != 4) return finish(14);
+    return finish(0);
+}
+
 int TestSettingsRoundTrip() {
     const std::wstring dataDirectory = MakeTempDirectory();
     if (dataDirectory.empty()) return 20;
@@ -5858,6 +6443,169 @@ int TestSettingsRoundTrip() {
     const auto autoCustomModel = translation::FindActiveTranslationProvider(customModelSettings);
     if (!autoCustomModel || !autoCustomModel->customModel ||
         autoCustomModel->model != L"my-custom-deepseek-model") return 49;
+
+    // A parse that *succeeds while dropping entries* is damaged data too: the
+    // load path keeps only the entries it can round-trip, so an unusable provider
+    // or prompt survives in the file while being absent from the parsed object.
+    // The save path used to back up only on a hard parse failure, so the next
+    // "read one flag, write everything" caller erased the dropped entry for good.
+    const wchar_t* droppedEntrySection =
+        L"{\"schemaVersion\":4,\"enabled\":true,"
+        L"\"activeProviderId\":\"provider.keep.me\","
+        L"\"providerProfiles\":["
+        L"{\"id\":\"provider.keep.me\",\"displayName\":\"Keep Me\","
+        L"\"presetKind\":\"deepseek\",\"adapterKind\":\"deepseek-chat\","
+        L"\"authMode\":\"bearer-api-key\","
+        L"\"credentialRef\":\"ZenCrop/Translation/provider/provider.keep.me\","
+        L"\"model\":\"deepseek-v4-flash\",\"customModel\":false,"
+        L"\"reasoningMode\":\"off\",\"advancedOptionsJson\":\"{}\"},"
+        L"{\"displayName\":\"Ghost Provider\",\"presetKind\":\"deepseek\","
+        L"\"adapterKind\":\"deepseek-chat\"}],"
+        L"\"customPromptProfiles\":["
+        L"{\"id\":\"prompt.keep.me\",\"name\":\"Keep Prompt\","
+        L"\"styleInstruction\":\"keep\"},"
+        L"{\"id\":\"prompt.ghost\",\"name\":\"\",\"styleInstruction\":\"ghost\"}]}";
+    {
+        TranslationSettings parsed;
+        std::wstring parseError;
+        bool dropped = false;
+        if (!ParseTranslationSection(
+                droppedEntrySection, parsed, &parseError, &dropped) ||
+            !dropped) return 50;
+        // The codec also restores the built-in defaults, so assert on the entries
+        // instead of the list size: the usable ones survive, the ghost ones do not.
+        const auto hasProfile = [](const TranslationSettings& value,
+                                   const wchar_t* id) {
+            return std::any_of(value.providerProfiles.begin(),
+                value.providerProfiles.end(),
+                [id](const TranslationProviderProfile& profile) {
+                    return profile.id == id;
+                });
+        };
+        if (!hasProfile(parsed, L"provider.keep.me")) return 51;
+        if (std::any_of(parsed.providerProfiles.begin(),
+                parsed.providerProfiles.end(),
+                [](const TranslationProviderProfile& profile) {
+                    return profile.displayName == L"Ghost Provider";
+                })) return 51;
+        if (parsed.customPromptProfiles.size() != 1 ||
+            parsed.customPromptProfiles.front().id != L"prompt.keep.me") return 51;
+        // A re-serialization of what was kept must not report drops.
+        bool cleanDropped = true;
+        TranslationSettings reparsed;
+        if (!ParseTranslationSection(
+                SerializeTranslationSection(parsed), reparsed,
+                &parseError, &cleanDropped) || cleanDropped) return 52;
+    }
+    // Earlier phases of this test may have left their own backups, so look at the
+    // set of files each write produces rather than at "the first match".
+    const auto listBackups = [&settingsPath] {
+        std::vector<std::wstring> paths;
+        WIN32_FIND_DATAW found = {};
+        HANDLE search = FindFirstFileW(
+            (settingsPath + L".unreadable-*").c_str(), &found);
+        if (search == INVALID_HANDLE_VALUE) return paths;
+        const std::wstring directory = settingsPath.substr(
+            0, settingsPath.size() - std::wstring(L"settings.json").size());
+        do {
+            paths.push_back(directory + found.cFileName);
+        } while (FindNextFileW(search, &found));
+        FindClose(search);
+        return paths;
+    };
+    const auto dropBackups = [&listBackups] {
+        for (const auto& stale : listBackups()) DeleteFileW(stale.c_str());
+    };
+    std::string narrowSection;
+    for (const wchar_t* character = droppedEntrySection; *character; ++character) {
+        narrowSection.push_back(static_cast<char>(*character));
+    }
+    {
+        dropBackups();
+        if (!WriteUtf8(settingsPath,
+            "{\"general\": {\"language\": \"en\"}, \"translation\": " +
+                narrowSection + "}")) return 53;
+        if (!SaveTranslationSettings(expected)) return 54;
+        const std::vector<std::wstring> backups = listBackups();
+        if (backups.size() != 1) return 55;
+        const std::string bytes = ReadBytes(backups.front());
+        if (!Contains(bytes, "Ghost Provider") ||
+            !Contains(bytes, "prompt.ghost") ||
+            !Contains(bytes, "Keep Me")) return 56;
+        DeleteFileW(backups.front().c_str());
+    }
+    {
+        // The Provider/Prompt managers write through CommitTranslationManagedSettings,
+        // which re-serializes the whole section as well -- and the areas are
+        // asymmetric: this prompt-only commit used to erase a dropped *provider*
+        // entry with no backup at all.
+        dropBackups();
+        if (!WriteUtf8(settingsPath,
+            "{\"general\": {\"language\": \"en\"}, \"translation\": " +
+                narrowSection + "}")) return 57;
+        TranslationSettings baseline = LoadTranslationSettings();
+        TranslationSettings pendingPrompts = baseline;
+        if (pendingPrompts.customPromptProfiles.empty() ||
+            pendingPrompts.customPromptProfiles.front().id != L"prompt.keep.me") {
+            return 58;
+        }
+        pendingPrompts.customPromptProfiles.front().name = L"Renamed Prompt";
+        TranslationSettings saved;
+        std::wstring commitError;
+        if (!CommitTranslationManagedSettings(baseline, pendingPrompts,
+                TranslationManagedArea::Prompts, &saved, &commitError)) return 59;
+        const std::vector<std::wstring> backups = listBackups();
+        if (backups.size() != 1) return 60;
+        const std::string bytes = ReadBytes(backups.front());
+        if (!Contains(bytes, "Ghost Provider") ||
+            !Contains(bytes, "prompt.ghost")) return 61;
+        DeleteFileW(backups.front().c_str());
+    }
+    {
+        // A profile can survive parsing after its invalid optional fields are
+        // reset. That is still a lossy read and needs the same backup.
+        const std::string section =
+            "{\"schemaVersion\":4,\"providerProfiles\":[{"
+            "\"id\":\"provider.salvage\",\"displayName\":\"Salvage\","
+            "\"presetKind\":\"deepseek\",\"adapterKind\":\"deepseek-chat\","
+            "\"authMode\":\"bearer-api-key\","
+            "\"credentialRef\":\"ZenCrop/Translation/provider/provider.salvage\","
+            "\"model\":\"deepseek-v4-flash\",\"reasoningMode\":\"off\","
+            "\"advancedOptionsJson\":\"{broken\"}]}";
+        TranslationSettings salvaged;
+        std::wstring parseError;
+        bool lossy = false;
+        if (!ParseTranslationSection(Utf8ToWide(section), salvaged,
+                &parseError, &lossy) || !lossy) return 62;
+        const auto profile = std::find_if(salvaged.providerProfiles.begin(),
+            salvaged.providerProfiles.end(), [](const auto& candidate) {
+                return candidate.id == L"provider.salvage";
+            });
+        if (profile == salvaged.providerProfiles.end() ||
+            profile->advancedOptionsJson != L"{}") return 63;
+        dropBackups();
+        const std::string original = "{\"translation\":" + section + "}";
+        if (!WriteUtf8(settingsPath, original) || !SaveTranslationSettings(salvaged)) {
+            return 64;
+        }
+        const auto backups = listBackups();
+        if (backups.size() != 1 || ReadBytes(backups.front()) != original) return 65;
+        DeleteFileW(backups.front().c_str());
+    }
+    {
+        // With an unclosed translation object, the top-level extractor returns
+        // nothing. An unrelated settings save must still preserve the raw file.
+        dropBackups();
+        const std::string original =
+            "{\"general\":{\"language\":\"en\"},\"translation\":{\"providerProfiles\":[";
+        if (!WriteUtf8(settingsPath, original)) return 66;
+        GeneralSettings general;
+        general.language.value = AppLanguage::English;
+        SaveGeneralSettings(general);
+        const auto backups = listBackups();
+        if (backups.size() != 1 || ReadBytes(backups.front()) != original) return 67;
+        DeleteFileW(backups.front().c_str());
+    }
 
     DeleteFileW(settingsPath.c_str());
     RemoveDirectoryW(ZenCropAppDataDirectory().c_str());
@@ -7681,6 +8429,33 @@ int main() {
     if (coordinatorResult != 0) {
         std::cerr << "coordinator contract failed: " << coordinatorResult << "\n";
         return coordinatorResult;
+    }
+    const int rollbackResult = TestCredentialRollbackContract();
+    if (rollbackResult != 0) {
+        std::cerr << "credential rollback contract failed: " << rollbackResult
+                  << "\n";
+        return rollbackResult;
+    }
+    const int mimeResult = TestJsonContentTypeContract();
+    if (mimeResult != 0) {
+        std::cerr << "json content type contract failed: " << mimeResult << "\n";
+        return mimeResult;
+    }
+    const int keyLabelResult = TestProviderKeyActionLabelContract();
+    if (keyLabelResult != 0) {
+        std::cerr << "provider key action label contract failed: " << keyLabelResult
+                  << "\n";
+        return keyLabelResult;
+    }
+    const int truncateResult = TestUtf16TruncateContract();
+    if (truncateResult != 0) {
+        std::cerr << "utf-16 truncate contract failed: " << truncateResult << "\n";
+        return truncateResult;
+    }
+    const int comboLabelResult = TestComboLabelReplaceKeepsSelection();
+    if (comboLabelResult != 0) {
+        std::cerr << "combo label contract failed: " << comboLabelResult << "\n";
+        return comboLabelResult;
     }
     const int settingsResult = TestSettingsRoundTrip();
     if (settingsResult != 0) {

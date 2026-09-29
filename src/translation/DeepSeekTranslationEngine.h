@@ -29,16 +29,21 @@ private:
     std::shared_ptr<IAsyncHttpTransport> transport_;
     std::shared_ptr<ITranslationCredentialProvider> credentialProvider_;
 
+    // `diagnosticProbe` marks the TestConnection path. The probe is the same
+    // request with a different deadline rule: a real translation keeps the
+    // watchdog one slack above a single attempt (so one hung attempt cannot eat
+    // the whole retry budget), while the probe has a single attempt and takes the
+    // budget's declared deadline -- the value the other two engines use.
     static std::shared_ptr<AsyncHttpRequest> IssueTranslate(
         const TranslationSettings& settings,
         const std::shared_ptr<IAsyncHttpTransport>& transport,
         const std::shared_ptr<ITranslationCredentialProvider>& credentialProvider,
         const TranslationRequest& request,
         Callback callback,
-        int attempt,
         int maxTokens,
         const std::shared_ptr<RetryState>& retryState,
-        const TranslationBudget& budget);
+        const TranslationBudget& budget,
+        bool diagnosticProbe);
     static void BindRetryOperation(
         const std::shared_ptr<RetryState>& retryState,
         const std::shared_ptr<AsyncHttpRequest>& operation,

@@ -17,12 +17,24 @@ bool CommitTranslationManagedSettings(
     TranslationSettings* saved,
     std::wstring* error);
 
+// Validate the provider "Advanced JSON" field against the same key whitelist
+// the persistence codec enforces, so the settings page can name the offending
+// key before Apply instead of surfacing a generic save error. An empty field
+// means "no options" and is valid.
+bool ValidateProviderAdvancedOptions(
+    const std::wstring& jsonText,
+    std::wstring* error = nullptr);
+
 // TranslationSettings persistence is kept in a dedicated codec so the
 // Settings repository does not grow another hand-written nested JSON parser.
+// `droppedEntries` (optional) reports a lossy read: an entry was discarded or
+// optional provider fields were repaired. The original file must be backed up
+// before a writer replaces those values with the parsed result.
 bool ParseTranslationSection(
     const std::wstring& section,
     TranslationSettings& settings,
-    std::wstring* error = nullptr);
+    std::wstring* error = nullptr,
+    bool* droppedEntries = nullptr);
 
 // Normalize and validate a settings object before it is persisted. This is
 // intentionally kept next to the codec so every caller (settings pages,

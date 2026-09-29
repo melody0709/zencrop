@@ -58,10 +58,24 @@ struct LlmModelPolicy {
     int revision = 1;
 };
 
+struct ProviderCapabilities;
+
 LlmModelPolicy ResolveLlmModelPolicy(
     const std::wstring& presetKind,
     const std::wstring& model,
     bool customModel);
+
+// The one definition of "which reasoning mode will this request actually
+// carry". A stored mode can be stale -- a profile written before the model
+// policy changed, or a user-added profile that the settings codec never
+// repairs -- and a stale mode is not harmless: profile validation rejects it
+// outright (`IsSupportedProviderProfile` would report an invalid profile, so
+// no request is ever sent) and an endpoint whose metadata says reasoning is
+// mandatory answers a stored `off` with HTTP 400. Every engine therefore
+// clamps before *both* validation and request-body construction.
+TranslationReasoningMode EffectiveReasoningMode(
+    const TranslationProviderProfile& profile,
+    const ProviderCapabilities& capabilities);
 
 const wchar_t* LlmOutputModeName(LlmOutputMode mode);
 

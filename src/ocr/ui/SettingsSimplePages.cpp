@@ -118,6 +118,10 @@ void RelayoutScreenshotPage(HWND hPage, UINT dpi) {
 void RelayoutTranslatePage(HWND hPage, UINT dpi) {
     if (!hPage) return;
     SettingsPageLayout layout(hPage, dpi);
+    // The feature gate has to be reachable from the window that owns it; the
+    // coordinator refuses to translate with "enable screenshot translation in
+    // settings" while this page had no such control.
+    layout.AddCheckbox(IDC_TRANSLATE_ENABLED);
     layout.AddHotkeyRow(IDC_TRANSLATE_SELECTION_HOTKEY_LABEL, IDC_TRANSLATE_SELECTION_HOTKEY_EDIT, IDC_TRANSLATE_SELECTION_HOTKEY_CLEAR);
     layout.AddCheckboxWithHint(IDC_TRANSLATE_SELECTION_COPY_FALLBACK, IDC_TRANSLATE_SELECTION_COPY_HINT, 16);
     layout.AddRow(IDC_TRANSLATE_SOURCE_LABEL, IDC_TRANSLATE_SOURCE);

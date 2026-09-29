@@ -533,6 +533,8 @@ inline void NormalizeLoadedPPOcrV6Preset(
 std::wstring GetSettingsFilePath();
 std::mutex& SettingsWriteMutex();
 std::wstring ReadFileToString(const std::wstring& path);
+// Preserve the exact on-disk bytes before replacing a damaged settings file.
+bool BackupSettingsFile(const std::wstring& path, std::wstring* error = nullptr);
 bool WriteStringToFile(
     const std::wstring& path,
     const std::wstring& content,

@@ -46,6 +46,11 @@ set "ARTIFACT_ROOT=%CD%\build\artifacts\tests"
 if not exist "!ARTIFACT_ROOT!" mkdir "!ARTIFACT_ROOT!"
 set "ZENCROP_TEST_OUTPUT_ROOT=!ARTIFACT_ROOT!"
 set "ZENCROP_DATA_DIR=!ARTIFACT_ROOT!\app-data"
+rem Each test binary resolves ZENCROP_DATA_DIR once per process and caches it
+rem (AppDataPaths.cpp:ZenCropAppDataDirectory), so a run that aborts mid-test
+rem leaves settings.json half-written and every *later* run then fails in
+rem unrelated assertions. Never reuse the directory between runs.
+if exist "!ZENCROP_DATA_DIR!" rmdir /s /q "!ZENCROP_DATA_DIR!"
 if not exist "!ZENCROP_DATA_DIR!" mkdir "!ZENCROP_DATA_DIR!"
 
 echo Configuring CMake test tree under !BUILD_DIR!...
