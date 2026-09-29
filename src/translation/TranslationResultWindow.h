@@ -39,6 +39,7 @@ public:
         RecognizeAgain,
         OcrRouteChanged,
         ProviderChanged,
+        ModelChanged,
         Cancel,
         ToggleAlwaysOnTop,
         ToggleShowSource,
@@ -97,6 +98,9 @@ public:
     std::wstring TargetLanguage() const;
     std::wstring OcrRoute() const;
     std::wstring SelectedProvider() const;
+    std::wstring SelectedModel() const;
+    void SetModelSelection(const std::wstring& model);
+    void RefreshModelOptions();
     bool IsAlwaysOnTop() const { return alwaysOnTop_; }
     bool IsShowingSourceText() const { return showSourceText_; }
     bool IsBusy() const { return busy_; }
@@ -147,6 +151,7 @@ private:
     HWND engineLabel_ = nullptr;
     HWND showSourceToggle_ = nullptr;
     HWND providerCombo_ = nullptr;
+    HWND modelCombo_ = nullptr;
     HWND copySourceButton_ = nullptr;
     HWND copyTranslationButton_ = nullptr;
     HWND sourceEditorCancelButton_ = nullptr;
@@ -176,10 +181,12 @@ private:
     std::vector<LanguageOption> targetLanguages_;
     std::vector<LanguageOption> ocrRoutes_;
     std::vector<LanguageOption> providerOptions_;
+    std::vector<std::wstring> modelOptions_;
     int sourceLanguageIndex_ = -1;
     int targetLanguageIndex_ = -1;
     int ocrRouteIndex_ = -1;
     int providerIndex_ = -1;
+    int modelIndex_ = -1;
     int textFontSize_ = 18;
     int sourceFontSize_ = 14;
     int sourceEditFontSize_ = 14;
@@ -267,6 +274,7 @@ private:
     bool popupMenuAnchorEngineLabel_ = false;
     std::atomic<uint64_t> workflowGeneration_{0};
     std::wstring pinToolTipText_;
+    std::wstring modelToolTipText_;
     std::wstring sourceMarkdownText_;
     std::wstring translationMarkdownText_;
     CommandCallback callback_;
@@ -296,8 +304,10 @@ private:
     static constexpr int kTargetLanguageMenuBase = 3320;
     static constexpr int kOcrRouteMenuBase = 3340;
     static constexpr int kProviderMenuBase = 3360;
+    static constexpr int kModelMenuBase = 3380;
     static constexpr int kRecognizeAgain = 3121;
     static constexpr int kProviderCombo = 3122;
+    static constexpr int kModelCombo = 3125;
     static constexpr UINT_PTR kOcrElapsedTimer = 1;
     static constexpr UINT_PTR kResizeAnimationTimer = 2;
     static constexpr UINT_PTR kStructuredSelectionTimer = 3;
@@ -353,6 +363,8 @@ private:
     void ShowLanguageMenu(HWND control, bool sourceLanguage);
     void ShowOcrRouteMenu();
     void ShowProviderMenu();
+    void ShowModelMenu();
+    void UpdateModelToolTip(const std::wstring& model);
     void AddOcrRoute(const wchar_t* label, const wchar_t* value);
     void AddProviderOption(const wchar_t* label, const wchar_t* value);
     void CopyControlText(HWND control);

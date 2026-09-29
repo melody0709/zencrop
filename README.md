@@ -1,8 +1,15 @@
-# ZenCrop v3.1.4
+# ZenCrop v3.1.5
 
 [中文文档](doc/README_zh.md)
 
 An independent, **enhanced** reimplementation of [PowerToys Crop And Lock](https://github.com/microsoft/PowerToys/tree/main/src/modules/CropAndLock/), with rich screenshot annotation, long screenshot, multi-engine OCR, and OCR Dashboard.
+
+## What's new in v3.1.5
+
+- **Translation Window Header Optimization and Standalone Model Selector**:
+  - **Header Space Optimization & Decoupled Widths**: Removed the forced uniform width (`sharedComboWidth`) across all header combo boxes. Combos now size dynamically based on their actual text plus padding (Language: 58–120px, OCR route: 110–240px, Provider: 80–160px, Model: 85–160px), reclaiming significant unused whitespace. In compact single-row mode, language labels are visually shortened to `Auto` and `CN ↔ EN` (full names retained in dropdown popups and tooltips). The compact OCR minimum window width is relaxed from 940 to 980 to ensure comfortable room for the OCR route and recognize controls.
+  - **Standalone Model Selector Dropdown**: Placed immediately next to the Provider dropdown (`Provider` → `Model` → `Source` → `→` → `Target`). Dynamically hides for direct machine translation providers (e.g., Google Translate Community) and shows for LLM providers. Clicking pops up the model catalog for the active provider; selecting a model updates the UI, tooltip, persists the selection to `TranslationSettings`, and resets the engine so subsequent translations use the new model immediately. Full keyboard navigation and dark theme styling supported.
+- **Version Source Bumped**: the product version source is now `v3.1.5`, carried into binaries, resources, architecture baseline, and documentation.
 
 ## What's new in v3.1.4
 

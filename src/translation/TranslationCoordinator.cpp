@@ -1826,8 +1826,55 @@ void TranslationCoordinator::OnWindowCommand(TranslationResultWindow::Command co
             return;
         }
         settings_ = latest;
+        resultWindow_->RefreshModelOptions();
         // The engine is created lazily per batch from settings_. Drop the
         // cached instance so the next translation uses the new provider.
+        if (!dependencies_.translationEngine) {
+            translationEngine_.reset();
+        }
+        return;
+    }
+    if (command == TranslationResultWindow::Command::ModelChanged &&
+        resultWindow_ && resultWindow_->IsValid()) {
+        const std::wstring requested = resultWindow_->SelectedModel();
+        if (requested.empty()) return;
+        TranslationSettings latest = LoadTranslationSettings();
+        auto* provider = FindActiveTranslationProvider(latest);
+        if (!provider) return;
+        if (provider->model == requested) return;
+        const std::wstring previousModel = provider->model;
+        const bool previousCustomModel = provider->customModel;
+        const auto previousReasoning = provider->reasoningMode;
+
+        provider->model = requested;
+        const auto* preset = FindTranslationProviderPreset(provider->presetKind);
+        if (!preset) {
+            preset = FindBuiltInProviderPreset(provider->id);
+        }
+        if (preset && !preset->models.empty()) {
+            const bool isBuiltIn = std::find(preset->models.begin(), preset->models.end(), requested) != preset->models.end();
+            provider->customModel = !isBuiltIn;
+        } else {
+            provider->customModel = true;
+        }
+
+        const auto capabilities = GetCapabilities(*provider);
+        if (!IsReasoningModeSupported(capabilities, provider->reasoningMode)) {
+            provider->reasoningMode = capabilities.defaultReasoning;
+        }
+
+        std::wstring saveError;
+        if (!SaveTranslationSettings(latest, &saveError)) {
+            provider->model = previousModel;
+            provider->customModel = previousCustomModel;
+            provider->reasoningMode = previousReasoning;
+            resultWindow_->SetModelSelection(previousModel);
+            ShowError(saveError.empty()
+                ? StageText(L"无法保存翻译模型设置。", L"Failed to save the translation model preference.")
+                : saveError);
+            return;
+        }
+        settings_ = latest;
         if (!dependencies_.translationEngine) {
             translationEngine_.reset();
         }

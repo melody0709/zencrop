@@ -1,4 +1,5 @@
 #include "TranslationResultWindow.h"
+#include "TranslationProviderCatalog.h"
 
 #include "core/ClipboardUtils.h"
 #include "core/Settings.h"
@@ -50,7 +51,7 @@ constexpr int kTranslationAutomaticMinimumWidth = 800;
 // minimum: with every combo at the shared floor (150) that row already measures
 // ~890 design units, and the common label set needs ~900. Every other case
 // (selected-text translation, bordered windows) keeps the shared minimum.
-constexpr int kTranslationCompactOcrMinimumWidth = 940;
+constexpr int kTranslationCompactOcrMinimumWidth = 980;
 // The compact header paints every combo at one width so the row reads as a set:
 // a row of four mismatched boxes looks accidental, and the provider must keep
 // room for longer profile names even while a short one is selected. The shared
@@ -367,6 +368,18 @@ std::wstring OcrRouteButtonLabel(const std::wstring& route) {
 
 std::wstring ProviderButtonLabel(const std::wstring& displayName) {
     return (S::IsChinese() ? L"Provider\uff1a" : L"Provider: ") + displayName;
+}
+
+std::wstring VisualLanguageLabel(bool sourceLanguage, const std::wstring& code,
+                                 const std::wstring& fullLabel, bool compactHeader) {
+    if (!compactHeader) return fullLabel;
+    if (code == L"auto") {
+        if (sourceLanguage) {
+            return S::IsChinese() ? L"\u81ea\u52a8" : L"Auto";
+        }
+        return S::IsChinese() ? L"\u4e2d\u82f1\u4e92\u8bd1" : L"CN \u2194 EN";
+    }
+    return fullLabel;
 }
 
 void ConfigureCompactPopupMenu(HMENU menu) {
@@ -1056,10 +1069,11 @@ void TranslationResultWindow::CreateControls(const TranslationRequest& request) 
     sourceCombo_ = create(0, L"BUTTON", L"", buttonStyle, kSourceCombo);
     targetCombo_ = create(0, L"BUTTON", L"", buttonStyle, kTargetCombo);
     providerCombo_ = create(0, L"BUTTON", L"", buttonStyle, kProviderCombo);
+    modelCombo_ = create(0, L"BUTTON", L"", buttonStyle, kModelCombo);
 
     for (HWND control : {stageLabel_, engineLabel_, targetLabel_,
                          showSourceToggle_, sourceCombo_, targetCombo_,
-                         providerCombo_}) {
+                         providerCombo_, modelCombo_}) {
         if (control && compactFont_) {
             SendMessageW(control, WM_SETFONT,
                 reinterpret_cast<WPARAM>(compactFont_.get()), TRUE);
@@ -1117,7 +1131,7 @@ void TranslationResultWindow::CreateControls(const TranslationRequest& request) 
         S::IsChinese() ? L"关闭" : L"Close", buttonStyle, kClose);
 
     for (HWND control : {sourceEdit_, translationEdit_, engineLabel_, showSourceToggle_, sourceCombo_,
-                          targetCombo_, providerCombo_, copySourceButton_, copyTranslationButton_,
+                          targetCombo_, providerCombo_, modelCombo_, copySourceButton_, copyTranslationButton_,
                           sourceEditorCancelButton_, sourceEditorSaveButton_, recognizeButton_,
                           retranslateButton_, cancelButton_, pinButton_,
                           sourceModeButton_, minimizeButton_, closeButton_}) {
@@ -1149,6 +1163,14 @@ void TranslationResultWindow::CreateControls(const TranslationRequest& request) 
         tool.uId = reinterpret_cast<UINT_PTR>(recognizeButton_);
         tool.lpszText = const_cast<wchar_t*>(S::IsChinese()
             ? L"\u91cd\u65b0\u8bc6\u522b" : L"Recognize again");
+        SendMessageW(pinToolTip_, TTM_ADDTOOLW, 0, reinterpret_cast<LPARAM>(&tool));
+    }
+    if (pinToolTip_ && modelCombo_) {
+        TOOLINFOW tool = { sizeof(tool) };
+        tool.uFlags = TTF_IDISHWND | TTF_SUBCLASS;
+        tool.hwnd = window_;
+        tool.uId = reinterpret_cast<UINT_PTR>(modelCombo_);
+        tool.lpszText = const_cast<wchar_t*>(modelToolTipText_.c_str());
         SendMessageW(pinToolTip_, TTM_ADDTOOLW, 0, reinterpret_cast<LPARAM>(&tool));
     }
 
@@ -1219,6 +1241,7 @@ void TranslationResultWindow::CreateControls(const TranslationRequest& request) 
         SetWindowTextW(providerCombo_,
             ProviderButtonLabel(providerOptions_[providerIndex_].label).c_str());
     }
+    RefreshModelOptions();
     SetSourceText(L"");
     SetTranslationText(L"");
     LayoutControls();
@@ -1340,7 +1363,9 @@ void TranslationResultWindow::ShowProviderMenu() {
     SetStage(S::IsChinese()
         ? L"Provider 已更改，点击重新翻译以应用"
         : L"Provider changed; translate again to apply");
+    RefreshModelOptions();
     InvokeCommandSafely(Command::ProviderChanged);
+    LayoutControls();
 }
 
 void TranslationResultWindow::SetProviderSelection(const std::wstring& providerId) {
@@ -1352,6 +1377,8 @@ void TranslationResultWindow::SetProviderSelection(const std::wstring& providerI
                 ProviderButtonLabel(providerOptions_[index].label).c_str());
             InvalidateRect(providerCombo_, nullptr, TRUE);
         }
+        RefreshModelOptions();
+        LayoutControls();
         return;
     }
 }
@@ -1362,6 +1389,153 @@ std::wstring TranslationResultWindow::SelectedProvider() const {
         return L"";
     }
     return providerOptions_[providerIndex_].value;
+}
+
+std::wstring TranslationResultWindow::SelectedModel() const {
+    if (modelIndex_ >= 0 && modelIndex_ < static_cast<int>(modelOptions_.size())) {
+        return modelOptions_[static_cast<size_t>(modelIndex_)];
+    }
+    return L"";
+}
+
+void TranslationResultWindow::SetModelSelection(const std::wstring& model) {
+    if (model.empty()) {
+        modelIndex_ = -1;
+        if (modelCombo_) {
+            SetWindowTextW(modelCombo_, L"");
+            UpdateModelToolTip(L"");
+            InvalidateRect(modelCombo_, nullptr, TRUE);
+        }
+        LayoutControls();
+        return;
+    }
+    for (size_t index = 0; index < modelOptions_.size(); ++index) {
+        if (modelOptions_[index] != model) continue;
+        modelIndex_ = static_cast<int>(index);
+        if (modelCombo_) {
+            SetWindowTextW(modelCombo_, modelOptions_[index].c_str());
+            UpdateModelToolTip(modelOptions_[index]);
+            InvalidateRect(modelCombo_, nullptr, TRUE);
+        }
+        LayoutControls();
+        return;
+    }
+    modelOptions_.insert(modelOptions_.begin(), model);
+    modelIndex_ = 0;
+    if (modelCombo_) {
+        SetWindowTextW(modelCombo_, model.c_str());
+        UpdateModelToolTip(model);
+        SetControlVisible(modelCombo_, true);
+        InvalidateRect(modelCombo_, nullptr, TRUE);
+    }
+    LayoutControls();
+}
+
+void TranslationResultWindow::UpdateModelToolTip(const std::wstring& model) {
+    modelToolTipText_ = S::IsChinese()
+        ? (L"\u6a21\u578b: " + (model.empty() ? L"(\u9ed8\u8ba4)" : model))
+        : (L"Model: " + (model.empty() ? L"(default)" : model));
+    if (pinToolTip_ && modelCombo_) {
+        TOOLINFOW tool = { sizeof(tool) };
+        tool.uFlags = TTF_IDISHWND;
+        tool.hwnd = window_;
+        tool.uId = reinterpret_cast<UINT_PTR>(modelCombo_);
+        tool.lpszText = const_cast<wchar_t*>(modelToolTipText_.c_str());
+        SendMessageW(pinToolTip_, TTM_UPDATETIPTEXTW, 0, reinterpret_cast<LPARAM>(&tool));
+    }
+}
+
+void TranslationResultWindow::RefreshModelOptions() {
+    modelOptions_.clear();
+    modelIndex_ = -1;
+    const TranslationSettings settings = LoadTranslationSettings();
+    const auto* profile = FindActiveTranslationProvider(settings);
+    if (!profile) {
+        if (modelCombo_) {
+            SetWindowTextW(modelCombo_, L"");
+            UpdateModelToolTip(L"");
+            SetControlVisible(modelCombo_, false);
+        }
+        return;
+    }
+    const auto capabilities = GetCapabilities(*profile);
+    if (!capabilities.requiresModel) {
+        if (modelCombo_) {
+            SetWindowTextW(modelCombo_, L"");
+            UpdateModelToolTip(L"");
+            SetControlVisible(modelCombo_, false);
+        }
+        return;
+    }
+    const auto* preset = FindTranslationProviderPreset(profile->presetKind);
+    if (!preset) {
+        preset = FindBuiltInProviderPreset(profile->id);
+    }
+    if (preset) {
+        for (const auto& m : preset->models) {
+            if (std::find(modelOptions_.begin(), modelOptions_.end(), m) == modelOptions_.end()) {
+                modelOptions_.push_back(m);
+            }
+        }
+    }
+    if (!profile->model.empty()) {
+        auto it = std::find(modelOptions_.begin(), modelOptions_.end(), profile->model);
+        if (it == modelOptions_.end()) {
+            modelOptions_.insert(modelOptions_.begin(), profile->model);
+            modelIndex_ = 0;
+        } else {
+            modelIndex_ = static_cast<int>(std::distance(modelOptions_.begin(), it));
+        }
+    } else if (!modelOptions_.empty()) {
+        modelIndex_ = 0;
+    }
+    const std::wstring currentModel = SelectedModel();
+    if (modelCombo_) {
+        SetWindowTextW(modelCombo_, currentModel.c_str());
+        UpdateModelToolTip(currentModel);
+        SetControlVisible(modelCombo_, !modelOptions_.empty());
+        InvalidateRect(modelCombo_, nullptr, TRUE);
+    }
+}
+
+void TranslationResultWindow::ShowModelMenu() {
+    if (!modelCombo_ || modelOptions_.empty() || busy_) return;
+    HMENU menu = CreatePopupMenu();
+    if (!menu) return;
+    ConfigureCompactPopupMenu(menu);
+    for (size_t index = 0; index < modelOptions_.size(); ++index) {
+        AppendCompactPopupItem(menu, kModelMenuBase + static_cast<int>(index),
+            modelOptions_[index]);
+        if (static_cast<int>(index) == modelIndex_) {
+            CheckMenuItem(menu, kModelMenuBase + static_cast<int>(index), MF_BYCOMMAND | MF_CHECKED);
+        }
+    }
+    RECT rect = {};
+    GetWindowRect(modelCombo_, &rect);
+    popupMenuAnchorWidth_ = static_cast<int>(rect.right - rect.left);
+    popupMenuAnchorEngineLabel_ = false;
+    SetForegroundWindow(window_);
+    const int result = TrackPopupMenuEx(menu,
+        TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN | TPM_RIGHTBUTTON,
+        rect.left, rect.bottom, window_, nullptr);
+    PostMessage(window_, WM_NULL, 0, 0);
+    popupMenuAnchorWidth_ = 0;
+    popupMenuAnchorEngineLabel_ = false;
+    DestroyMenu(menu);
+    const int index = result - kModelMenuBase;
+    if (result < kModelMenuBase || index < 0 ||
+        index >= static_cast<int>(modelOptions_.size())) return;
+    if (index == modelIndex_) return;
+    modelIndex_ = index;
+    const std::wstring selected = modelOptions_[static_cast<size_t>(modelIndex_)];
+    SetWindowTextW(modelCombo_, selected.c_str());
+    UpdateModelToolTip(selected);
+    InvalidateRect(modelCombo_, nullptr, TRUE);
+    SetStage(S::IsChinese()
+        ? L"模型已更改，点击重新翻译以应用"
+        : L"Model changed; translate again to apply");
+    InvokeCommandSafely(Command::ModelChanged);
+    LayoutControls();
 }
 
 void TranslationResultWindow::Show(
@@ -2370,8 +2544,8 @@ void TranslationResultWindow::InvokeCommandSafely(Command command) noexcept {
 }
 
 void TranslationResultWindow::FocusRelative(HWND current, bool previous) {
-    const std::array<HWND, 16> controls = {
-        showSourceToggle_, providerCombo_, sourceCombo_, targetCombo_, sourceEdit_,
+    const std::array<HWND, 17> controls = {
+        showSourceToggle_, providerCombo_, modelCombo_, sourceCombo_, targetCombo_, sourceEdit_,
         copySourceButton_, sourceEditorCancelButton_, sourceEditorSaveButton_,
         translationEdit_, copyTranslationButton_, retranslateButton_, cancelButton_,
         sourceModeButton_, pinButton_, minimizeButton_, closeButton_,
@@ -2448,7 +2622,7 @@ void TranslationResultWindow::RefreshFontForLayoutDpi() {
     // here).
     for (HWND control : {stageLabel_, engineLabel_, targetLabel_,
                          showSourceToggle_, sourceCombo_, targetCombo_,
-                         providerCombo_, sourceModeButton_}) {
+                         providerCombo_, modelCombo_, sourceModeButton_}) {
         if (control) {
             SendMessageW(control, WM_SETFONT,
                 reinterpret_cast<WPARAM>(compactFont_.get()), TRUE);
@@ -2593,7 +2767,7 @@ void TranslationResultWindow::LayoutControls(bool redraw) {
         (headerButtonWidth - recognizeHeight) / 2;
     const int engineMaximumWidth = ScaleForDpi(compactOcrHeader ? 240 : 232, dpi);
     const int engineMinimumWidth = showOcrControls
-        ? ScaleForDpi(compactOcrHeader ? 150 : 128, dpi) : 0;
+        ? ScaleForDpi(compactOcrHeader ? 110 : 128, dpi) : 0;
 
     const int bodyTop = headerHeight + ScaleForDpi(3, dpi);
     const int arrowWidth = ScaleForDpi(16, dpi);
@@ -2603,13 +2777,17 @@ void TranslationResultWindow::LayoutControls(bool redraw) {
     // source-editor actions readable at the default window size and DPI.
     const int sourceEditorActionWidth = ScaleForDpi(96, dpi);
     const int showSourceToComboGap = ScaleForDpi(24, dpi);
-    const int minimumComboWidth = ScaleForDpi(68, dpi);
+    const int minimumComboWidth = ScaleForDpi(58, dpi);
     const int minimumTargetComboWidth = compactHeader
-        ? ScaleForDpi(120, dpi) : minimumComboWidth;
-    const int minimumProviderWidth = ScaleForDpi(96, dpi);
-    const int providerMaximumWidth = ScaleForDpi(200, dpi);
-    const int selectorClusterGaps = rowGap * 3;
-    const int minimumSelectorWidth = minimumProviderWidth + minimumComboWidth +
+        ? ScaleForDpi(75, dpi) : minimumComboWidth;
+    const int minimumProviderWidth = ScaleForDpi(80, dpi);
+    const int providerMaximumWidth = ScaleForDpi(160, dpi);
+    const int minimumModelWidth = ScaleForDpi(85, dpi);
+    const int modelMaximumWidth = ScaleForDpi(160, dpi);
+    const bool showModel = modelCombo_ && !modelOptions_.empty();
+    if (redraw) SetControlVisible(modelCombo_, showModel);
+    const int selectorClusterGaps = rowGap * (showModel ? 4 : 3);
+    const int minimumSelectorWidth = minimumProviderWidth + (showModel ? minimumModelWidth : 0) + minimumComboWidth +
         minimumTargetComboWidth + arrowWidth + selectorClusterGaps;
     // Combo boxes are sized by the label they currently show, not by their
     // longest option: the popup menus measure their own width, so this keeps the
@@ -2619,6 +2797,7 @@ void TranslationResultWindow::LayoutControls(bool redraw) {
     int sourceLanguageTextWidth = 0;
     int targetLanguageTextWidth = 0;
     int providerTextWidth = 0;
+    int modelTextWidth = 0;
     int engineTextWidth = 0;
     HDC languageMeasureDc = GetDC(window_);
     if (languageMeasureDc && compactFont_) {
@@ -2638,9 +2817,9 @@ void TranslationResultWindow::LayoutControls(bool redraw) {
                 return languages[static_cast<size_t>(index)].label;
             };
         sourceLanguageTextWidth = measureLabel(
-            selectedLanguageLabel(sourceLanguages_, sourceLanguageIndex_));
+            VisualLanguageLabel(true, (sourceLanguageIndex_ >= 0 && sourceLanguageIndex_ < static_cast<int>(sourceLanguages_.size())) ? sourceLanguages_[static_cast<size_t>(sourceLanguageIndex_)].value : L"", selectedLanguageLabel(sourceLanguages_, sourceLanguageIndex_), compactHeader));
         targetLanguageTextWidth = measureLabel(
-            selectedLanguageLabel(targetLanguages_, targetLanguageIndex_));
+            VisualLanguageLabel(false, (targetLanguageIndex_ >= 0 && targetLanguageIndex_ < static_cast<int>(targetLanguages_.size())) ? targetLanguages_[static_cast<size_t>(targetLanguageIndex_)].value : L"", selectedLanguageLabel(targetLanguages_, targetLanguageIndex_), compactHeader));
         if (providerIndex_ >= 0 &&
             providerIndex_ < static_cast<int>(providerOptions_.size())) {
             // Must match the painted label: the compact header drops the
@@ -2649,6 +2828,10 @@ void TranslationResultWindow::LayoutControls(bool redraw) {
                 providerOptions_[static_cast<size_t>(providerIndex_)].label;
             providerTextWidth = measureLabel(
                 compactHeader ? name : ProviderButtonLabel(name));
+        }
+        if (showModel && modelIndex_ >= 0 &&
+            modelIndex_ < static_cast<int>(modelOptions_.size())) {
+            modelTextWidth = measureLabel(modelOptions_[static_cast<size_t>(modelIndex_)]);
         }
         if (ocrRouteIndex_ >= 0 &&
             ocrRouteIndex_ < static_cast<int>(ocrRoutes_.size())) {
@@ -2682,85 +2865,54 @@ void TranslationResultWindow::LayoutControls(bool redraw) {
     if (languageMeasureDc) ReleaseDC(window_, languageMeasureDc);
 
     const int comboTextExtra = ScaleForDpi(24, dpi);
-    const auto preferredComboWidth = [&](int textWidth, int minimumWidth) {
-        const int fallbackWidth = ScaleForDpi(112, dpi);
-        return (std::min)(ScaleForDpi(240, dpi),
+    const auto preferredComboWidth = [&](int textWidth, int minimumWidth, int maximumWidth, int fallbackWidth) {
+        return (std::min)(maximumWidth,
             (std::max)(minimumWidth,
                 textWidth > 0 ? textWidth + comboTextExtra : fallbackWidth));
     };
-    // Every combo in the compact header shares one width (see
-    // kTranslationCompactComboMinWidth): it follows the longest label currently
-    // shown so a longer selection widens the whole set together, and it keeps a
-    // comfortable floor so the provider never collapses to its own minimum.
-    const int sharedComboWidth = compactHeader
-        ? (std::clamp)(
-              (std::max)((std::max)(providerTextWidth, sourceLanguageTextWidth),
-                         (std::max)(targetLanguageTextWidth, engineTextWidth)) +
-                  comboTextExtra,
-              ScaleForDpi(kTranslationCompactComboMinWidth, dpi),
-              ScaleForDpi(kTranslationCompactComboMaxWidth, dpi))
+
+    int providerWidth = preferredComboWidth(
+        providerTextWidth, minimumProviderWidth, providerMaximumWidth, ScaleForDpi(100, dpi));
+    int modelWidth = showModel
+        ? preferredComboWidth(
+            modelTextWidth, minimumModelWidth, modelMaximumWidth, ScaleForDpi(110, dpi))
         : 0;
-    int providerWidth = compactHeader
-        ? sharedComboWidth
-        : (std::min)(providerMaximumWidth,
-            (std::max)(minimumProviderWidth,
-                providerTextWidth > 0 ? providerTextWidth + comboTextExtra
-                                      : ScaleForDpi(128, dpi)));
-    int sourceComboWidth = compactHeader
-        ? sharedComboWidth
-        : preferredComboWidth(sourceLanguageTextWidth, minimumComboWidth);
-    int targetComboWidth = compactHeader
-        ? sharedComboWidth
-        : preferredComboWidth(targetLanguageTextWidth, minimumTargetComboWidth);
+    int sourceComboWidth = preferredComboWidth(
+        sourceLanguageTextWidth, minimumComboWidth,
+        ScaleForDpi(compactHeader ? 120 : 200, dpi), ScaleForDpi(75, dpi));
+    int targetComboWidth = preferredComboWidth(
+        targetLanguageTextWidth, minimumTargetComboWidth,
+        ScaleForDpi(compactHeader ? 135 : 200, dpi), ScaleForDpi(90, dpi));
     int engineWidth = 0;
     if (showOcrControls) {
-        // The compact route combo takes the shared width; the bordered window
-        // keeps sizing it by a fraction of the window instead.
         engineWidth = compactOcrHeader
-            ? sharedComboWidth
+            ? preferredComboWidth(
+                engineTextWidth, engineMinimumWidth, engineMaximumWidth, ScaleForDpi(120, dpi))
             : (std::min)(engineMaximumWidth,
                 (std::max)(engineMinimumWidth, contentWidth / 3));
     }
 
     if (compactHeader) {
-        // One row: Source | selectors | [OCR route | recognize]. The combos share
-        // one width, so relief comes out of that shared width first (the whole set
-        // narrows together and the row keeps its rhythm); only if the shared floor
-        // is not enough do the individual controls give way, cheapest-loss-first
-        // (route label, then provider name).
+        // One row: Source | selectors | [OCR route | recognize]. Controls give
+        // way cheapest-loss-first: route label, model, provider, then source
+        // and target language.
         const int rowLeft = toggleX + showSourceWidth + rowGap;
         const int rowRight = pinX - rowGap;
-        // The content that must fit is the selector cluster plus, for OCR, the
-        // trailing route/recognize pair. The gap before the pin button is already
-        // enforced by the right-anchored placement, so charging it here would make
-        // the combos give way earlier than the geometry requires.
-        int shortfall = providerWidth + sourceComboWidth + targetComboWidth +
-            arrowWidth + selectorClusterGaps +
+        const int currentClusterWidth = providerWidth + (showModel ? modelWidth : 0) +
+            sourceComboWidth + targetComboWidth + arrowWidth + selectorClusterGaps;
+        int shortfall = currentClusterWidth +
             (showOcrControls ? rowGap + engineWidth + rowGap + recognizeWidth : 0) -
             (std::max)(0, rowRight - rowLeft);
-        if (shortfall > 0) {
-            // providerWidth is the shared width in this branch (all combos were
-            // set to sharedComboWidth above), and unlike engineWidth it is always
-            // present -- selected-text translation has no OCR route combo.
-            const int comboCount = showOcrControls ? 4 : 3;
-            const int sharedFloor = ScaleForDpi(kTranslationCompactComboMinWidth, dpi);
-            const int reduction = (std::min)(shortfall,
-                (std::max)(0, providerWidth - sharedFloor) * comboCount);
-            if (reduction > 0) {
-                const int perCombo = reduction / comboCount;
-                if (perCombo > 0) {
-                    providerWidth -= perCombo;
-                    sourceComboWidth -= perCombo;
-                    targetComboWidth -= perCombo;
-                    if (showOcrControls) engineWidth -= perCombo;
-                    shortfall -= perCombo * comboCount;
-                }
-            }
-        }
-        if (shortfall > 0) {
+        if (showOcrControls && shortfall > 0) {
             const int reduction = (std::min)(shortfall,
                 engineWidth - engineMinimumWidth);
             engineWidth -= reduction;
+            shortfall -= reduction;
+        }
+        if (showModel && shortfall > 0) {
+            const int reduction = (std::min)(shortfall,
+                modelWidth - minimumModelWidth);
+            modelWidth -= reduction;
             shortfall -= reduction;
         }
         if (shortfall > 0) {
@@ -2803,8 +2955,15 @@ void TranslationResultWindow::LayoutControls(bool redraw) {
             showSourceToComboGap;
         const int selectorAvailable = (std::max)(minimumSelectorWidth,
             (clientWidth - margin) - selectorStart);
-        int selectorShortfall = providerWidth + sourceComboWidth + targetComboWidth +
-            arrowWidth + selectorClusterGaps - selectorAvailable;
+        int selectorShortfall = providerWidth + (showModel ? modelWidth : 0) +
+            sourceComboWidth + targetComboWidth + arrowWidth +
+            selectorClusterGaps - selectorAvailable;
+        if (showModel && selectorShortfall > 0) {
+            const int modelReduction = (std::min)(selectorShortfall,
+                modelWidth - minimumModelWidth);
+            modelWidth -= modelReduction;
+            selectorShortfall -= modelReduction;
+        }
         if (selectorShortfall > 0) {
             const int providerReduction = (std::min)(selectorShortfall,
                 providerWidth - minimumProviderWidth);
@@ -2957,10 +3116,17 @@ void TranslationResultWindow::LayoutControls(bool redraw) {
             clientWidth - margin, clientHeight - margin };
     }
 
-    const int selectorWidth = providerWidth + sourceComboWidth +
-        targetComboWidth + arrowWidth + rowGap * 3;
+    const int selectorWidth = providerWidth + (showModel ? modelWidth : 0) +
+        sourceComboWidth + targetComboWidth + arrowWidth + selectorClusterGaps;
     const int providerX = clusterRight - selectorWidth;
-    const int sourceComboX = providerX + providerWidth + rowGap;
+    int nextX = providerX + providerWidth + rowGap;
+    if (showModel) {
+        move(modelCombo_, nextX, controlTop, modelWidth, comboHeight);
+        nextX += modelWidth + rowGap;
+    } else if (modelCombo_) {
+        SetControlVisible(modelCombo_, false);
+    }
+    const int sourceComboX = nextX;
     const int arrowX = sourceComboX + sourceComboWidth + rowGap;
     const int targetComboX = arrowX + arrowWidth + rowGap;
     if (!showSourceInHeader) {
@@ -3201,7 +3367,7 @@ void TranslationResultWindow::DrawOwnerDrawControl(const DRAWITEMSTRUCT& draw) {
     }
 
     if (id == kEngineLabel || id == kSourceCombo || id == kTargetCombo ||
-        id == kProviderCombo) {
+        id == kProviderCombo || id == kModelCombo) {
         const COLORREF background = pressed ? kControlPressed : hot ? kControlHover : kControlBackground;
         const COLORREF border = disabled ? kControlBackground :
             (pressed ? kControlBorderPressed : hot ? kControlBorderHover : kControlBorder);
@@ -3210,6 +3376,7 @@ void TranslationResultWindow::DrawOwnerDrawControl(const DRAWITEMSTRUCT& draw) {
         FillRoundedRect(draw.hDC, draw.rcItem, radius, background, border);
         wchar_t label[128] = {};
         GetWindowTextW(draw.hwndItem, label, static_cast<int>(std::size(label)));
+        std::wstring compactLabelBuffer;
         const wchar_t* visualLabel = label;
         // Every compact (borderless) header paints the bare profile name for the
         // provider control, not just the OCR variant. At the default compact
@@ -3230,6 +3397,27 @@ void TranslationResultWindow::DrawOwnerDrawControl(const DRAWITEMSTRUCT& draw) {
                    providerIndex_ >= 0 &&
                    providerIndex_ < static_cast<int>(providerOptions_.size())) {
             visualLabel = providerOptions_[providerIndex_].label.c_str();
+        } else if (id == kModelCombo) {
+            if (modelIndex_ >= 0 &&
+                modelIndex_ < static_cast<int>(modelOptions_.size())) {
+                visualLabel = modelOptions_[static_cast<size_t>(modelIndex_)].c_str();
+            }
+        } else if (compactHeader && id == kSourceCombo) {
+            if (sourceLanguageIndex_ >= 0 &&
+                sourceLanguageIndex_ < static_cast<int>(sourceLanguages_.size())) {
+                compactLabelBuffer = VisualLanguageLabel(
+                    true, sourceLanguages_[static_cast<size_t>(sourceLanguageIndex_)].value,
+                    sourceLanguages_[static_cast<size_t>(sourceLanguageIndex_)].label, true);
+                visualLabel = compactLabelBuffer.c_str();
+            }
+        } else if (compactHeader && id == kTargetCombo) {
+            if (targetLanguageIndex_ >= 0 &&
+                targetLanguageIndex_ < static_cast<int>(targetLanguages_.size())) {
+                compactLabelBuffer = VisualLanguageLabel(
+                    false, targetLanguages_[static_cast<size_t>(targetLanguageIndex_)].value,
+                    targetLanguages_[static_cast<size_t>(targetLanguageIndex_)].label, true);
+                visualLabel = compactLabelBuffer.c_str();
+            }
         }
         // Padding 6 + caret column 16 = 22, matching comboTextExtra (24) with a
         // two unit slack so rounding can never ellipsize a fitting label.
@@ -3435,6 +3623,7 @@ LRESULT TranslationResultWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wPara
         if (point.y < headerHitHeight &&
             !PointInChild(hwnd, showSourceToggle_, point) &&
             !PointInChild(hwnd, providerCombo_, point) &&
+            !PointInChild(hwnd, modelCombo_, point) &&
             !PointInChild(hwnd, sourceCombo_, point) &&
             !PointInChild(hwnd, targetLabel_, point) &&
             !PointInChild(hwnd, targetCombo_, point) &&
@@ -3674,6 +3863,10 @@ LRESULT TranslationResultWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wPara
         }
         if (LOWORD(wParam) == kProviderCombo && HIWORD(wParam) == BN_CLICKED) {
             ShowProviderMenu();
+            return 0;
+        }
+        if (LOWORD(wParam) == kModelCombo && HIWORD(wParam) == BN_CLICKED) {
+            ShowModelMenu();
             return 0;
         }
         if (LOWORD(wParam) == kCopySource && HIWORD(wParam) == BN_CLICKED) {

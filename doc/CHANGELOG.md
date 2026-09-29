@@ -1,5 +1,21 @@
 # Changelog
 
+## V3.1.5 (2026-09-29)
+
+### 翻译窗口顶部栏空间优化与独立模型选择 (Translation Window Header Optimization & Model Selection)
+
+- **背景与需求**: 用户在划词翻译与截图翻译结果窗口中需要能够直接查看并切换当前 Provider 的具体模型（如在 DeepSeek / OpenAI / SiliconFlow / Xiaomi MiMo 等之间选择具体模型），而此前必须进入系统设置页；同时紧凑标题栏空间紧凑，尤其是 OCR 图像模式下已有「OCR 路由 + 重新识别」按钮，空间十分局促。
+- **方案 A 落地**:
+  1. **语言标签精简**: 在紧凑单行模式下，源语言与目标语言中的 `Auto detect` / `自动检测` 精简显示为 `Auto` / `自动`，`Auto (CN ↔ EN)` / `自动（中英互译）` 精简显示为 `CN ↔ EN` / `中英互译`；下拉弹窗与悬浮提示依然完整保留原全称。
+  2. **解绑强制等宽（Decouple Combo Widths）**: 移除此前无论内容长短强行拉齐到 150–200px 的 `sharedComboWidth`，各下拉框基于自身实际文字量与安全外边距独立自适应（语言框 58–120px、OCR 模式框 110–240px、Provider 框 80–160px、Model 框 85–160px），释放了大量无效留白；缺口缩减按成本最低优先（OCR 路由 → 模型 → Provider → 源语言 → 目标语言）。
+  3. **紧凑 OCR 最小窗口宽度微调**: `kTranslationCompactOcrMinimumWidth` 从 `940` 轻微放宽至 `980`，为包含 OCR 路由及重新识别按钮的单行提供从容裕量。
+  4. **独立模型（Model）下拉框**:
+     - 位置紧跟 Provider 下拉框之后（`Provider` → `Model` → `源语言` → `→` → `目标语言`）；
+     - 动态显隐：对不需要模型的直连机器翻译供应商（如 Google Translate Community）自动隐藏；对 LLM 类供应商自动激活展示；
+     - 交互与持久化：点击弹出原生菜单列出预设模型列表（及自定义模型），切换后即刻写盘持久化至 `TranslationSettings`，更新 Tooltip 并重置引擎实例，下一次翻译立即应用新模型；支持键盘 Tab 导航与暗色主题自绘。
+- **验证**: `test_translation_contract` 与 `test_deepseek_protocol_contract` 100% 通过（涵盖模型切换接口、独立宽度缩放与 DPI 适应）；`scripts/check_architecture.ps1` 15/15 守卫全绿；`cmd.exe /d /c build.bat` 构建并安装成功。
+- **版本源升级**: 产品版本源升至 `v3.1.5`（二进制、资源、文档与架构基线）。
+
 ## V3.1.4 (2026-09-28)
 
 ### OpenRouter 思考默认关闭与全模型能力表 (OpenRouter Reasoning Default Off)

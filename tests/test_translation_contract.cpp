@@ -372,6 +372,10 @@ LRESULT HitTestScreenPoint(HWND window, POINT point) {
 
 bool VerifyCompactTitlebarHitTargets(HWND window, bool expectOcrControls) {
     std::vector<int> ids = {3116, 3122, 3103, 3111, 3104, 3119, 3109};
+    HWND modelCtrl = GetDlgItem(window, 3125);
+    if (modelCtrl && IsWindowVisible(modelCtrl)) {
+        ids.insert(ids.begin() + 2, 3125);
+    }
     if (expectOcrControls) {
         ids.push_back(3114);
         ids.push_back(3121);
@@ -2224,7 +2228,7 @@ int TestResultWindowLayoutContract() {
         scaleForInitialDpi(800),
         static_cast<int>(monitorInfo.rcWork.right - monitorInfo.rcWork.left) -
             scaleForInitialDpi(40));
-    const int expectedInitialWidth = (std::min)(scaleForInitialDpi(940), workWidthLimit);
+    const int expectedInitialWidth = (std::min)(scaleForInitialDpi(980), workWidthLimit);
     RECT initialWindowRect = {};
     if (!GetWindowRect(native, &initialWindowRect)) return 173;
     if (initialWindowRect.right - initialWindowRect.left != expectedInitialWidth ||
@@ -2233,10 +2237,8 @@ int TestResultWindowLayoutContract() {
     }
     {
         // At that minimum -- which is also the width a small crop opens with --
-        // the four combos must form one set: equal widths, and never below the
-        // shared floor. Individual labels may still be ellipsized when a very
-        // long provider name is selected, which is the documented trade-off of
-        // the uniform-width row (the popup menus list every label in full).
+        // the combos form a readable header row with decoupled preferred widths,
+        // respecting their individual minimum width floors.
         const auto controlWidth = [&](int controlId) {
             RECT rect = {};
             if (!GetDlgItem(native, controlId) ||
@@ -2245,30 +2247,26 @@ int TestResultWindowLayoutContract() {
             }
             return static_cast<int>(rect.right - rect.left);
         };
-        // Every combo in a compact header shares one width (see
-        // kTranslationCompactComboMinWidth). That width is what keeps the row
-        // readable; an individual provider name longer than the shared width is
-        // ellipsized by design, because the popup menus list full labels.
         const int providerW = controlWidth(3122);
+        const int modelW = controlWidth(3125);
         const int sourceW = controlWidth(3103);
         const int targetW = controlWidth(3104);
         const int routeW = controlWidth(3114);
-        const int tolerance = scaleForInitialDpi(2);
-        const int floorWidth = scaleForInitialDpi(150);
         if (providerW <= 0 || sourceW <= 0 || targetW <= 0 || routeW <= 0) return 745;
-        if (std::abs(providerW - sourceW) > tolerance ||
-            std::abs(providerW - targetW) > tolerance ||
-            std::abs(providerW - routeW) > tolerance) {
+        if (providerW < scaleForInitialDpi(80) ||
+            sourceW < scaleForInitialDpi(58) ||
+            targetW < scaleForInitialDpi(75) ||
+            routeW < scaleForInitialDpi(110)) {
+            return 747;
+        }
+        if (modelW > 0 && modelW < scaleForInitialDpi(85)) {
             return 746;
         }
-        if (providerW < floorWidth) return 747;
-        // The OCR route is the designated shortfall target: when a long provider
-        // name pushes the row over budget the route label ellipsizes first,
-        // because the popup menu always lists the full route labels. It must
-        // still keep its documented minimum instead of collapsing.
+        // The OCR route is the designated shortfall target when budget is tight.
+        // It must still keep its documented minimum instead of collapsing.
         RECT routeRect = {};
         if (!GetWindowRect(GetDlgItem(native, 3114), &routeRect) ||
-            routeRect.right - routeRect.left < scaleForInitialDpi(150)) {
+            routeRect.right - routeRect.left < scaleForInitialDpi(110)) {
             return 744;
         }
     }
@@ -2618,6 +2616,15 @@ int TestResultWindowLayoutContract() {
         return 173;
     }
 
+    {
+        const std::wstring initialModel = window.SelectedModel();
+        window.SetModelSelection(L"custom-test-model");
+        if (window.SelectedModel() != L"custom-test-model") return 749;
+        window.SetModelSelection(initialModel);
+        if (window.SelectedModel() != initialModel) return 750;
+        window.RefreshModelOptions();
+    }
+
     if (ControlText(native, 3119).find(L"Pin") == std::wstring::npos ||
         ControlText(native, 3117).find(L"Minimize") == std::wstring::npos ||
         ControlText(native, 3109).find(L"Close") == std::wstring::npos) {
@@ -2710,7 +2717,7 @@ int TestResultWindowLayoutContract() {
         const int expectedWorkLimit = (std::max)(
             scaleForResultDpi(800, targetDpi),
             workWidth - scaleForResultDpi(40, targetDpi));
-        const int expectedMinWidth = (std::min)(scaleForResultDpi(940, targetDpi), expectedWorkLimit);
+        const int expectedMinWidth = (std::min)(scaleForResultDpi(980, targetDpi), expectedWorkLimit);
         const int expectedMinHeight = scaleForResultDpi(420, targetDpi);
         if (minmax.ptMinTrackSize.x != expectedMinWidth ||
             minmax.ptMinTrackSize.y != expectedMinHeight) {
@@ -2737,9 +2744,11 @@ int TestResultWindowLayoutContract() {
         // narrow after a DPI change (the provider combo used to be that control).
         // 3103/3104 are the language combos, 3114 the OCR route combo, 3120 the
         // source mode button and 3122 the provider.
-        for (int compactControlId : {3103, 3104, 3114, 3120, 3122}) {
+        for (int compactControlId : {3103, 3104, 3114, 3120, 3122, 3125}) {
+            HWND ctrl = GetDlgItem(native, compactControlId);
+            if (!ctrl || !IsWindowVisible(ctrl)) continue;
             const HFONT compactFont = reinterpret_cast<HFONT>(
-                SendMessageW(GetDlgItem(native, compactControlId), WM_GETFONT, 0, 0));
+                SendMessageW(ctrl, WM_GETFONT, 0, 0));
             if (!compactFont || compactFont != showSourceFont) {
                 return 748;
             }
