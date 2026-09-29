@@ -595,6 +595,7 @@ TranslationProviderProfile CreateTranslationProviderProfile(
     profile.model = preset.models.empty() ? L"" : preset.models.front();
     profile.customModel = preset.capabilities.requiresModel &&
         preset.models.empty();
+    profile.customModels.clear();
     profile.credentialRef = TranslationAuthUsesCredential(profile.authMode)
         ? L"ZenCrop/Translation/provider/" + profile.id + L"." + preset.kind
         : L"";
@@ -621,6 +622,91 @@ TranslationProviderProfile* FindActiveTranslationProvider(
             return profile.id == settings.activeProviderId;
         });
     return it == settings.providerProfiles.end() ? nullptr : &*it;
+}
+
+namespace {
+
+// The persistence codec treats these as insignificant, so the in-memory id has
+// to agree with the stored one before it can be compared or remembered.
+void TrimModelIdentifier(std::wstring& value) {
+    const auto insignificant = [](wchar_t ch) {
+        return ch == L' ' || ch == L'\t' || ch == L'\r' || ch == L'\n';
+    };
+    const auto first =
+        std::find_if_not(value.begin(), value.end(), insignificant);
+    if (first == value.end()) {
+        value.clear();
+        return;
+    }
+    const auto last =
+        std::find_if_not(value.rbegin(), value.rend(), insignificant).base();
+    value.assign(first, last);
+}
+
+bool IsListedModel(
+    const TranslationProviderPreset& preset, const std::wstring& model) {
+    return !preset.models.empty() &&
+        std::find(preset.models.begin(), preset.models.end(), model) !=
+        preset.models.end();
+}
+
+const TranslationProviderPreset* ResolveProfilePreset(
+    const TranslationProviderProfile& profile) {
+    if (const auto* preset = FindTranslationProviderPreset(profile.presetKind)) {
+        return preset;
+    }
+    return FindBuiltInProviderPreset(profile.id);
+}
+
+} // namespace
+
+bool IsListedProviderModel(
+    const TranslationProviderProfile& profile,
+    const std::wstring& model) {
+    const auto* preset = ResolveProfilePreset(profile);
+    return preset && !model.empty() && IsListedModel(*preset, model);
+}
+
+void RememberCustomModel(TranslationProviderProfile& profile) {
+    TrimModelIdentifier(profile.model);
+    const auto* preset = ResolveProfilePreset(profile);
+    // The pool only ever holds ids the catalog does not publish, so drop the
+    // catalog entries first: this keeps "remembered" and "listed" from drifting
+    // apart on paths that never reach the persistence codec.
+    if (preset && !preset->models.empty()) {
+        std::erase_if(profile.customModels, [&](const std::wstring& remembered) {
+            return IsListedModel(*preset, remembered);
+        });
+    }
+    if (!profile.customModel || profile.model.empty() ||
+        profile.model.size() > kMaxTranslationModelLength) {
+        return;
+    }
+    if (preset && IsListedModel(*preset, profile.model)) return;
+    if (std::find(profile.customModels.begin(), profile.customModels.end(),
+            profile.model) != profile.customModels.end()) {
+        return;
+    }
+    if (profile.customModels.size() >= kMaxTranslationCustomModels) {
+        profile.customModels.erase(profile.customModels.begin());
+    }
+    profile.customModels.push_back(profile.model);
+}
+
+bool ApplyTranslationModelChoice(
+    TranslationProviderProfile& profile,
+    const std::wstring& model) {
+    profile.model = model;
+    TrimModelIdentifier(profile.model);
+    const bool listed = IsListedProviderModel(profile, profile.model);
+    // Capabilities below still read the previous flag, which is sound: whether
+    // a profile needs a model (and may use a custom one) comes from the preset,
+    // never from `customModel`.
+    const auto capabilities = GetCapabilities(profile);
+    profile.customModel =
+        capabilities.requiresModel && capabilities.allowsCustomModel && !listed;
+    RememberCustomModel(profile);
+    return listed;
 }
 
 ProviderCapabilities GetCapabilities(
@@ -653,8 +739,14 @@ ProviderCapabilities GetCapabilities(
     if (capabilities.family == TranslationProviderFamily::DirectMt) {
         return capabilities;
     }
+    // A listed id always takes the model-level policy, whatever the user's
+    // "Custom model" mark says. The mark belongs to the page; deriving the
+    // request shape from it downgraded catalog models onto the conservative
+    // path (no temperature, prompt-JSON output and -- on the presets without a
+    // measured custom-model dialect -- no reasoning field at all).
     const auto policy = ResolveLlmModelPolicy(
-        profile.presetKind, profile.model, profile.customModel);
+        profile.presetKind, profile.model,
+        profile.customModel && !IsListedModel(*preset, profile.model));
     capabilities.reasoningModes = policy.reasoningModes;
     capabilities.defaultReasoning = policy.defaultReasoning;
     capabilities.reasoningWireFormat = policy.reasoningWireFormat;
@@ -692,6 +784,22 @@ bool IsSupportedProviderProfile(
             ? L"Translation provider id, name, and model are required."
             : L"Translation provider id and name are required.";
         return false;
+    }
+    if (capabilities.requiresModel && profile.model.size() > kMaxTranslationModelLength) {
+        if (error) {
+            *error = L"Translation provider model identifier is too long (maximum " +
+                std::to_wstring(kMaxTranslationModelLength) + L" characters).";
+        }
+        return false;
+    }
+    for (const auto& custom : profile.customModels) {
+        if (custom.size() > kMaxTranslationModelLength) {
+            if (error) {
+                *error = L"A custom model identifier is too long (maximum " +
+                    std::to_wstring(kMaxTranslationModelLength) + L" characters).";
+            }
+            return false;
+        }
     }
     if (capabilities.authModes.find(profile.authMode) == capabilities.authModes.end()) {
         if (error) *error = L"Translation provider authentication mode is unsupported.";

@@ -89,6 +89,7 @@ struct ProviderPageState {
     // WM_COMMAND and read a half-rendered form back into the profile, replacing
     // persisted model/reasoning/temperature values with control defaults.
     bool renderingControls = false;
+    bool modelEdited = false;
     bool testing = false;
     std::shared_ptr<AsyncHttpRequest> testOperation;
     std::mutex testMutex;
@@ -448,6 +449,35 @@ void ClearRevealedKey(ProviderPageState& state) {
     ClearSensitiveString(state.revealedKey);
 }
 
+void CommitActiveModelToCustomModels(TranslationProviderProfile& profile) {
+    // The pool contract (catalog entries are never remembered, FIFO order, length
+    // cap) lives in the catalog so this page, the codec and the result window
+    // cannot drift apart. The UI-side trim stays in front of it because the page
+    // treats more characters as insignificant than the persistence codec does.
+    TrimWhitespace(profile.model);
+    RememberCustomModel(profile);
+}
+
+// True when Remove may act on the current profile: the profile is on a custom
+// model it actually owns, and removing it leaves either a catalog model or
+// another remembered id behind. Without the last part the page could empty the
+// model of a provider that has no catalog list, and Apply would then reject the
+// profile ("model is required") with no way back.
+bool CanRemoveCurrentModel(const TranslationProviderProfile& profile) {
+    const auto capabilities = GetCapabilities(profile);
+    if (!capabilities.allowsCustomModel || !profile.customModel ||
+        profile.model.empty()) {
+        return false;
+    }
+    if (std::find(profile.customModels.begin(), profile.customModels.end(),
+            profile.model) == profile.customModels.end()) {
+        return false;
+    }
+    const auto* preset = FindTranslationProviderPreset(profile.presetKind);
+    if (!preset) preset = FindBuiltInProviderPreset(profile.id);
+    return (preset && !preset->models.empty()) || profile.customModels.size() > 1;
+}
+
 void NormalizeProfileDisplayDefaults(TranslationProviderProfile& profile) {
     const auto* preset = FindTranslationProviderPreset(profile.presetKind);
     if (!preset) return;
@@ -456,6 +486,9 @@ void NormalizeProfileDisplayDefaults(TranslationProviderProfile& profile) {
          std::find(preset->models.begin(), preset->models.end(), profile.model) ==
              preset->models.end())) {
         profile.model = preset->models.front();
+    }
+    if (profile.customModel && profile.model.empty() && !profile.customModels.empty()) {
+        profile.model = profile.customModels.front();
     }
     if (profile.id == kLegacyDeepSeekTranslationProviderId &&
         profile.presetKind == L"deepseek" &&
@@ -515,9 +548,10 @@ void NormalizeBuiltInProfileForDisplay(TranslationProviderProfile& profile) {
         // built-in profiles are the only way to reach some vendors (the Add
         // dialog excludes presets that already have a built-in profile), so
         // clearing it here made "Custom model" impossible to keep checked and
-        // left unlisted models unreachable entirely. Persistence still
-        // normalizes "model is in the catalog => not custom" on save; the page
-        // must show what the user asked for.
+        // left unlisted models unreachable entirely. Persistence keeps the mark
+        // too (see IsListedProviderModel): a listed id takes the model-level
+        // policy regardless of the flag, so the page may show what the user
+        // asked for without changing the request shape.
         if (!profile.customModel &&
             std::find(fixedPreset->models.begin(), fixedPreset->models.end(),
                 profile.model) == fixedPreset->models.end()) {
@@ -868,7 +902,7 @@ void RenderProfile(HWND page, ProviderPageState& state) {
     FillAuthMode(page, *profile);
     const bool llm = capabilities.family == TranslationProviderFamily::Llm;
     for (const int id : {IDC_PROVIDER_MODEL_LABEL, IDC_PROVIDER_MODEL,
-                         IDC_PROVIDER_CUSTOM_MODEL,
+                         IDC_PROVIDER_CUSTOM_MODEL, IDC_PROVIDER_REMOVE_MODEL,
                          IDC_PROVIDER_REASONING_LABEL, IDC_PROVIDER_REASONING,
                          IDC_PROVIDER_TEMPERATURE_LABEL, IDC_PROVIDER_TEMPERATURE,
                          IDC_PROVIDER_ADVANCED_LABEL, IDC_PROVIDER_ADVANCED}) {
@@ -882,24 +916,35 @@ void RenderProfile(HWND page, ProviderPageState& state) {
     AdjustProviderRegionShift(page, state, capabilities.acceptsRegion);
     if (const HWND model = GetDlgItem(page, IDC_PROVIDER_MODEL)) {
         SendMessageW(model, CB_RESETCONTENT, 0, 0);
+        std::vector<std::wstring> allModels;
         if (preset) {
             for (const auto& modelName : preset->models) {
-                SendMessageW(model, CB_ADDSTRING, 0,
-                    reinterpret_cast<LPARAM>(modelName.c_str()));
+                if (std::find(allModels.begin(), allModels.end(), modelName) == allModels.end()) {
+                    allModels.push_back(modelName);
+                }
             }
         }
-        if (profile->customModel || !preset || preset->models.empty()) {
-            SendMessageW(model, CB_SETCURSEL, static_cast<WPARAM>(-1), 0);
-            SetText(page, IDC_PROVIDER_MODEL, profile->model);
-        } else {
-            const LRESULT selected = SendMessageW(
-                model, CB_FINDSTRINGEXACT, static_cast<WPARAM>(-1),
-                reinterpret_cast<LPARAM>(profile->model.c_str()));
-            if (selected != CB_ERR) {
-                SendMessageW(model, CB_SETCURSEL, selected, 0);
-            } else {
-                SetText(page, IDC_PROVIDER_MODEL, profile->model);
+        for (const auto& customName : profile->customModels) {
+            if (!customName.empty() &&
+                std::find(allModels.begin(), allModels.end(), customName) == allModels.end()) {
+                allModels.push_back(customName);
             }
+        }
+        if (!profile->model.empty() &&
+            std::find(allModels.begin(), allModels.end(), profile->model) == allModels.end()) {
+            allModels.push_back(profile->model);
+        }
+        for (const auto& modelName : allModels) {
+            SendMessageW(model, CB_ADDSTRING, 0,
+                reinterpret_cast<LPARAM>(modelName.c_str()));
+        }
+        const LRESULT selected = SendMessageW(
+            model, CB_FINDSTRINGEXACT, static_cast<WPARAM>(-1),
+            reinterpret_cast<LPARAM>(profile->model.c_str()));
+        if (selected != CB_ERR) {
+            SendMessageW(model, CB_SETCURSEL, selected, 0);
+        } else {
+            SetText(page, IDC_PROVIDER_MODEL, profile->model);
         }
     }
     std::wstring endpoint;
@@ -955,6 +1000,8 @@ void RenderProfile(HWND page, ProviderPageState& state) {
         profile->customModel ? BST_CHECKED : BST_UNCHECKED, 0);
     EnableWindow(GetDlgItem(page, IDC_PROVIDER_CUSTOM_MODEL),
         capabilities.allowsCustomModel);
+    EnableWindow(GetDlgItem(page, IDC_PROVIDER_REMOVE_MODEL),
+        CanRemoveCurrentModel(*profile));
     EnableWindow(GetDlgItem(page, IDC_PROVIDER_ENDPOINT),
         capabilities.allowsCustomBaseUrl);
     EnableWindow(GetDlgItem(page, IDC_PROVIDER_AUTH_MODE),
@@ -1045,6 +1092,7 @@ void ReadControlsIntoProfile(
         SendMessageW(GetDlgItem(page, IDC_PROVIDER_CUSTOM_MODEL), BM_SETCHECK,
             BST_CHECKED, 0);
     }
+    CommitActiveModelToCustomModels(profile);
     profile.reasoningMode = currentCapabilities.family == TranslationProviderFamily::Llm
         ? ReadReasoning(page) : TranslationReasoningMode::Off;
     NormalizeProfileDisplayDefaults(profile);
@@ -1203,8 +1251,8 @@ void ResetCurrentProfileToDefaults(HWND page, ProviderPageState& state) {
         profile->customModel = false;
     } else {
         // Custom/OpenAI-compatible, OpenRouter, and Ollama presets have no
-        // finite built-in model list. Reset their known defaults without
-        // erasing the user's required model identifier.
+        // finite built-in model list. Reset their known configuration defaults
+        // without erasing the user's required model identifier or custom models pool.
         profile->customModel = true;
     }
     profile->reasoningMode = capabilities.defaultReasoning;
@@ -1539,6 +1587,7 @@ INT_PTR CALLBACK TranslationProviderSettingsPageProc(
             SendDlgItemMessageW(page, IDC_PROVIDER_DATA_ROUTE, WM_SETFONT, reinterpret_cast<WPARAM>(state->hHintFont.get()), TRUE);
         }
         SendDlgItemMessageW(page, IDC_PROVIDER_TEMPERATURE, EM_SETLIMITTEXT, 8, 0);
+        SendDlgItemMessageW(page, IDC_PROVIDER_MODEL, CB_LIMITTEXT, kMaxTranslationModelLength, 0);
         EnsureProviderTestStatusToolTip(page, *state);
 
         SetText(page, IDC_PROVIDER_ENABLED,
@@ -1604,6 +1653,7 @@ INT_PTR CALLBACK TranslationProviderSettingsPageProc(
             }
             state->selectedProviderId = ComboValue(
                 GetDlgItem(page, IDC_PROVIDER_PROFILE));
+            state->modelEdited = false;
             ResetCredentialIntent(*state);
             RenderProfile(page, *state);
         } else if (control == IDC_PROVIDER_ADD && notification == BN_CLICKED) {
@@ -1614,6 +1664,7 @@ INT_PTR CALLBACK TranslationProviderSettingsPageProc(
             // the only way the dialog stays trustworthy.
             if (!ConfirmDiscardUnappliedEdits(page, *state)) return TRUE;
             CancelProviderTest(page, *state);
+            ReadCurrentControls(page, *state);
             const std::wstring presetKind = SelectProviderPreset(
                 page, state->pending);
             const auto* preset = FindTranslationProviderPreset(presetKind);
@@ -1622,6 +1673,7 @@ INT_PTR CALLBACK TranslationProviderSettingsPageProc(
                 CreateTranslationProviderProfile(*preset, NewProfileId());
             state->pending.providerProfiles.push_back(profile);
             state->selectedProviderId = profile.id;
+            state->modelEdited = false;
             ResetCredentialIntent(*state);
             FillProfiles(page, *state);
             RenderProfile(page, *state);
@@ -1641,6 +1693,7 @@ INT_PTR CALLBACK TranslationProviderSettingsPageProc(
                 copy.credentialRef = L"ZenCrop/Translation/provider/" + copy.id;
                 state->pending.providerProfiles.push_back(copy);
                 state->selectedProviderId = copy.id;
+                state->modelEdited = false;
                 ResetCredentialIntent(*state);
                 FillProfiles(page, *state);
                 RenderProfile(page, *state);
@@ -1679,12 +1732,45 @@ INT_PTR CALLBACK TranslationProviderSettingsPageProc(
                 state->selectedProviderId =
                     state->pending.providerProfiles.front().id;
             }
+            state->modelEdited = false;
             ResetCredentialIntent(*state);
             FillProfiles(page, *state);
             RenderProfile(page, *state);
             PropSheet_Changed(GetParent(page), page);
         } else if (control == IDC_PROVIDER_RESET && notification == BN_CLICKED) {
+            state->modelEdited = false;
             ResetCurrentProfileToDefaults(page, *state);
+        } else if (control == IDC_PROVIDER_REMOVE_MODEL && notification == BN_CLICKED) {
+            CancelProviderTest(page, *state);
+            ReadCurrentControls(page, *state);
+            auto* current = CurrentProfile(page, *state);
+            // The guard already refuses a removal that would leave the profile
+            // without a usable model (see CanRemoveCurrentModel).
+            if (!current || !CanRemoveCurrentModel(*current)) return TRUE;
+            const auto* preset = FindTranslationProviderPreset(current->presetKind);
+            if (!preset) preset = FindBuiltInProviderPreset(current->id);
+            auto it = std::find(current->customModels.begin(),
+                                current->customModels.end(), current->model);
+            if (it == current->customModels.end()) return TRUE;
+            auto nextIt = current->customModels.erase(it);
+            if (!current->customModels.empty()) {
+                current->model = (nextIt != current->customModels.end())
+                    ? *nextIt
+                    : current->customModels.back();
+                current->customModel = true;
+            } else if (preset && !preset->models.empty()) {
+                // The guard above only allows emptying the pool for a provider
+                // that has a catalog list, so the fallback is a real model.
+                current->model = preset->models.front();
+                current->customModel = false;
+            } else {
+                // Defensive: keep the current model rather than emptying it.
+                current->customModel = true;
+            }
+            ClampReasoningMode(*current);
+            NormalizeProfileDisplayDefaults(*current);
+            RenderProfile(page, *state);
+            PropSheet_Changed(GetParent(page), page);
         } else if (control == IDC_PROVIDER_KEY_ACTION && notification == BN_CLICKED) {
             CancelProviderTest(page, *state);
             auto* profile = CurrentProfile(page, *state);
@@ -1762,15 +1848,63 @@ INT_PTR CALLBACK TranslationProviderSettingsPageProc(
             }
         } else if (control == IDC_PROVIDER_TEST && notification == BN_CLICKED) {
             BeginTest(page, *state);
+        } else if (control == IDC_PROVIDER_MODEL && notification == CBN_EDITCHANGE) {
+            CancelProviderTest(page, *state);
+            state->modelEdited = true;
+            auto* current = CurrentProfile(page, *state);
+            if (current) {
+                const std::wstring typed = ReadText(page, IDC_PROVIDER_MODEL);
+                current->model = typed;
+                TrimWhitespace(current->model);
+                current->customModel = !IsListedProviderModel(*current, current->model);
+                SendMessageW(GetDlgItem(page, IDC_PROVIDER_CUSTOM_MODEL), BM_SETCHECK,
+                    current->customModel ? BST_CHECKED : BST_UNCHECKED, 0);
+                EnableWindow(GetDlgItem(page, IDC_PROVIDER_REMOVE_MODEL),
+                    CanRemoveCurrentModel(*current));
+                PropSheet_Changed(GetParent(page), page);
+            }
+        } else if (control == IDC_PROVIDER_MODEL && notification == CBN_KILLFOCUS) {
+            if (!state->modelEdited) return TRUE;
+            state->modelEdited = false;
+            auto* current = CurrentProfile(page, *state);
+            if (current) {
+                CommitActiveModelToCustomModels(*current);
+                ClampReasoningMode(*current);
+                NormalizeProfileDisplayDefaults(*current);
+                RenderProfile(page, *state);
+                PropSheet_Changed(GetParent(page), page);
+            }
+        } else if (control == IDC_PROVIDER_MODEL && notification == CBN_SELCHANGE) {
+            CancelProviderTest(page, *state);
+            auto* current = CurrentProfile(page, *state);
+            if (current) {
+                if (state->modelEdited) {
+                    // The user typed an id and then picked another entry from the
+                    // drop-down before the edit lost focus. Focus never leaves the
+                    // combo, so CBN_KILLFOCUS will not run: remember the typed id
+                    // here instead of dropping it without a word.
+                    CommitActiveModelToCustomModels(*current);
+                }
+                state->modelEdited = false;
+                const std::wstring selected = ReadSelectedComboText(
+                    GetDlgItem(page, IDC_PROVIDER_MODEL));
+                if (!selected.empty()) {
+                    ApplyTranslationModelChoice(*current, selected);
+                    SendMessageW(GetDlgItem(page, IDC_PROVIDER_CUSTOM_MODEL), BM_SETCHECK,
+                        current->customModel ? BST_CHECKED : BST_UNCHECKED, 0);
+                    EnableWindow(GetDlgItem(page, IDC_PROVIDER_REMOVE_MODEL),
+                        CanRemoveCurrentModel(*current));
+                    ClampReasoningMode(*current);
+                    FillReasoning(page, *current);
+                    PropSheet_Changed(GetParent(page), page);
+                }
+            }
         } else if (((control == IDC_PROVIDER_NAME ||
                      control == IDC_PROVIDER_ADVANCED ||
                      control == IDC_PROVIDER_ENDPOINT ||
                      control == IDC_PROVIDER_REGION ||
                      control == IDC_PROVIDER_TEMPERATURE) &&
                     notification == EN_CHANGE) ||
-                   (control == IDC_PROVIDER_MODEL &&
-                    (notification == CBN_SELCHANGE ||
-                     notification == CBN_EDITCHANGE)) ||
                    (control == IDC_PROVIDER_CUSTOM_MODEL &&
                     notification == BN_CLICKED) ||
                    (control == IDC_PROVIDER_ENABLED &&
@@ -1781,8 +1915,7 @@ INT_PTR CALLBACK TranslationProviderSettingsPageProc(
             CancelProviderTest(page, *state);
             const bool identityChanged = control == IDC_PROVIDER_AUTH_MODE;
             const bool capabilityChanged = identityChanged ||
-                control == IDC_PROVIDER_CUSTOM_MODEL ||
-                control == IDC_PROVIDER_MODEL;
+                control == IDC_PROVIDER_CUSTOM_MODEL;
             ReadCurrentControls(page, *state);
             // Only losing the credential *target* invalidates a key the user typed
             // but has not applied. Bearer API key and API key use one target (the
@@ -1810,15 +1943,6 @@ INT_PTR CALLBACK TranslationProviderSettingsPageProc(
             }
             if (control == IDC_PROVIDER_ENABLED) {
                 RepairActiveProvider(state->pending);
-            }
-            if (control == IDC_PROVIDER_MODEL &&
-                notification == CBN_SELCHANGE &&
-                IsDlgButtonChecked(page, IDC_PROVIDER_CUSTOM_MODEL) != BST_CHECKED) {
-                if (auto* current = CurrentProfile(page, *state)) {
-                    const std::wstring selected = ReadSelectedComboText(
-                        GetDlgItem(page, IDC_PROVIDER_MODEL));
-                    if (!selected.empty()) current->model = selected;
-                }
             }
             if (capabilityChanged) {
                 RenderProfile(page, *state);

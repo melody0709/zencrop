@@ -304,7 +304,7 @@ private:
     static constexpr int kTargetLanguageMenuBase = 3320;
     static constexpr int kOcrRouteMenuBase = 3340;
     static constexpr int kProviderMenuBase = 3360;
-    static constexpr int kModelMenuBase = 3380;
+    static constexpr int kModelMenuBase = 3500;
     static constexpr int kRecognizeAgain = 3121;
     static constexpr int kProviderCombo = 3122;
     static constexpr int kModelCombo = 3125;

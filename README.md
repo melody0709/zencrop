@@ -1,8 +1,16 @@
-# ZenCrop v3.1.5
+# ZenCrop v3.1.6
 
 [中文文档](doc/README_zh.md)
 
 An independent, **enhanced** reimplementation of [PowerToys Crop And Lock](https://github.com/microsoft/PowerToys/tree/main/src/modules/CropAndLock/), with rich screenshot annotation, long screenshot, multi-engine OCR, and OCR Dashboard.
+
+## What's new in v3.1.6
+
+- **Multiple Custom Models and Quick Management across all Providers**:
+  - **Custom Model Collection Support**: Extended provider profiles to persist a pool of custom models (`customModels`) alongside the active model selection. Completely backward compatible with previous JSON configurations.
+  - **Smart ComboBox Memory & Quick Removal**: In the Translation Providers settings page, the Model ComboBox automatically aggregates both catalog recommended models and user-saved custom models. Entering a new model automatically registers it into the provider's pool on apply/test. A new "Remove" button next to "Custom model" allows one-click removal of saved custom models with safe fallback to the next saved entry or the catalog default; catalog models cannot be removed, and on providers without a catalog list the button stays disabled once a single custom model is left so the profile can never be saved model-less.
+  - **Translation Header Selector Integration**: The standalone Model dropdown in the translation result window now lists all saved custom models for the active provider, allowing instant switching directly during translation without opening settings.
+- **Version Source Bumped**: the product version source is now `v3.1.6`, carried into binaries, resources, architecture baseline, and documentation.
 
 ## What's new in v3.1.5
 

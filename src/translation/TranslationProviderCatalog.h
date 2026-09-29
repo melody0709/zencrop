@@ -100,6 +100,30 @@ TranslationProviderProfile* FindActiveTranslationProvider(
 ProviderCapabilities GetCapabilities(
     const TranslationProviderProfile& profile);
 
+// "Listed" means the profile's preset publishes this exact model id. The engine
+// derives its policy from that fact rather than from the `customModel` flag: a
+// listed id always takes the model-level policy, while the flag only records
+// that the user marked the profile as custom (and is what the settings page
+// renders). Keeping the two apart is what lets the page preserve the user's
+// mark without silently downgrading a catalog model onto the conservative path.
+bool IsListedProviderModel(
+    const TranslationProviderProfile& profile,
+    const std::wstring& model);
+
+// Applies a user-chosen model id: stores it, derives `customModel` from the
+// catalog (a listed id is never custom) and remembers an unlisted id in the
+// FIFO pool. Returns whether the id is a catalog entry. Callers clamp the
+// reasoning mode afterwards.
+bool ApplyTranslationModelChoice(
+    TranslationProviderProfile& profile,
+    const std::wstring& model);
+
+// Remembers `profile.model` in the custom-model pool when it is an unlisted id
+// and always drops catalog entries from the pool, so a pool written by an older
+// build cannot keep a model the catalog now publishes. FIFO: the oldest id
+// makes room once the pool is full.
+void RememberCustomModel(TranslationProviderProfile& profile);
+
 bool IsSupportedProviderProfile(
     const TranslationProviderProfile& profile,
     std::wstring* error = nullptr);

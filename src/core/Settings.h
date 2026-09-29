@@ -239,6 +239,8 @@ inline constexpr wchar_t kDefaultTranslationProviderId[] =
     L"builtin.google-translate-community.default";
 inline constexpr wchar_t kDefaultTranslationPromptId[] =
     L"builtin.accurate.v1";
+inline constexpr size_t kMaxTranslationCustomModels = 50;
+inline constexpr size_t kMaxTranslationModelLength = 256;
 
 struct TranslationProviderProfile {
     std::wstring id;
@@ -251,6 +253,7 @@ struct TranslationProviderProfile {
     std::wstring region;
     std::wstring model = L"deepseek-v4-flash";
     bool customModel = false;
+    std::vector<std::wstring> customModels;
     std::wstring credentialRef = kLegacyTranslationCredentialTarget;
     TranslationReasoningMode reasoningMode = TranslationReasoningMode::Off;
     std::optional<double> temperature;

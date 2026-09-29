@@ -3298,6 +3298,177 @@ int TestProviderPromptAndSchemaContracts() {
     const auto* decodedCustomProfile = FindActiveTranslationProvider(decodedCustomModel);
     if (!decodedCustomProfile || !decodedCustomProfile->customModel ||
         decodedCustomProfile->model != roundTripProfile.model) return 176;
+    if (decodedCustomProfile->customModels.empty() ||
+        decodedCustomProfile->customModels.front() != roundTripProfile.model) return 177;
+
+    // Test multiple custom models on a provider (e.g. OpenRouter)
+    TranslationSettings multiCustomSettings;
+    multiCustomSettings.providerProfiles.clear();
+    TranslationProviderProfile openRouterMulti;
+    openRouterMulti.id = L"provider.openrouter.test";
+    openRouterMulti.displayName = L"OpenRouter Multi";
+    openRouterMulti.presetKind = L"openrouter";
+    openRouterMulti.adapterKind = TranslationAdapterKind::OpenAIChatCompletions;
+    openRouterMulti.authMode = TranslationAuthMode::BearerApiKey;
+    openRouterMulti.credentialRef = L"ZenCrop/Translation/provider/provider.openrouter.test";
+    openRouterMulti.model = L"qwen/qwen3.7-flash";
+    openRouterMulti.customModel = true;
+    openRouterMulti.customModels = {
+        L"qwen/qwen3.7-flash",
+        L"anthropic/claude-3.5-sonnet",
+        L"deepseek/deepseek-chat"
+    };
+    multiCustomSettings.providerProfiles.push_back(openRouterMulti);
+    multiCustomSettings.activeProviderId = openRouterMulti.id;
+    if (!NormalizeTranslationSettingsForPersistence(multiCustomSettings, &error)) return 3601;
+    TranslationSettings decodedMultiSettings;
+    if (!ParseTranslationSection(SerializeTranslationSection(multiCustomSettings), decodedMultiSettings, &error)) return 3602;
+    const auto* decodedMultiProfile = FindActiveTranslationProvider(decodedMultiSettings);
+    if (!decodedMultiProfile || !decodedMultiProfile->customModel) return 3603;
+    if (decodedMultiProfile->customModels.size() != 3) return 3604;
+    if (decodedMultiProfile->customModels[0] != L"qwen/qwen3.7-flash" ||
+        decodedMultiProfile->customModels[1] != L"anthropic/claude-3.5-sonnet" ||
+        decodedMultiProfile->customModels[2] != L"deepseek/deepseek-chat") return 3605;
+
+    // Test legacy JSON parsing where "customModels" does not exist (backward compatibility)
+    TranslationSettings legacyParsed;
+    const std::wstring legacyJson =
+        L"{\"schemaVersion\":7,\"activeProviderId\":\"provider.legacy.openrouter\","
+        L"\"providerProfiles\":[{\"id\":\"provider.legacy.openrouter\","
+        L"\"displayName\":\"Legacy OpenRouter\",\"presetKind\":\"openrouter\","
+        L"\"adapterKind\":\"openai-chat-completions\",\"authMode\":\"bearer-api-key\","
+        L"\"credentialRef\":\"ZenCrop/Translation/provider/provider.legacy.openrouter\","
+        L"\"model\":\"anthropic/claude-3.5-sonnet\",\"customModel\":true,"
+        L"\"reasoningMode\":\"off\",\"advancedOptionsJson\":\"{}\"}]}";
+    if (!ParseTranslationSection(legacyJson, legacyParsed, &error)) return 3606;
+    const auto* legacyDecoded = FindActiveTranslationProvider(legacyParsed);
+    if (!legacyDecoded || !legacyDecoded->customModel) return 3607;
+    if (legacyDecoded->customModels.empty() || legacyDecoded->customModels.front() != L"anthropic/claude-3.5-sonnet") return 3608;
+
+    // Test that preset models in customModels are purged upon decoding
+    TranslationSettings presetPurgeSettings;
+    const std::wstring presetPurgeJson =
+        L"{\"schemaVersion\":7,\"activeProviderId\":\"builtin.siliconflow.default\","
+        L"\"providerProfiles\":[{\"id\":\"builtin.siliconflow.default\","
+        L"\"displayName\":\"SiliconFlow\",\"presetKind\":\"siliconflow\","
+        L"\"adapterKind\":\"openai-chat-completions\",\"authMode\":\"bearer-api-key\","
+        L"\"credentialRef\":\"ZenCrop/Translation/provider/builtin.siliconflow.default.siliconflow\","
+        L"\"model\":\"Qwen/Qwen3.5-9B\",\"customModel\":true,"
+        L"\"customModels\":[\"Qwen/Qwen3.5-9B\",\"custom/my-model\"],"
+        L"\"reasoningMode\":\"off\",\"advancedOptionsJson\":\"{}\"}]}";
+    TranslationSettings presetPurgeParsed;
+    if (!ParseTranslationSection(presetPurgeJson, presetPurgeParsed, &error)) return 3609;
+    const auto* purgeDecoded = FindActiveTranslationProvider(presetPurgeParsed);
+    if (!purgeDecoded) return 3610;
+    // The user's explicit "Custom model" mark survives the catalog purge: a
+    // listed id takes the model-level policy from the catalog itself (see
+    // IsListedProviderModel), so the flag no longer has to be rewritten for the
+    // request shape to stay right.
+    if (!purgeDecoded->customModel) return 3611;
+    if (purgeDecoded->customModels.size() != 1 || purgeDecoded->customModels.front() != L"custom/my-model") return 3612;
+
+    // Test that customModels capacity limit (kMaxTranslationCustomModels = 50) and FIFO order is enforced
+    std::wstring maxCapJson =
+        L"{\"schemaVersion\":7,\"activeProviderId\":\"provider.overflow.test\","
+        L"\"providerProfiles\":[{\"id\":\"provider.overflow.test\","
+        L"\"displayName\":\"Overflow Provider\",\"presetKind\":\"openrouter\","
+        L"\"adapterKind\":\"openai-chat-completions\",\"authMode\":\"bearer-api-key\","
+        L"\"credentialRef\":\"ZenCrop/Translation/provider/provider.overflow.test\","
+        L"\"model\":\"model-59\",\"customModel\":true,"
+        L"\"customModels\":[";
+    for (int i = 0; i < 60; ++i) {
+        if (i > 0) maxCapJson += L",";
+        maxCapJson += L"\"model-" + std::to_wstring(i) + L"\"";
+    }
+    maxCapJson += L"],\"reasoningMode\":\"off\",\"advancedOptionsJson\":\"{}\"}]}";
+    TranslationSettings maxCapParsed;
+    if (!ParseTranslationSection(maxCapJson, maxCapParsed, &error)) return 3613;
+    const auto* maxCapDecoded = FindActiveTranslationProvider(maxCapParsed);
+    if (!maxCapDecoded || maxCapDecoded->customModels.size() != kMaxTranslationCustomModels) return 3614;
+    if (maxCapDecoded->customModels.front() != L"model-10" ||
+        maxCapDecoded->customModels.back() != L"model-59") return 3615;
+
+    // Test model length limits (kMaxTranslationModelLength = 256)
+    TranslationProviderProfile lengthProfile = *maxCapDecoded;
+    std::wstring oversized(kMaxTranslationModelLength + 1, L'x');
+    lengthProfile.model = oversized;
+    std::wstring validationError;
+    if (IsSupportedProviderProfile(lengthProfile, &validationError)) return 3616;
+    lengthProfile.model = L"valid-model";
+    lengthProfile.customModels.push_back(oversized);
+    if (IsSupportedProviderProfile(lengthProfile, &validationError)) return 3617;
+
+    // A listed id always takes the model-level policy, whatever the user's
+    // "Custom model" mark says: the mark is the page's to keep, and the request
+    // shape must not be downgraded to the conservative path just because it is
+    // set (no temperature, prompt-JSON output, and -- on the presets without a
+    // measured custom-model dialect -- no reasoning field at all).
+    TranslationProviderProfile listedPlain;
+    listedPlain.id = L"provider.listed.plain";
+    listedPlain.displayName = L"Listed Plain";
+    listedPlain.presetKind = L"siliconflow";
+    listedPlain.adapterKind = TranslationAdapterKind::OpenAIChatCompletions;
+    listedPlain.authMode = TranslationAuthMode::BearerApiKey;
+    listedPlain.credentialRef =
+        L"ZenCrop/Translation/provider/provider.listed.plain";
+    listedPlain.model = L"Qwen/Qwen3.5-9B";
+    TranslationProviderProfile listedMarked = listedPlain;
+    listedMarked.customModel = true;
+    const auto plainCapabilities = GetCapabilities(listedPlain);
+    const auto markedCapabilities = GetCapabilities(listedMarked);
+    if (markedCapabilities.outputMode != plainCapabilities.outputMode ||
+        markedCapabilities.instructionChannel != plainCapabilities.instructionChannel ||
+        markedCapabilities.tokenLimitKind != plainCapabilities.tokenLimitKind ||
+        markedCapabilities.supportsTemperature != plainCapabilities.supportsTemperature ||
+        markedCapabilities.maxSegmentsPerRequest != plainCapabilities.maxSegmentsPerRequest ||
+        markedCapabilities.reasoningModes != plainCapabilities.reasoningModes ||
+        markedCapabilities.reasoningWireFormat != plainCapabilities.reasoningWireFormat ||
+        markedCapabilities.defaultReasoning != plainCapabilities.defaultReasoning ||
+        markedCapabilities.policyRevision != plainCapabilities.policyRevision) return 3620;
+    if (std::wstring(translation::LlmOutputModeName(plainCapabilities.outputMode)) !=
+        L"json-object") return 3621;
+    if (!IsSupportedProviderProfile(listedMarked, &validationError)) return 3622;
+
+    // One shared selection path (settings page and result window): a listed id
+    // clears the mark and never enters the pool, an unlisted id keeps the mark
+    // and is remembered with the codec's trim and the FIFO cap.
+    TranslationProviderProfile choice = listedPlain;
+    choice.customModels = {L"custom/stale", L"Qwen/Qwen3.5-9B"};
+    if (!ApplyTranslationModelChoice(choice, L"Qwen/Qwen3.5-9B")) return 3623;
+    if (choice.customModel) return 3624;
+    if (choice.customModels.size() != 1 ||
+        choice.customModels.front() != L"custom/stale") return 3625;
+    if (ApplyTranslationModelChoice(choice, L"custom/new-model")) return 3626;
+    if (!choice.customModel) return 3627;
+    if (choice.customModels.size() != 2 ||
+        choice.customModels.back() != L"custom/new-model") return 3628;
+    if (ApplyTranslationModelChoice(choice, L"  custom/spaced\t")) return 3629;
+    if (choice.customModels.back() != L"custom/spaced") return 3630;
+    if (ApplyTranslationModelChoice(choice, oversized)) return 3631;
+    if (choice.model != oversized ||
+        std::find(choice.customModels.begin(), choice.customModels.end(), oversized) !=
+            choice.customModels.end()) return 3632;
+
+    // FIFO: a full pool drops its oldest entry to make room for the new id.
+    TranslationProviderProfile fullPool = listedPlain;
+    fullPool.customModels.clear();
+    for (int i = 0; i < static_cast<int>(kMaxTranslationCustomModels); ++i) {
+        fullPool.customModels.push_back(L"custom/fill-" + std::to_wstring(i));
+    }
+    if (ApplyTranslationModelChoice(fullPool, L"custom/next")) return 3633;
+    if (fullPool.customModels.size() != kMaxTranslationCustomModels) return 3634;
+    if (fullPool.customModels.front() != L"custom/fill-1" ||
+        fullPool.customModels.back() != L"custom/next") return 3635;
+
+    // The unlisted-model path keeps the vendor dialect (the v3.1.4 contract):
+    // DeepSeek must still offer `Off` so the engine can send thinking:disabled.
+    TranslationProviderProfile unlistedDialect = listedPlain;
+    unlistedDialect.presetKind = L"deepseek";
+    unlistedDialect.model = L"deepseek-v4-unlisted-probe";
+    unlistedDialect.customModel = true;
+    const auto dialectCapabilities = GetCapabilities(unlistedDialect);
+    if (!dialectCapabilities.reasoningModes.count(TranslationReasoningMode::Off) ||
+        dialectCapabilities.defaultReasoning != TranslationReasoningMode::Off) return 3636;
 
     TranslationSettings builtInModelRoundTrip;
     TranslationProviderProfile siliconFlowProfile;
@@ -3328,8 +3499,9 @@ int TestProviderPromptAndSchemaContracts() {
     if (!decodedSiliconFlow || decodedSiliconFlow->model != L"tencent/Hunyuan-MT-7B" ||
         decodedSiliconFlow->customModel) return 189;
 
-    // A model entered manually before it was added to the built-in catalog
-    // should be recognized as built-in after the catalog migration.
+    // A model entered manually before it was added to the built-in catalog keeps
+    // the user's mark: the catalog now decides the request shape, so no rewrite
+    // is needed for the profile to use the model-level policy again.
     TranslationSettings legacyBuiltInModel;
     if (!ParseTranslationSection(
             L"{\"schemaVersion\":3,\"activeProviderId\":\"builtin.siliconflow.default\","
@@ -3343,7 +3515,7 @@ int TestProviderPromptAndSchemaContracts() {
     const auto* migratedSiliconFlow = FindActiveTranslationProvider(
         legacyBuiltInModel);
     if (!migratedSiliconFlow || migratedSiliconFlow->model != L"tencent/Hunyuan-MT-7B" ||
-        migratedSiliconFlow->customModel) return 325;
+        !migratedSiliconFlow->customModel) return 325;
 
     // Every built-in connection must round-trip the values that the provider
     // manager renders. This protects the load/normalize side of the settings

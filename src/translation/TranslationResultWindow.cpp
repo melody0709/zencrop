@@ -1478,6 +1478,11 @@ void TranslationResultWindow::RefreshModelOptions() {
             }
         }
     }
+    for (const auto& m : profile->customModels) {
+        if (!m.empty() && std::find(modelOptions_.begin(), modelOptions_.end(), m) == modelOptions_.end()) {
+            modelOptions_.push_back(m);
+        }
+    }
     if (!profile->model.empty()) {
         auto it = std::find(modelOptions_.begin(), modelOptions_.end(), profile->model);
         if (it == modelOptions_.end()) {

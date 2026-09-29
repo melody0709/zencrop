@@ -1,8 +1,16 @@
-# ZenCrop v3.1.5
+# ZenCrop v3.1.6
 
 [English](../README.md)
 
 ZenCrop 是对 [PowerToys Crop And Lock](https://github.com/microsoft/PowerToys/tree/main/src/modules/CropAndLock/) 的独立、**增强型**重构实现，并融合了丰富的截图标注、长截图、多引擎 OCR 和 OCR 工作台。
+
+## v3.1.6 更新重点
+
+- **全 Provider 多自定义模型保存与快捷管理**:
+  - **自定义模型池集合扩展**: `TranslationProviderProfile` 新增 `customModels` 集合，支持为所有 Provider（OpenRouter、Ollama、SiliconFlow、OpenAI、DeepSeek 等）保存多个自定义模型，完全向下兼容旧版本 JSON 配置。
+  - **设置面板智能 ComboBox 记忆与快捷移除**: Provider 设置页中的 Model 下拉框自动汇集厂商内置推荐列表与用户保存的自定义模型列表；输入新模型自动记忆；在 Custom model 勾选框旁新增 `Remove` 按钮，选中已保存的自定义模型时可一键移除并安全回退到池中下一项或目录默认项；目录内模型不可移除，无目录列表的 Provider 在只剩最后一个自定义模型时按钮置灰，避免模型被删空后无法保存。
+  - **翻译主窗口顶栏联动秒切**: 翻译结果窗口的 Model 下拉菜单直接拉取该 Provider 保存的完整模型池，翻译时无需进入设置即可在任意常用自定义模型间快速切换并即刻生效。
+- **版本源升级**: 产品版本源升至 `v3.1.6`（二进制、资源、文档与架构基线）。
 
 ## v3.1.5 更新重点
 

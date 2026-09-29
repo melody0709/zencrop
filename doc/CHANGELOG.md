@@ -1,5 +1,30 @@
 # Changelog
 
+## V3.1.6 (2026-09-29)
+
+### 全 Provider 多自定义模型保存与快捷管理 (Multiple Custom Models & Quick Management)
+
+- **背景与需求**: OpenRouter、Ollama、Custom OpenAI-Compatible 等无固定预设模型的供应商此前只能保存 1 个自定义模型，换模型必须手工清空重输或复制整个 Provider profile；哪怕是有默认模型的厂商（如 SiliconFlow、DeepSeek），也只能存 1 个自定义模型，无法自由维护自己的常用模型池。
+- **方案 A 落地**:
+  1. **数据模型与向下兼容**:
+     - `TranslationProviderProfile` 扩展 `customModels` 集合，保持当前激活模型 `model` 单字段兼容；
+     - 编解码器自动序列化/反序列化 `customModels`，老版本 JSON 配置无缝升级；
+     - 自动过滤与清洗厂商目录内置重合模型，保留用户自定义模型纯净集合。
+  2. **设置面板就地记忆与增删交互**:
+     - `IDC_PROVIDER_MODEL` 下拉框自动汇集厂商内置推荐列表 + 用户已保存的自定义模型列表；
+     - 用户输入新模型（或连接测试/应用时）自动识别并记忆收纳至该 Provider 的 `customModels` 中；
+     - 在 `Custom model` 复选框右侧新增 `Remove` 按钮（`IDC_PROVIDER_REMOVE_MODEL`），选中自定义模型且存在回退选项（`hasFallback`）时高亮可用，一键移除并安全回退到前一项或默认项，内置模型及最后单一模型受保护置灰。
+  3. **翻译主窗口顶栏深度联动**:
+     - 翻译窗口顶部栏的 Model 下拉框直接加载该 Provider 的全部预设与自定义模型池；
+     - 用户可在翻译结果窗口中秒级直接切换任意已保存的自定义模型（即刻持久化并生效）。
+  4. **目录内模型与 Custom model 标记解耦**（二次审查加固）:
+     - 目录内模型一律走模型级策略；勾选 Custom model 不再把请求降级为保守参数（温度不可用、输出模式回退、思考方言丢失），Apply 后勾选也不再被反向撤销；
+     - 模型选择与自定义模型池维护收敛为唯一实现（`IsListedProviderModel` / `ApplyTranslationModelChoice` / `RememberCustomModel`），设置页、编解码器与翻译窗口共用；
+     - 修复"键入新模型后立即从下拉列表选择另一项"时键入值被静默丢弃的问题。
+- **设计方案与实机约束**: 完整方案与审查缺陷复盘见 [`.plan/feat/multi-custom-models-management-plan.md`](../.plan/feat/multi-custom-models-management-plan.md)。
+- **验证**: 自动化契约全面覆盖（`test_translation_contract` 100% PASS，涵盖多自定义模型编解码、反向兼容、50 额度上限与严格 FIFO 淘汰队列、256 字符越界校验、预设模型冲突清洗、目录内模型策略等价、统一模型选择与池记忆契约）；`scripts/check_architecture.ps1` 守卫 15/15 PASS；构建全绿；多屏/高 DPI 与真实键鼠事件序列（Remove/Reset 交互、键入后立即下拉选择、翻译窗口顶栏弹窗）仍未纳入自动化契约，保留待用户体验与实机确认。
+- **版本源升级**: 产品版本源升至 `v3.1.6`（CMakeLists、资源、文档与架构基线）。
+
 ## V3.1.5 (2026-09-29)
 
 ### 翻译窗口顶部栏空间优化与独立模型选择 (Translation Window Header Optimization & Model Selection)

@@ -292,6 +292,37 @@ bool ParseProfile(
         SetError(error, L"Translation provider profile contains an invalid field type.");
         return false;
     }
+    profile.customModels.clear();
+    if (value.contains("customModels")) {
+        if (!value["customModels"].is_array()) {
+            SetError(error, L"Translation provider customModels field is invalid.");
+            return false;
+        }
+        for (const auto& item : value["customModels"]) {
+            if (item.is_string()) {
+                std::wstring customName = Utf8ToWide(item.get<std::string>());
+                while (!customName.empty() && (customName.front() == L' ' || customName.front() == L'\t' ||
+                                              customName.front() == L'\r' || customName.front() == L'\n')) {
+                    customName.erase(customName.begin());
+                }
+                while (!customName.empty() && (customName.back() == L' ' || customName.back() == L'\t' ||
+                                              customName.back() == L'\r' || customName.back() == L'\n')) {
+                    customName.pop_back();
+                }
+                if (!customName.empty() && customName.size() <= kMaxTranslationModelLength &&
+                    std::find(profile.customModels.begin(), profile.customModels.end(), customName) ==
+                        profile.customModels.end()) {
+                    if (profile.customModels.size() >= kMaxTranslationCustomModels) {
+                        profile.customModels.erase(profile.customModels.begin());
+                    }
+                    profile.customModels.push_back(std::move(customName));
+                }
+            }
+        }
+    }
+    // The active model joins the pool at the end of this function, once the
+    // identity repair below has settled on the final id (see
+    // translation::RememberCustomModel).
     const std::wstring adapterName = StringOr(value, "adapterKind", L"deepseek-chat");
     if (value.contains("adapterKind") && !value["adapterKind"].is_string()) {
         SetError(error, L"Translation provider adapter kind is invalid.");
@@ -345,18 +376,15 @@ bool ParseProfile(
                 profile.customModel = false;
             }
         } else if (!builtInPreset->models.empty()) {
-            const bool isKnownBuiltInModel =
+            // A model the catalog has since adopted stays a valid selection, and
+            // the user's "Custom model" mark is left in place: the engine decides
+            // its policy from the catalog (see translation::IsListedProviderModel),
+            // so the flag no longer has to be rewritten for the request shape to
+            // stay right. Only a *stale* model from a different preset is repaired.
+            if (!profile.customModel &&
                 std::find(builtInPreset->models.begin(),
-                          builtInPreset->models.end(), profile.model) !=
-                builtInPreset->models.end();
-            if (isKnownBuiltInModel) {
-                // A model that has since become part of the provider catalog
-                // is no longer a custom model, even if an older build saved
-                // customModel=true for it.
-                profile.customModel = false;
-            } else if (!profile.customModel) {
-                // Keep a valid built-in model selection while repairing only
-                // stale models from a different preset.
+                          builtInPreset->models.end(), profile.model) ==
+                    builtInPreset->models.end()) {
                 profile.model = builtInPreset->models.front();
             }
         }
@@ -392,6 +420,11 @@ bool ParseProfile(
                     : TranslationAuthMode::None);
         }
     }
+    // One contract, shared with the settings page and the result window: the pool
+    // only holds ids the catalog does not publish, and a listed id is never
+    // remembered. Running this after the identity repair above means the repaired
+    // model id is what gets remembered.
+    translation::RememberCustomModel(profile);
     // DeepSeek's default profile is deliberately non-thinking for the
     // translation workflow. Preserve an explicitly stored choice, but treat
     // an omitted field in older/current JSON as Off instead of ProviderDefault.
@@ -510,6 +543,13 @@ json SerializeProfile(const TranslationProviderProfile& profile) {
         {"advancedOptionsJson", WideToUtf8(profile.advancedOptionsJson.empty()
             ? L"{}" : profile.advancedOptionsJson)},
     };
+    json customModelsJson = json::array();
+    for (const auto& m : profile.customModels) {
+        if (!m.empty()) {
+            customModelsJson.push_back(WideToUtf8(m));
+        }
+    }
+    value["customModels"] = std::move(customModelsJson);
     if (profile.temperature.has_value()) value["temperature"] = profile.temperature.value();
     else value["temperature"] = nullptr;
     return value;

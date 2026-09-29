@@ -1845,18 +1845,13 @@ void TranslationCoordinator::OnWindowCommand(TranslationResultWindow::Command co
         const std::wstring previousModel = provider->model;
         const bool previousCustomModel = provider->customModel;
         const auto previousReasoning = provider->reasoningMode;
+        const auto previousCustomModels = provider->customModels;
 
-        provider->model = requested;
-        const auto* preset = FindTranslationProviderPreset(provider->presetKind);
-        if (!preset) {
-            preset = FindBuiltInProviderPreset(provider->id);
-        }
-        if (preset && !preset->models.empty()) {
-            const bool isBuiltIn = std::find(preset->models.begin(), preset->models.end(), requested) != preset->models.end();
-            provider->customModel = !isBuiltIn;
-        } else {
-            provider->customModel = true;
-        }
+        // Shared with the settings page: one place stores the id, derives
+        // `customModel` from the catalog and maintains the FIFO pool. The flag
+        // no longer changes the request shape by itself -- a listed id always
+        // takes the model-level policy (see IsListedProviderModel).
+        ApplyTranslationModelChoice(*provider, requested);
 
         const auto capabilities = GetCapabilities(*provider);
         if (!IsReasoningModeSupported(capabilities, provider->reasoningMode)) {
@@ -1868,6 +1863,7 @@ void TranslationCoordinator::OnWindowCommand(TranslationResultWindow::Command co
             provider->model = previousModel;
             provider->customModel = previousCustomModel;
             provider->reasoningMode = previousReasoning;
+            provider->customModels = previousCustomModels;
             resultWindow_->SetModelSelection(previousModel);
             ShowError(saveError.empty()
                 ? StageText(L"无法保存翻译模型设置。", L"Failed to save the translation model preference.")
