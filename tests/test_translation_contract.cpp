@@ -22,6 +22,7 @@
 #include "translation/TranslationCredentialRollback.h"
 #include "translation/TranslationTextUtils.h"
 #include "translation/TranslationProviderSettingsPage.h"
+#include "translation/TranslationModelListing.h"
 #include "window/AlwaysOnTop.h"
 #include "ocr/LocalRaster.h"
 #include "ocr/engine/OcrEngine.h"
@@ -3037,6 +3038,17 @@ int TestResultWindowLayoutContract() {
         // A short translation keeps the source text the text that drives the
         // width, so the two measurements below can differ at all.
         linkWindow.SetTranslationText(L"link width");
+        // Premise, measured instead of guessed: does this window widen at all when the
+        // source text grows? The width ceiling is the product's own (a fraction of the
+        // monitor, the work area, DPI and the minimum width all take part), so asking
+        // the screen width answers a different question -- on a 1280px display the
+        // window can be capped at 653px with 627px of screen still spare. A long *plain*
+        // text is the one input that must widen it, so it is the probe.
+        linkWindow.SetSourceText(std::wstring(240, L'x'));
+        PumpMessagesFor(500);
+        RECT plainRect = {};
+        if (!GetWindowRect(linkWindow.WindowHandle(), &plainRect)) return 516;
+        const LONG plainWidth = plainRect.right - plainRect.left;
         // SetSourceText selects Preview when the preview is available.
         linkWindow.SetSourceText(L"[" + linkLabel + L"](https://example.com/p)");
         PumpMessagesFor(500);
@@ -3050,11 +3062,34 @@ int TestResultWindowLayoutContract() {
         const LONG linkShortWidth = linkShortRect.right - linkShortRect.left;
         const LONG linkLongWidth = linkLongRect.right - linkLongRect.left;
         const bool previewDraws = ControlText(linkWindow.WindowHandle(), 3120) == L"Source";
+        const bool widthReacts = plainWidth > linkShortWidth;
+        // Which of the two branches actually ran, reported exactly. The preview branch
+        // (target must NOT count) and the native branch (target MUST count) are mutually
+        // exclusive here: which one is available depends on whether the OCR preview host
+        // came up in this environment. When the window does not respond to a long plain
+        // text, "the widths are equal" proves nothing on either branch -- so that case is
+        // reported as unverified rather than passed, and the preview branch is never
+        // credited with a run that did not happen.
+        //
+        // The reason is stated as what was observed, not as a cause: a width that does
+        // not respond may be the automatic width ceiling, a failed relayout, or a
+        // refresh that never happened, and this probe cannot tell them apart. Calling it
+        // "capped" would assert a cause it has no evidence for -- and if this test is
+        // ever asked to act as a regression gate, its environment premise has to be
+        // established independently of the growth behaviour under test.
+        const char* branch = previewDraws
+            ? (widthReacts ? "preview=asserted" : "preview=NOT-VERIFIED(no width response)")
+            : (widthReacts ? "native=asserted" : "none=NOT-VERIFIED(no width response)");
         std::cout << "link target contract: preview=" << (previewDraws ? 1 : 0)
-                  << " width=" << linkShortWidth << " -> " << linkLongWidth << "\n";
-        const bool linkContractPassed =
-            previewDraws ? linkLongWidth == linkShortWidth : linkLongWidth > linkShortWidth;
-        if (!linkContractPassed) return 519;
+                  << " width=" << linkShortWidth << " -> " << linkLongWidth
+                  << " (plain probe " << plainWidth << ") branch=" << branch << "\n";
+        bool linkContractPassed = false;
+        if (widthReacts) {
+            linkContractPassed = previewDraws
+                ? linkLongWidth == linkShortWidth
+                : linkLongWidth > linkShortWidth;
+        }
+        if (!linkContractPassed && widthReacts) return 519;
         SendMessageW(linkWindow.WindowHandle(), WM_CLOSE, 0, 0);
         PumpMessagesFor(50);
     }
@@ -3161,7 +3196,7 @@ int TestProviderPromptAndSchemaContracts() {
 
     TranslationSettings freshDefaults;
     const auto& freshDefaultProfile = freshDefaults.providerProfiles.front();
-    if (freshDefaults.schemaVersion != 7 ||
+    if (freshDefaults.schemaVersion != 8 ||
         freshDefaults.providerProfiles.size() != 1 ||
         freshDefaults.activeProviderId != kDefaultTranslationProviderId ||
         freshDefaultProfile.id != kDefaultTranslationProviderId ||
@@ -3239,7 +3274,7 @@ int TestProviderPromptAndSchemaContracts() {
         [](const TranslationProviderProfile& profile) {
             return profile.id == kDefaultTranslationProviderId;
         });
-    if (restoredDefaults.schemaVersion != 7 ||
+    if (restoredDefaults.schemaVersion != 8 ||
         restoredDefaults.providerProfiles.size() != 2 ||
         restoredDefaults.activeProviderId !=
             kLegacyDeepSeekTranslationProviderId ||
@@ -3494,10 +3529,15 @@ int TestProviderPromptAndSchemaContracts() {
     if (!ParseTranslationSection(
             SerializeTranslationSection(builtInModelRoundTrip),
             decodedBuiltInModel, &error)) return 188;
+    // `tencent/Hunyuan-MT-7B` is in the preset's policy catalog but is no longer
+    // one of its display seeds. The profile keeps the user's model -- its request
+    // policy is unchanged, because the policy judge reads the catalog -- and gains
+    // the "Custom model" mark, which is what the page renders and what keeps the id
+    // reachable through the custom-model pool.
     const auto* decodedSiliconFlow = FindActiveTranslationProvider(
         decodedBuiltInModel);
     if (!decodedSiliconFlow || decodedSiliconFlow->model != L"tencent/Hunyuan-MT-7B" ||
-        decodedSiliconFlow->customModel) return 189;
+        !decodedSiliconFlow->customModel) return 189;
 
     // A model entered manually before it was added to the built-in catalog keeps
     // the user's mark: the catalog now decides the request shape, so no rewrite
@@ -3564,8 +3604,12 @@ int TestProviderPromptAndSchemaContracts() {
             [&](const TranslationProviderProfile& value) { return value.id == id; });
         if (profile == builtInValueRoundTrip.providerProfiles.end()) return 190;
         const auto* preset = FindBuiltInProviderPreset(id);
-        if (!preset || preset->models.size() < 2) return 191;
-        profile->model = preset->models[1];
+        // The second id of the *policy catalog*: a model this preset still claims a
+        // request policy for, but no longer offers as a display seed. Persisting it
+        // is exactly the case the seed/policy split must survive -- the model is
+        // kept (not rewritten to the seed) and gains the "Custom model" mark.
+        if (!preset || preset->modelPolicyIds.size() < 2) return 191;
+        profile->model = preset->modelPolicyIds[1];
         profile->customModel = false;
         profile->reasoningMode = GetCapabilities(*profile).defaultReasoning;
         profile->temperature = 0.7;
@@ -3589,6 +3633,7 @@ int TestProviderPromptAndSchemaContracts() {
             actual == decodedBuiltInValues.providerProfiles.end() ||
             actual->model != expected->model ||
             actual->reasoningMode != expected->reasoningMode ||
+            actual->customModel != expected->customModel ||
             !actual->temperature.has_value() ||
             std::abs(*actual->temperature - 0.7) > 0.0001) return 324;
     }
@@ -4139,11 +4184,11 @@ int TestExistingProviderWireContracts() {
     }
 
     {
-        auto profile = WireProfile(L"gemini", L"gemini-2.5-flash-lite");
+        auto profile = WireProfile(L"gemini", L"gemini-3.8-flash");
         profile.advancedOptionsJson =
             LR"({"top_p":0.2,"frequency_penalty":0.3,"presence_penalty":0.4,"seed":17})";
         nlohmann::json responseBody = {
-            {"modelVersion", "gemini-2.5-flash-lite"},
+            {"modelVersion", "gemini-3.8-flash"},
             {"candidates", nlohmann::json::array({{
                 {"finishReason", "STOP"},
                 {"content", {
@@ -4158,7 +4203,7 @@ int TestExistingProviderWireContracts() {
         const auto body = nlohmann::json::parse(call.body);
         const auto& config = body["generationConfig"];
         if (call.url != L"https://generativelanguage.googleapis.com/v1beta/models/"
-                L"gemini-2.5-flash-lite:generateContent" ||
+                L"gemini-3.8-flash:generateContent" ||
             !HasHeader(call.headers, L"X-Goog-Api-Key: contract-key") ||
             HasHeader(call.headers, L"Authorization:", true) ||
             !body.contains("systemInstruction") ||
@@ -4173,6 +4218,59 @@ int TestExistingProviderWireContracts() {
             config.value("presencePenalty", -1.0) != 0.4 ||
             config.value("seed", -1) != 17 ||
             config.contains("temperature") || body.contains("response_format")) return 403;
+    }
+
+    {
+        // A model that was not handed an API-level schema answers the way it writes
+        // everything else. Measured 2026-10-02 against gemini-3.8-flash with a real
+        // key (a custom id, so `responseMimeType` is deliberately not sent): the
+        // answer arrived inside a ```json fence and used to fail as invalid_json
+        // even though the object inside was exactly the contract. Two of three runs
+        // were fenced, so this is the common case for a custom model, not an edge.
+        // An id the preset does not publish is what the user was running when this
+        // was reported: no schema is sent for it, which is what leaves the model free
+        // to fence. (A policy-known id now takes the model-level path and gets
+        // `responseMimeType`, so the seed cannot even reach this state.)
+        auto profile = WireProfile(L"gemini", L"gemini-unlisted-probe");
+        profile.customModel = true;
+        const std::string fenced = "```json\n" + content + "\n```";
+        nlohmann::json envelope = {
+            {"modelVersion", "gemini-unlisted-probe"},
+            {"candidates", nlohmann::json::array({{
+                {"finishReason", "STOP"},
+                {"content", {{"role", "model"},
+                    {"parts", nlohmann::json::array({{{"text", fenced}}})}}},
+            }})},
+        };
+        CapturedProviderCall call;
+        if (!RunCapturedProvider(profile, makeResponse(envelope), call) ||
+            !call.result.success || call.result.translations.size() != 1 ||
+            call.result.translations.front().text != L"\u4f60\u597d") return 480;
+        // The conservative request shape is what makes the fence possible, so it is
+        // pinned here as well: a custom id gets no schema, while `off` must still
+        // reach the wire as thinkingBudget 0 on this surface.
+        const auto fencedRequest = nlohmann::json::parse(call.body);
+        const auto& fencedConfig = fencedRequest["generationConfig"];
+        if (fencedConfig.contains("responseMimeType") ||
+            !fencedConfig.contains("thinkingConfig") ||
+            fencedConfig["thinkingConfig"].value("thinkingBudget", -1) != 0 ||
+            fencedConfig["thinkingConfig"].value("includeThoughts", true)) return 481;
+
+        // Prose around the object is the same wrapper class.
+        nlohmann::json chatty = envelope;
+        chatty["candidates"][0]["content"]["parts"][0]["text"] =
+            "Sure! Here is the JSON: " + content + " Let me know if you need more.";
+        if (!RunCapturedProvider(profile, makeResponse(chatty), call) ||
+            !call.result.success) return 482;
+
+        // A genuinely malformed answer must still fail, and now says what arrived:
+        // "invalid JSON" alone cannot tell a fence from a truncation from prose.
+        nlohmann::json broken = envelope;
+        broken["candidates"][0]["content"]["parts"][0]["text"] =
+            "```json\n{ \"targetLanguage\": \n```";
+        if (!RunCapturedProvider(profile, makeResponse(broken), call) ||
+            call.result.success || call.result.code != ErrorCode::InvalidJson ||
+            call.result.error.find(L"Raw:") == std::wstring::npos) return 483;
     }
 
     {
@@ -4503,7 +4601,7 @@ int TestDirectMachineTranslationContracts() {
             [](const TranslationProviderProfile& profile) {
                 return profile.id == L"provider.legacy.azure";
             });
-        if (migrated.schemaVersion != 7 ||
+        if (migrated.schemaVersion != 8 ||
             migrated.providerProfiles.size() != 2 ||
             migrated.activeProviderId != L"provider.legacy.azure" ||
             azureProfile == migrated.providerProfiles.end() ||
@@ -4620,7 +4718,7 @@ int TestDirectMachineTranslationContracts() {
         const std::wstring serialized = SerializeTranslationSection(factorySettings);
         TranslationSettings restored;
         if (!ParseTranslationSection(serialized, restored, &error) ||
-            restored.schemaVersion != 7 ||
+            restored.schemaVersion != 8 ||
             restored.providerProfiles.size() != 2 ||
             restored.providerProfiles[0].region != L"eastasia" ||
             !restored.providerProfiles[0].model.empty()) return 429;
@@ -4964,6 +5062,11 @@ int TestCommunityAndExpandedProviderContracts() {
             L"http://127.0.0.1:1188/translate") return 477;
     }
 
+    // `model`/`modelCount`/`finalModel` describe the preset's *policy catalog* --
+    // every id whose request policy the model-level table claims -- while the page
+    // only ever offers the first entry of it (the display seed). Both are pinned
+    // here: the catalog is what keeps an already-stored model on its policy after a
+    // seed list is slimmed, and the seed is what a user can click.
     const struct ExpandedLlmContract {
         const wchar_t* kind;
         const wchar_t* model;
@@ -5001,9 +5104,13 @@ int TestCommunityAndExpandedProviderContracts() {
     };
     for (const auto& contract : llmContracts) {
         const auto* preset = FindTranslationProviderPreset(contract.kind);
-        if (!preset || preset->models.size() != contract.modelCount ||
-            preset->models.front() != contract.model ||
-            preset->models.back() != contract.finalModel) return 452;
+        if (!preset || preset->modelPolicyIds.size() != contract.modelCount ||
+            preset->modelPolicyIds.front() != contract.model ||
+            preset->modelPolicyIds.back() != contract.finalModel) return 452;
+        // The offered list is the head of the policy catalog -- never a second,
+        // independently maintained list that could drift away from it.
+        if (preset->models.size() != 1 ||
+            preset->models.front() != preset->modelPolicyIds.front()) return 456;
         auto profile = CreateTranslationProviderProfile(
             *preset, L"provider.expanded." + std::wstring(contract.kind));
         if (profile.enabled || profile.temperature.has_value()) return 453;
@@ -6342,7 +6449,7 @@ int TestSettingsRoundTrip() {
     S::SetLanguage(true);
     const TranslationSettings initialTranslation = LoadTranslationSettings();
     if (initialTranslation.targetLanguage != L"auto" ||
-        initialTranslation.schemaVersion != 7 ||
+        initialTranslation.schemaVersion != 8 ||
         !initialTranslation.selectionCopyFallbackEnabled) {
         return 22;
     }
@@ -6361,7 +6468,7 @@ int TestSettingsRoundTrip() {
         !migratedV0.selectionCopyFallbackEnabled) return 37;
     SaveTranslationSettings(migratedV0);
     const std::string migratedJson = ReadBytes(settingsPath);
-    if (!Contains(migratedJson, "\"schemaVersion\": 7") ||
+    if (!Contains(migratedJson, "\"schemaVersion\": 8") ||
         !Contains(migratedJson, "\"targetLanguage\": \"auto\"")) return 38;
 
     if (!WriteUtf8(settingsPath,
@@ -8499,6 +8606,1727 @@ int TestSettingsHostTabTraversal() {
     return result;
 }
 
+// API protocol ("Base URL" + protocol composition), the model catalogue actions
+// and the vendor error envelope. This is the regression lock for the settings
+// redesign: the profile that used to answer a bare "(404)." -- a complete Gemini
+// OpenAI-compatible URL pasted into a field that wanted a Base URL -- must compose
+// to the same request URL it always did, while the reasoning tiers a *custom*
+// model on that endpoint can pick now include Off.
+int TestProviderProtocolAndModelCatalogContract() {
+    using namespace translation;
+    std::wstring error;
+
+    const auto* geminiPreset = FindTranslationProviderPreset(L"gemini");
+    const auto* customPreset =
+        FindTranslationProviderPreset(L"custom-openai-compatible");
+    const auto* ollamaPreset = FindTranslationProviderPreset(L"ollama");
+    const auto* deepseekPreset = FindTranslationProviderPreset(L"deepseek");
+    const auto* deeplxPreset = FindTranslationProviderPreset(L"deeplx-custom");
+    if (!geminiPreset || !customPreset || !ollamaPreset || !deepseekPreset ||
+        !deeplxPreset) return 900;
+
+    // The native protocol is always the first entry, so every stored profile keeps
+    // validating; the extra entries are the surfaces the same vendor also serves.
+    if (geminiPreset->protocols.size() != 2 ||
+        geminiPreset->protocols.front().adapter !=
+            TranslationAdapterKind::GeminiGenerateContent ||
+        geminiPreset->protocols.back().adapter !=
+            TranslationAdapterKind::OpenAIChatCompletions ||
+        geminiPreset->protocols.back().baseUrl !=
+            L"https://generativelanguage.googleapis.com/v1beta/openai/") return 901;
+    if (customPreset->protocols.size() != 3 || ollamaPreset->protocols.size() != 1 ||
+        deepseekPreset->protocols.size() != 1 || deeplxPreset->protocols.size() != 1) {
+        return 902;
+    }
+    if (deepseekPreset->protocols.front().baseUrl != L"https://api.deepseek.com/") {
+        return 903;
+    }
+    // Listing metadata is per protocol: Gemini's native surface answers
+    // `{"models":[{"name":"models/.."}]}`, its OpenAI-compatible surface the
+    // OpenAI envelope, Ollama its own tags path, and machine translation nothing.
+    if (geminiPreset->protocols.front().modelListProtocol !=
+            ModelListProtocol::GoogleModels ||
+        geminiPreset->protocols.back().modelListProtocol !=
+            ModelListProtocol::OpenAiData ||
+        ollamaPreset->protocols.front().modelListPath != L"api/tags" ||
+        ollamaPreset->protocols.front().modelListProtocol !=
+            ModelListProtocol::OllamaTags ||
+        deeplxPreset->protocols.front().modelListProtocol !=
+            ModelListProtocol::None) return 904;
+    // The auth surface follows the protocol, not the vendor name.
+    if (ProviderAuthModes(*geminiPreset,
+            TranslationAdapterKind::GeminiGenerateContent) !=
+            std::set<TranslationAuthMode>{TranslationAuthMode::ApiKey} ||
+        ProviderAuthModes(*geminiPreset,
+            TranslationAdapterKind::OpenAIChatCompletions) !=
+            std::set<TranslationAuthMode>{TranslationAuthMode::BearerApiKey}) {
+        return 905;
+    }
+    if (NormalizeProviderAdapter(*geminiPreset,
+            TranslationAdapterKind::OpenAIChatCompletions) !=
+            TranslationAdapterKind::OpenAIChatCompletions ||
+        NormalizeProviderAdapter(*customPreset,
+            TranslationAdapterKind::MachineTranslation) !=
+            TranslationAdapterKind::OpenAIChatCompletions) return 906;
+
+    // Splitting a complete request URL into a base is idempotent, matches whole
+    // path segments only, and never touches machine translation.
+    if (BaseUrlFromRequestEndpoint(L"https://api.openai.com/v1/chat/completions", true) !=
+            L"https://api.openai.com/v1/" ||
+        BaseUrlFromRequestEndpoint(L"https://api.openai.com/v1/", true) !=
+            L"https://api.openai.com/v1/" ||
+        BaseUrlFromRequestEndpoint(L"https://api.deepseek.com/chat/completions", true) !=
+            L"https://api.deepseek.com/" ||
+        BaseUrlFromRequestEndpoint(L"https://api.x.ai/v1/responses", true) !=
+            L"https://api.x.ai/v1/" ||
+        BaseUrlFromRequestEndpoint(L"http://127.0.0.1:11434/api/chat", true) !=
+            L"http://127.0.0.1:11434/" ||
+        BaseUrlFromRequestEndpoint(L"https://host/v1/proxyresponses", true) !=
+            L"https://host/v1/proxyresponses/" ||
+        BaseUrlFromRequestEndpoint(L"https://deeplx.example/translate", false) !=
+            L"https://deeplx.example/translate") return 907;
+
+    TranslationProviderProfile profile;
+    profile.id = L"provider.protocol.contract";
+    profile.displayName = L"Protocol Contract";
+    profile.presetKind = L"gemini";
+    profile.adapterKind = TranslationAdapterKind::GeminiGenerateContent;
+    profile.authMode = TranslationAuthMode::ApiKey;
+    profile.model = L"models/gemini-3.8-flash";
+    profile.customModel = true;
+    profile.credentialRef = L"ZenCrop/Translation/provider/provider.protocol.contract";
+    profile.reasoningMode = TranslationReasoningMode::ProviderDefault;
+    // The native surface keeps its own path, with the `models/` prefix normalized
+    // so either spelling of the id composes once.
+    if (ResolveProviderEndpoint(profile, &error) !=
+        L"https://generativelanguage.googleapis.com/v1beta/models/"
+        L"gemini-3.8-flash:generateContent") return 908;
+    if (GetCapabilities(profile).reasoningWireFormat !=
+        ReasoningWireFormat::GeminiThinkingBudget) return 909;
+    // The user's failing profile: the *same* vendor over the OpenAI-compatible
+    // surface. Bearer auth, the OpenAI request path, and the OpenAI reasoning
+    // dialect -- the native `generationConfig` must not be injected into an
+    // OpenAI-shaped body.
+    profile.adapterKind = TranslationAdapterKind::OpenAIChatCompletions;
+    profile.authMode = TranslationAuthMode::BearerApiKey;
+    if (ResolveProviderEndpoint(profile, &error) !=
+        L"https://generativelanguage.googleapis.com/v1beta/openai/"
+        L"chat/completions") return 910;
+    const auto compatCapabilities = GetCapabilities(profile);
+    if (compatCapabilities.reasoningWireFormat !=
+            ReasoningWireFormat::OpenAiReasoningEffort ||
+        !compatCapabilities.reasoningModes.count(TranslationReasoningMode::Off) ||
+        !compatCapabilities.reasoningModes.count(
+            TranslationReasoningMode::ProviderDefault)) return 911;
+
+    // A stored *complete* URL keeps composing to the very URL it always did: this
+    // is what makes the Base URL semantics a display change for existing profiles
+    // instead of a migration that could break them.
+    TranslationProviderProfile legacy;
+    legacy.id = L"provider.legacy.custom";
+    legacy.displayName = L"Legacy Custom";
+    legacy.presetKind = L"custom-openai-compatible";
+    legacy.adapterKind = TranslationAdapterKind::OpenAIChatCompletions;
+    legacy.authMode = TranslationAuthMode::BearerApiKey;
+    legacy.baseUrlOverride =
+        L"https://generativelanguage.googleapis.com/v1beta/openai/chat/completions";
+    legacy.model = L"models/gemini-3.8-flash";
+    legacy.customModel = true;
+    legacy.credentialRef = L"ZenCrop/Translation/provider/provider.legacy.custom";
+    legacy.reasoningMode = TranslationReasoningMode::ProviderDefault;
+    // Compared against the literal, not against the input field: comparing with
+    // `legacy.baseUrlOverride` would also pass if the resolver degraded into an
+    // identity function.
+    if (ResolveProviderEndpoint(legacy, &error) !=
+        L"https://generativelanguage.googleapis.com/v1beta/openai/chat/completions") {
+        return 912;
+    }
+    if (ResolveProviderBaseUrl(legacy, &error) !=
+        L"https://generativelanguage.googleapis.com/v1beta/openai/") return 913;
+    // Custom models on a user-supplied endpoint can finally turn thinking off.
+    const auto legacyCapabilities = GetCapabilities(legacy);
+    if (legacyCapabilities.reasoningWireFormat !=
+            ReasoningWireFormat::OpenAiReasoningEffort ||
+        !legacyCapabilities.reasoningModes.count(TranslationReasoningMode::Off)) {
+        return 914;
+    }
+    // The *body* has to agree with the path about which spelling of the id a request
+    // carries. Only the path builder knew about the `models/` prefix, so this same
+    // stored profile -- legal on the native surface, and what Google's own listing
+    // reports -- sent `models/gemini-3.8-flash` as the `model` of an OpenAI-shaped
+    // body, a spelling the compatible surface does not understand. `profile` here is
+    // Google's own preset on its compatible protocol (set up above), which is the case
+    // that must be normalized -- a *custom* endpoint is covered separately below,
+    // because there the id belongs to whoever runs it.
+    if (RequestModelId(profile) != L"gemini-3.8-flash") return 1040;
+    {
+        HttpResponse okResponse;
+        okResponse.statusCode = 200;
+        okResponse.contentType = L"application/json";
+        okResponse.body = nlohmann::json({
+            {"model", "gemini-3.8-flash"},
+            {"choices", nlohmann::json::array({{
+                {"message", {{"role", "assistant"},
+                    {"content", StructuredTranslationContent()}}},
+                {"finish_reason", "stop"},
+            }})},
+        }).dump();
+        CapturedProviderCall call;
+        if (!RunCapturedProvider(profile, okResponse, call) || !call.result.success) {
+            return 1041;
+        }
+        const nlohmann::json body = nlohmann::json::parse(call.body);
+        if (body.value("model", std::string()) != "gemini-3.8-flash") return 1042;
+    }
+    // Only a *leading* `models/` is Google's spelling: another vendor's id may carry
+    // those characters further in, and a preset with no Gemini surface keeps its id
+    // exactly as written.
+    {
+        TranslationProviderProfile fireworks;
+        fireworks.presetKind = L"fireworks";
+        fireworks.model = L"accounts/fireworks/models/llama-v3p1-8b-instruct";
+        if (RequestModelId(fireworks) != fireworks.model) return 1043;
+        TranslationProviderProfile nonGemini;
+        nonGemini.presetKind = L"openrouter";
+        nonGemini.model = L"models/not-a-google-id";
+        if (RequestModelId(nonGemini) != nonGemini.model) return 1044;
+        // A custom endpoint on the OpenAI-chat protocol is *not* Google's, even though
+        // its preset also offers the Gemini protocol: a private gateway whose ids
+        // legitimately start with `models/` must keep its namespace. Keying the strip
+        // on "the preset offers Gemini" removed it for every custom endpoint.
+        {
+            TranslationProviderProfile gateway = legacy;
+            gateway.model = L"models/my-llama";
+            if (RequestModelId(gateway) != L"models/my-llama") return 1048;
+        }
+        // The same custom endpoint *on the native Gemini surface* still needs the
+        // strip, because there the composer writes the prefix itself.
+        {
+            TranslationProviderProfile customNative = legacy;
+            customNative.adapterKind =
+                TranslationAdapterKind::GeminiGenerateContent;
+            customNative.authMode = TranslationAuthMode::ApiKey;
+            customNative.model = L"models/gemini-3.8-flash";
+            if (RequestModelId(customNative) != L"gemini-3.8-flash") return 1049;
+            const std::wstring nativeUrl =
+                ResolveProviderEndpoint(customNative, &error);
+            if (nativeUrl.find(L"models/models/") != std::wstring::npos ||
+                nativeUrl.find(L"/models/gemini-3.8-flash:generateContent") ==
+                    std::wstring::npos) {
+                return 1050;
+            }
+        }
+    }
+
+    // --- capacity has to include the model the page adds after the pool write ----
+    // "Set active" on an unlisted id is applied after the pool is written, and the
+    // writer's answer to a full pool is to drop its oldest entry. Counting only the
+    // checkboxes therefore evicted a model with no warning at all, one click after
+    // the dialog promised that nothing would be.
+    if (!PoolFitsWithinCapacity(49, 1, 50) ||
+        !PoolFitsWithinCapacity(50, 0, 50) ||
+        !PoolFitsWithinCapacity(0, 100, 0) /* 0 = unlimited */ ||
+        PoolFitsWithinCapacity(50, 1, 50) ||
+        PoolFitsWithinCapacity(51, 0, 50)) {
+        return 1051;
+    }
+    // The other half of the same promise: a catalog model can never enter the pool, so
+    // a row the picker refuses to check cannot come back through the save either.
+    {
+        TranslationProviderProfile seedProbe;
+        seedProbe.presetKind = L"gemini";
+        const auto* geminiPreset = FindTranslationProviderPreset(L"gemini");
+        if (!geminiPreset || geminiPreset->models.empty()) return 1052;
+        if (!SetCustomModelPool(
+                seedProbe, {geminiPreset->models.front(), L"vendor/one"}) ||
+            seedProbe.customModels.size() != 1 ||
+            seedProbe.customModels.front() != L"vendor/one") {
+            return 1053;
+        }
+    }
+
+    // --- Google's listing: generators only, and honest about being one page ------
+    {
+        HttpResponse geminiList;
+        geminiList.statusCode = 200;
+        geminiList.contentType = L"application/json";
+        geminiList.body = R"({"models":[)"
+            R"({"name":"models/gemini-3.8-flash","displayName":"Flash",)"
+            R"("supportedGenerationMethods":["generateContent","countTokens"]},)"
+            R"({"name":"models/text-embedding-004",)"
+            R"("supportedGenerationMethods":["embedContent"]},)"
+            R"({"name":"models/no-methods-field"}]})";
+        const auto parsed = ParseModelListResponse(
+            ModelListProtocol::GoogleModels, geminiList);
+        // An embedding-only model cannot be sent to generateContent, and a gateway
+        // that leaves the field out is not evidence that it cannot generate.
+        if (!parsed.error.empty() || parsed.models.size() != 2 ||
+            parsed.models[0].id != L"gemini-3.8-flash" ||
+            parsed.models[0].label != L"Flash" ||
+            parsed.models[1].id != L"no-methods-field" ||
+            !parsed.complete) {
+            return 1054;
+        }
+        // Google's list is paged; a token means this is not the whole catalogue, and
+        // the advice that reads the catalogue has to be told.
+        HttpResponse paged = geminiList;
+        paged.body =
+            R"({"models":[{"name":"models/gemini-3.8-flash"}],)"
+            R"("nextPageToken":"CigK"})";
+        const auto pagedParsed = ParseModelListResponse(
+            ModelListProtocol::GoogleModels, paged);
+        if (pagedParsed.complete || pagedParsed.models.size() != 1) return 1056;
+        // And the request asks for the documented maximum in one go.
+        TranslationProviderProfile geminiProfile;
+        geminiProfile.presetKind = L"gemini";
+        geminiProfile.adapterKind = TranslationAdapterKind::GeminiGenerateContent;
+        const auto plan = PlanModelListFetch(geminiProfile, L"key", &error);
+        if (!plan.supported || plan.url.find(L"pageSize=") == std::wstring::npos) {
+            return 1057;
+        }
+    }
+
+    // --- a stored endpoint keeps the meaning its file gave it -------------------
+    // Before v8 the stored value *was* the request URL and was sent verbatim, so
+    // `https://gateway.example/invoke` has to stay that address. The file's own
+    // version is the only fact that can tell the two meanings apart -- the value
+    // itself does not (`.../v1` is a base, `.../invoke` is not).
+    {
+        const auto legacySection = [](const wchar_t* version) {
+            return std::wstring(
+                L"{\"schemaVersion\":") + version +
+                L",\"activeProviderId\":\"provider.legacy.endpoint\","
+                L"\"providerProfiles\":[{"
+                L"\"id\":\"provider.legacy.endpoint\","
+                L"\"displayName\":\"Legacy Gateway\","
+                L"\"presetKind\":\"custom-openai-compatible\","
+                L"\"adapterKind\":\"openai-chat-completions\","
+                L"\"authMode\":\"bearer-api-key\","
+                L"\"baseUrlOverride\":\"https://gateway.example/invoke\","
+                L"\"model\":\"vendor/one\",\"customModel\":true,"
+                L"\"credentialRef\":\"ZenCrop/Translation/provider/provider.legacy.endpoint\","
+                L"\"advancedOptionsJson\":\"{}\"}]}";
+        };
+        TranslationSettings legacy;
+        if (!ParseTranslationSection(
+                legacySection(L"7"), legacy, &error, nullptr)) {
+            return 1058;
+        }
+        const auto legacyProfile = std::find_if(
+            legacy.providerProfiles.begin(), legacy.providerProfiles.end(),
+            [](const TranslationProviderProfile& profile) {
+                return profile.id == L"provider.legacy.endpoint";
+            });
+        if (legacyProfile == legacy.providerProfiles.end() ||
+            !legacyProfile->completeEndpointOverride) {
+            return 1059;
+        }
+        if (ResolveProviderEndpoint(*legacyProfile, &error) !=
+                L"https://gateway.example/invoke") {
+            return 1060;
+        }
+        // The bit is persisted, so the first save after the upgrade does not lose the
+        // only thing that kept this profile's URL intact.
+        TranslationSettings legacySaved = legacy;
+        if (!NormalizeTranslationSettingsForPersistence(legacySaved, &error)) {
+            return 1061;
+        }
+        const auto savedProfile = std::find_if(
+            legacySaved.providerProfiles.begin(),
+            legacySaved.providerProfiles.end(),
+            [](const TranslationProviderProfile& profile) {
+                return profile.id == L"provider.legacy.endpoint";
+            });
+        if (savedProfile == legacySaved.providerProfiles.end() ||
+            !savedProfile->completeEndpointOverride ||
+            ResolveProviderEndpoint(*savedProfile, &error) !=
+                L"https://gateway.example/invoke") {
+            return 1062;
+        }
+        // A file written under the new semantics gets the new semantics: the value is
+        // a base and the protocol path is appended to it.
+        TranslationSettings current;
+        if (!ParseTranslationSection(
+                legacySection(L"8"), current, &error, nullptr)) {
+            return 1063;
+        }
+        const auto currentProfile = std::find_if(
+            current.providerProfiles.begin(), current.providerProfiles.end(),
+            [](const TranslationProviderProfile& profile) {
+                return profile.id == L"provider.legacy.endpoint";
+            });
+        if (currentProfile == current.providerProfiles.end() ||
+            currentProfile->completeEndpointOverride ||
+            ResolveProviderEndpoint(*currentProfile, &error) !=
+                L"https://gateway.example/invoke/chat/completions") {
+            return 1064;
+        }
+        // And the ordinary new shape, plus the query-string rule that predates all of
+        // this and still holds.
+        TranslationProviderProfile fresh;
+        fresh.presetKind = L"custom-openai-compatible";
+        fresh.adapterKind = TranslationAdapterKind::OpenAIChatCompletions;
+        fresh.authMode = TranslationAuthMode::BearerApiKey;
+        fresh.baseUrlOverride = L"https://gateway.example/v1";
+        if (ResolveProviderEndpoint(fresh, &error) !=
+                L"https://gateway.example/v1/chat/completions") {
+            return 1065;
+        }
+        fresh.baseUrlOverride = L"https://gw.example/chat/completions?api-version=3.0";
+        if (ResolveProviderEndpoint(fresh, &error) !=
+                L"https://gw.example/chat/completions?api-version=3.0") {
+            return 1066;
+        }
+    }
+
+    // --- unmeasured effort tiers are not offered, the dialect still is ----------
+    // The seven OpenAI-shaped providers below have no measured request behind
+    // `reasoning_effort` for a model outside our catalogue, so a custom model there
+    // gets `ProviderDefault` and nothing else -- the state it had before any dialect
+    // was applied to it. What must survive the narrowing is the *field placement*:
+    // a Gemini body still must not receive an OpenAI field (a hard 400).
+    {
+        const LlmModelPolicy customGroq =
+            ResolveLlmModelPolicy(L"groq", L"vendor/whatever", true);
+        if (customGroq.reasoningModes.size() != 1 ||
+            *customGroq.reasoningModes.begin() !=
+                TranslationReasoningMode::ProviderDefault ||
+            customGroq.defaultReasoning !=
+                TranslationReasoningMode::ProviderDefault ||
+            customGroq.reasoningWireFormat !=
+                ReasoningWireFormat::OpenAiReasoningEffort) {
+            return 1067;
+        }
+        // The narrowing must not touch *where* the field goes: over the Gemini
+        // surface the same provider still speaks its own dialect, which is the
+        // invariant whose violation is a 400 rather than a missing feature. (No
+        // current protocol table pairs this preset with that surface -- that is why the
+        // walk over preset x protocol pairs is green -- so this pins the answer rather
+        // than a reachable request.)
+        const LlmModelPolicy customGroqGemini = ResolveLlmModelPolicy(
+            L"groq", L"vendor/whatever", true,
+            TranslationAdapterKind::GeminiGenerateContent);
+        if (customGroqGemini.reasoningWireFormat !=
+            ReasoningWireFormat::GeminiThinkingBudget) {
+            return 1068;
+        }
+        // OpenRouter keeps its ladder: that one is measured, and the numbers are in
+        // the policy's own comment.
+        const LlmModelPolicy customOpenRouter =
+            ResolveLlmModelPolicy(L"openrouter", L"vendor/whatever", true);
+        if (customOpenRouter.reasoningModes.size() < 2) return 1069;
+    }
+
+    // --- fetching a listing must not require a model ----------------------------
+    // A preset with no seeds starts with an empty model, and the page invites the user
+    // to fetch the list before choosing one. Validating the whole translation profile
+    // before the fetch made that circular: the only action that could tell the user
+    // which models exist was refused for not having a model yet. The listing is
+    // validated against what it uses -- protocol, address, auth mode -- and the
+    // translation path still refuses the same profile.
+    {
+        const struct SeedlessFetch {
+            const wchar_t* kind;
+            TranslationAdapterKind adapter;
+            const wchar_t* base;
+        } seedless[] = {
+            {L"openrouter", TranslationAdapterKind::OpenAIChatCompletions, L""},
+            {L"ollama", TranslationAdapterKind::OllamaChat, L""},
+            {L"custom-openai-compatible",
+                TranslationAdapterKind::OpenAIChatCompletions,
+                L"https://gateway.example/v1/"},
+        };
+        for (const auto& target : seedless) {
+            TranslationProviderProfile fresh;
+            fresh.id = L"provider.fetch.firstrun";
+            fresh.displayName = L"First run";
+            fresh.presetKind = target.kind;
+            fresh.adapterKind = target.adapter;
+            fresh.authMode = (target.kind == L"ollama")
+                ? TranslationAuthMode::None : TranslationAuthMode::BearerApiKey;
+            fresh.baseUrlOverride = target.base;
+            fresh.model = L"";
+            fresh.customModel = false;
+            fresh.credentialRef = L"ZenCrop/Translation/provider/provider.fetch.firstrun";
+            // No model, and that is the whole point: the listing target is ready.
+            std::wstring listingError;
+            if (!ValidateListingTarget(fresh, &listingError)) return 1070;
+            const auto plan = PlanModelListFetch(fresh, L"key", &listingError);
+            if (!plan.supported || plan.url.empty()) return 1071;
+            // The same profile still cannot translate, and no fetch above changed that.
+            std::wstring profileError;
+            if (IsSupportedProviderProfile(fresh, &profileError)) return 1072;
+            // A listing that *does* need a key says so instead of asking anyway.
+            if (target.kind != L"ollama" &&
+                PlanModelListFetch(fresh, L"", &listingError).supported) {
+                return 1073;
+            }
+        }
+        // An unsupported auth mode is refused before a request is built, not after.
+        TranslationProviderProfile badAuth;
+        badAuth.presetKind = L"openrouter";
+        badAuth.adapterKind = TranslationAdapterKind::OpenAIChatCompletions;
+        badAuth.authMode = TranslationAuthMode::ApiKey;
+        std::wstring authError;
+        if (ValidateListingTarget(badAuth, &authError)) return 1074;
+    }
+
+    // --- the fetch gate must read the *protocol's* auth set ---------------------
+    // Gemini's vendor default is `{ApiKey}` (the Google header) while its OpenAI-
+    // compatible surface declares `{BearerApiKey}`. Validating the fetch against the
+    // preset default refused a fetch on the very surface whose own protocol says
+    // Bearer is right -- before any request went out.
+    {
+        const struct ProtocolAuth {
+            TranslationAdapterKind adapter;
+            TranslationAuthMode mode;
+            bool accepted;
+        } geminiAuths[] = {
+            {TranslationAdapterKind::GeminiGenerateContent,
+                TranslationAuthMode::ApiKey, true},
+            {TranslationAdapterKind::GeminiGenerateContent,
+                TranslationAuthMode::BearerApiKey, false},
+            {TranslationAdapterKind::OpenAIChatCompletions,
+                TranslationAuthMode::BearerApiKey, true},
+            {TranslationAdapterKind::OpenAIChatCompletions,
+                TranslationAuthMode::ApiKey, false},
+        };
+        for (const auto& entry : geminiAuths) {
+            TranslationProviderProfile geminiSurface;
+            geminiSurface.id = L"provider.fetch.gemini";
+            geminiSurface.displayName = L"Gemini surface";
+            geminiSurface.presetKind = L"gemini";
+            geminiSurface.adapterKind = entry.adapter;
+            geminiSurface.authMode = entry.mode;
+            geminiSurface.credentialRef =
+                L"ZenCrop/Translation/provider/provider.fetch.gemini";
+            std::wstring authError;
+            if (ValidateListingTarget(geminiSurface, &authError) !=
+                entry.accepted) {
+                return 1091;
+            }
+        }
+    }
+
+    // --- a machine-translation endpoint keeps its complete URL ------------------
+    // The base/path split is an LLM concept. A DeepLX-style self-hosted service may
+    // live at a path that happens to end in a known request path, and the MT resolver
+    // hands the stored value over untouched -- so the migration must not touch it.
+    {
+        const std::wstring deeplxSection =
+            L"{\"schemaVersion\":7,\"activeProviderId\":\"provider.legacy.deeplx\","
+            L"\"providerProfiles\":[{"
+            L"\"id\":\"provider.legacy.deeplx\",\"displayName\":\"DeepLX custom\","
+            L"\"presetKind\":\"deeplx-custom\","
+            L"\"adapterKind\":\"machine-translation\","
+            L"\"authMode\":\"none\","
+            L"\"baseUrlOverride\":\"https://gateway.example/responses\","
+            L"\"model\":\"\",\"customModel\":false,"
+            L"\"credentialRef\":\"\","
+            L"\"advancedOptionsJson\":\"{}\"}]}";
+        TranslationSettings deeplx;
+        if (!ParseTranslationSection(deeplxSection, deeplx, &error, nullptr)) {
+            return 1092;
+        }
+        const auto mtProfile = std::find_if(
+            deeplx.providerProfiles.begin(), deeplx.providerProfiles.end(),
+            [](const TranslationProviderProfile& profile) {
+                return profile.id == L"provider.legacy.deeplx";
+            });
+        if (mtProfile == deeplx.providerProfiles.end() ||
+            mtProfile->completeEndpointOverride ||
+            mtProfile->baseUrlOverride != L"https://gateway.example/responses" ||
+            ResolveProviderEndpoint(*mtProfile, &error) !=
+                L"https://gateway.example/responses") {
+            return 1093;
+        }
+        // And it survives a save/reload round trip unchanged: the value the request
+        // uses after writing the file and reading it back is the same address.
+        TranslationSettings mtSaved = deeplx;
+        if (!NormalizeTranslationSettingsForPersistence(mtSaved, &error)) {
+            return 1094;
+        }
+        TranslationSettings mtReloaded;
+        if (!ParseTranslationSection(
+                SerializeTranslationSection(mtSaved), mtReloaded, &error, nullptr)) {
+            return 1094;
+        }
+        const auto mtAgain = std::find_if(
+            mtReloaded.providerProfiles.begin(),
+            mtReloaded.providerProfiles.end(),
+            [](const TranslationProviderProfile& profile) {
+                return profile.id == L"provider.legacy.deeplx";
+            });
+        if (mtAgain == mtReloaded.providerProfiles.end() ||
+            ResolveProviderEndpoint(*mtAgain, &error) !=
+                L"https://gateway.example/responses") {
+            return 1094;
+        }
+    }
+
+    // --- a complete address is one, whichever reason it has ---------------------
+    // Two reasons lead here -- the reader's mark, and a query string -- and both must
+    // block a protocol switch, because the resolver sends the stored address as it
+    // stands and the new protocol's body would go to the old protocol's path.
+    {
+        // The *edited* case, which the mark alone got wrong: clearing the bit on edit
+        // (the field changed) left the page free to show the derived base, and the base
+        // normalization appends a slash *after* the query -- so a version bump from 3.0
+        // to 3.1 came back as `?api-version=3.1/` and that was what a later Apply wrote
+        // into the profile. The predicate, not the bit, is what the display asks.
+        TranslationProviderProfile edited;
+        edited.id = L"provider.edited.pinned";
+        edited.displayName = L"Edited pinned gateway";
+        edited.presetKind = L"custom-openai-compatible";
+        edited.adapterKind = TranslationAdapterKind::OpenAIChatCompletions;
+        edited.authMode = TranslationAuthMode::BearerApiKey;
+        edited.credentialRef =
+            L"ZenCrop/Translation/provider/provider.edited.pinned";
+        edited.model = L"vendor/one";
+        edited.customModel = true;
+        // The mark is cleared the moment the field changes -- that part was right; what
+        // was wrong is that anything downstream still decided from the mark.
+        edited.completeEndpointOverride = false;
+        edited.baseUrlOverride =
+            L"https://gateway.example/v1/chat/completions?api-version=3.1";
+        if (!EndpointIsCompleteRequestUrl(edited)) return 1100;
+        // So the resolver keeps the edited value byte for byte, and a save/reload
+        // round trip does not move it either.
+        if (ResolveProviderEndpoint(edited, &error) !=
+            L"https://gateway.example/v1/chat/completions?api-version=3.1") {
+            return 1101;
+        }
+        TranslationSettings editedSettings;
+        editedSettings.providerProfiles.push_back(edited);
+        editedSettings.activeProviderId = edited.id;
+        if (!NormalizeTranslationSettingsForPersistence(editedSettings, &error)) {
+            return 1102;
+        }
+        TranslationSettings editedReloaded;
+        if (!ParseTranslationSection(
+                SerializeTranslationSection(editedSettings), editedReloaded,
+                &error, nullptr)) {
+            return 1102;
+        }
+        const std::wstring editedId = edited.id;
+        const auto editedAgain = std::find_if(
+            editedReloaded.providerProfiles.begin(),
+            editedReloaded.providerProfiles.end(),
+            [&editedId](const TranslationProviderProfile& profile) {
+                return profile.id == editedId;
+            });
+        if (editedAgain == editedReloaded.providerProfiles.end() ||
+            editedAgain->baseUrlOverride !=
+                L"https://gateway.example/v1/chat/completions?api-version=3.1" ||
+            ResolveProviderEndpoint(*editedAgain, &error) !=
+                L"https://gateway.example/v1/chat/completions?api-version=3.1") {
+            return 1103;
+        }
+    }
+    {
+        // A complete address has no derivable listing address, so all three listing
+        // answers say so: the button greys out, the gate refuses with the reason, and no
+        // request is planned. Appending the listing path to this value would put `models`
+        // inside the query string.
+        const std::wstring pinnedEndpoint =
+            L"https://gateway.example/v1/chat/completions?api-version=3.0";
+        TranslationProviderProfile unpickable;
+        unpickable.id = L"provider.fetch.pinned";
+        unpickable.presetKind = L"custom-openai-compatible";
+        unpickable.adapterKind = TranslationAdapterKind::OpenAIChatCompletions;
+        unpickable.authMode = TranslationAuthMode::BearerApiKey;
+        unpickable.baseUrlOverride = pinnedEndpoint;
+        unpickable.model = L"vendor/one";
+        unpickable.credentialRef =
+            L"ZenCrop/Translation/provider/provider.fetch.pinned";
+        if (SupportsModelListing(unpickable)) return 1104;
+        std::wstring refuseError;
+        if (ValidateListingTarget(unpickable, &refuseError) ||
+            refuseError.find(L"complete request URL") == std::wstring::npos) {
+            return 1105;
+        }
+        const auto blockedPlan = PlanModelListFetch(
+            unpickable, L"key", &refuseError);
+        if (blockedPlan.supported ||
+            refuseError.find(L"complete request URL") == std::wstring::npos) {
+            return 1106;
+        }
+        // The same profile with a base is fetchable again -- the refusal is about the
+        // address shape, not about the provider.
+        unpickable.baseUrlOverride = L"https://gateway.example/v1/";
+        std::wstring baseError;
+        if (!ValidateListingTarget(unpickable, &baseError) ||
+            !SupportsModelListing(unpickable) ||
+            !PlanModelListFetch(unpickable, L"key", &baseError).supported) {
+            return 1107;
+        }
+    }
+    {
+        const std::wstring pinnedSection =
+            L"{\"schemaVersion\":7,\"activeProviderId\":\"provider.legacy.pinned\","
+            L"\"providerProfiles\":[{"
+            L"\"id\":\"provider.legacy.pinned\",\"displayName\":\"Pinned gateway\","
+            L"\"presetKind\":\"custom-openai-compatible\","
+            L"\"adapterKind\":\"openai-chat-completions\","
+            L"\"authMode\":\"bearer-api-key\","
+            L"\"baseUrlOverride\":\"https://gateway.example/v1/chat/completions?api-version=3.0\","
+            L"\"model\":\"vendor/one\",\"customModel\":true,"
+            L"\"credentialRef\":\"ZenCrop/Translation/provider/provider.legacy.pinned\","
+            L"\"advancedOptionsJson\":\"{}\"}]}";
+        TranslationSettings pinned;
+        if (!ParseTranslationSection(pinnedSection, pinned, &error, nullptr)) {
+            return 1095;
+        }
+        const auto pinnedProfile = std::find_if(
+            pinned.providerProfiles.begin(), pinned.providerProfiles.end(),
+            [](const TranslationProviderProfile& profile) {
+                return profile.id == L"provider.legacy.pinned";
+            });
+        if (pinnedProfile == pinned.providerProfiles.end() ||
+            !pinnedProfile->completeEndpointOverride ||
+            !EndpointIsCompleteRequestUrl(*pinnedProfile) ||
+            ResolveProviderEndpoint(*pinnedProfile, &error) !=
+                L"https://gateway.example/v1/chat/completions?api-version=3.0") {
+            return 1096;
+        }
+        // A migrated standard path is the opposite case: a base, so the switch works.
+        TranslationProviderProfile base;
+        base.presetKind = L"custom-openai-compatible";
+        base.adapterKind = TranslationAdapterKind::OpenAIChatCompletions;
+        base.authMode = TranslationAuthMode::BearerApiKey;
+        base.baseUrlOverride = L"https://gateway.example/v1/";
+        if (EndpointIsCompleteRequestUrl(base)) return 1097;
+        // A machine-translation profile's override is an address, but nothing on the
+        // protocol combo applies to it, so it is not treated as a blocked switch.
+        TranslationProviderProfile mt;
+        mt.presetKind = L"deeplx-custom";
+        mt.baseUrlOverride = L"https://gateway.example/responses";
+        if (EndpointIsCompleteRequestUrl(mt)) return 1098;
+        // No endpoint at all: nothing to block.
+        TranslationProviderProfile none;
+        none.presetKind = L"custom-openai-compatible";
+        if (EndpointIsCompleteRequestUrl(none)) return 1099;
+    }
+
+    // --- a stored endpoint: recognized path becomes a base, anything else does not
+    {
+        const auto standard =
+            InterpretStoredEndpoint(L"https://gateway.example/v1/chat/completions");
+        if (standard.verbatim || standard.base != L"https://gateway.example/v1/") {
+            return 1075;
+        }
+        // Case-insensitive like the suffix matcher it defers to.
+        const auto mixedCase =
+            InterpretStoredEndpoint(L"https://gateway.example/v1/Chat/Completions");
+        if (mixedCase.verbatim ||
+            mixedCase.base != L"https://gateway.example/v1/") {
+            return 1076;
+        }
+        // Nothing says which part is the path, so it is kept whole -- byte for byte,
+        // since the resolver sends it verbatim and a trailing slash would change it.
+        const auto opaque =
+            InterpretStoredEndpoint(L"https://gateway.example/invoke");
+        if (!opaque.verbatim ||
+            opaque.base != L"https://gateway.example/invoke") {
+            return 1077;
+        }
+        // A version-pinned address is complete too, and now says so: the resolver
+        // sends it verbatim either way, but only the mark stops a protocol switch from
+        // pairing a new body with this path.
+        const auto pinned = InterpretStoredEndpoint(
+            L"https://gw.example/chat/completions?api-version=3.0");
+        if (!pinned.verbatim ||
+            pinned.base != L"https://gw.example/chat/completions?api-version=3.0") {
+            return 1078;
+        }
+        // The migration consequence that matters: a v7 Chat Completions address loads
+        // as a base, so the URL is unchanged today and follows the protocol when the
+        // user switches it -- instead of pairing a Responses body with a Chat URL.
+        const std::wstring legacyChatSection =
+            L"{\"schemaVersion\":7,\"activeProviderId\":\"provider.legacy.chat\","
+            L"\"providerProfiles\":[{"
+            L"\"id\":\"provider.legacy.chat\",\"displayName\":\"Legacy Chat\","
+            L"\"presetKind\":\"custom-openai-compatible\","
+            L"\"adapterKind\":\"openai-chat-completions\","
+            L"\"authMode\":\"bearer-api-key\","
+            L"\"baseUrlOverride\":\"https://gateway.example/v1/chat/completions\","
+            L"\"model\":\"vendor/one\",\"customModel\":true,"
+            L"\"credentialRef\":\"ZenCrop/Translation/provider/provider.legacy.chat\","
+            L"\"advancedOptionsJson\":\"{}\"}]}";
+        TranslationSettings migratedChat;
+        if (!ParseTranslationSection(
+                legacyChatSection, migratedChat, &error, nullptr)) {
+            return 1079;
+        }
+        const auto migrated = std::find_if(
+            migratedChat.providerProfiles.begin(),
+            migratedChat.providerProfiles.end(),
+            [](const TranslationProviderProfile& profile) {
+                return profile.id == L"provider.legacy.chat";
+            });
+        if (migrated == migratedChat.providerProfiles.end() ||
+            migrated->completeEndpointOverride ||
+            migrated->baseUrlOverride != L"https://gateway.example/v1/" ||
+            ResolveProviderEndpoint(*migrated, &error) !=
+                L"https://gateway.example/v1/chat/completions") {
+            return 1080;
+        }
+        TranslationProviderProfile switched = *migrated;
+        switched.adapterKind = TranslationAdapterKind::OpenAIResponses;
+        if (ResolveProviderEndpoint(switched, &error) !=
+            L"https://gateway.example/v1/responses") {
+            return 1081;
+        }
+        // A known suffix is not proof that the current protocol reconstructs the
+        // old request URL. Preserve different paths and casing through migration.
+        for (const std::wstring endpoint : {
+                 L"https://gateway.example/v1/Chat/Completions",
+                 L"https://gateway.example/v1/responses",
+                 L"https://gateway.example/api/chat"}) {
+            std::wstring legacyVariant = legacyChatSection;
+            const std::wstring original = L"https://gateway.example/v1/chat/completions";
+            legacyVariant.replace(legacyVariant.find(original), original.size(), endpoint);
+            TranslationSettings migratedVariant;
+            if (!ParseTranslationSection(legacyVariant, migratedVariant, &error, nullptr)) return 1108;
+            const auto* preserved = FindActiveTranslationProvider(migratedVariant);
+            if (!preserved || !preserved->completeEndpointOverride ||
+                preserved->baseUrlOverride != endpoint ||
+                ResolveProviderEndpoint(*preserved, &error) != endpoint ||
+                SupportsModelListing(*preserved)) {
+                return 1109;
+            }
+            TranslationSettings reloadedVariant;
+            if (!NormalizeTranslationSettingsForPersistence(migratedVariant, &error) ||
+                !ParseTranslationSection(SerializeTranslationSection(migratedVariant),
+                    reloadedVariant, &error, nullptr)) {
+                return 1110;
+            }
+            const auto* reloaded = FindActiveTranslationProvider(reloadedVariant);
+            if (!reloaded || !reloaded->completeEndpointOverride ||
+                reloaded->baseUrlOverride != endpoint ||
+                ResolveProviderEndpoint(*reloaded, &error) != endpoint) {
+                return 1110;
+            }
+        }
+        // And the opaque one keeps its exact address, which is what the page's
+        // protocol-change confirmation exists for.
+        TranslationProviderProfile opaqueProfile;
+        opaqueProfile.presetKind = L"custom-openai-compatible";
+        opaqueProfile.adapterKind = TranslationAdapterKind::OpenAIChatCompletions;
+        opaqueProfile.authMode = TranslationAuthMode::BearerApiKey;
+        opaqueProfile.baseUrlOverride = L"https://gateway.example/invoke";
+        opaqueProfile.completeEndpointOverride = true;
+        if (ResolveProviderEndpoint(opaqueProfile, &error) !=
+                L"https://gateway.example/invoke") {
+            return 1082;
+        }
+    }
+
+    // --- the capacity decision, not just the arithmetic --------------------------
+    // 1051 pins `kept + added <= cap`; this pins *which* ids count as an addition, which
+    // is the part the dialog decides and the part that silently evicted a model.
+    {
+        const std::vector<std::wstring> catalog = {L"seed/one", L"seed/two"};
+        const std::vector<std::wstring> pool = {L"mine/one", L"mine/two"};
+        if (!ActiveModelJoinsPool(L"vendor/new", true, catalog, pool)) return 1083;
+        // Already collected: nothing is added, so a full pool is fine.
+        if (ActiveModelJoinsPool(L"mine/one", true, catalog, pool)) return 1084;
+        // A catalog model stays a listed id.
+        if (ActiveModelJoinsPool(L"seed/one", true, catalog, pool)) return 1085;
+        // A profile that refuses custom models cannot take an unlisted model at all.
+        if (ActiveModelJoinsPool(L"vendor/new", false, catalog, pool)) return 1086;
+        // An id a request URL could not carry is refused by the pool writer, so it
+        // cannot be the one that overflows it.
+        if (ActiveModelJoinsPool(L"vendor new", true, catalog, pool)) return 1087;
+        if (ActiveModelJoinsPool(L"", true, catalog, pool)) return 1088;
+    }
+
+    // --- one completeness answer for every protocol -----------------------------
+    // The OpenAI branch used to return with the default `true`, so a listing cut at the
+    // 2000-entry cap was read as the vendor's whole catalogue and a seed sitting on
+    // entry 2001 was reported as retired.
+    {
+        std::string bulk = R"({"data":[)";
+        for (size_t i = 0; i < 2001; ++i) {
+            if (i) bulk += ",";
+            bulk += R"({"id":"vendor/model-)" + std::to_string(i) + R"("})";
+        }
+        bulk += "]}";
+        HttpResponse bulkResponse;
+        bulkResponse.statusCode = 200;
+        bulkResponse.contentType = L"application/json";
+        bulkResponse.body = bulk;
+        const auto parsed =
+            ParseModelListResponse(ModelListProtocol::OpenAiData, bulkResponse);
+        // Truncated at the 2000-entry cap, and therefore not the whole catalogue.
+        if (!parsed.error.empty() || parsed.complete ||
+            parsed.models.size() > 2000 || parsed.models.empty()) {
+            return 1089;
+        }
+        // A short listing is still complete -- the conservative answer must not become
+        // a permanent silence.
+        HttpResponse oneEntry;
+        oneEntry.statusCode = 200;
+        oneEntry.contentType = L"application/json";
+        oneEntry.body = R"({"data":[{"id":"vendor/one"}]})";
+        if (!ParseModelListResponse(
+                ModelListProtocol::OpenAiData, oneEntry).complete) {
+            return 1090;
+        }
+    }
+    // Casing must not decide whether a stored complete URL is recognized: such a
+    // value was sent verbatim before the Base URL semantics existed.
+    TranslationProviderProfile mixedCase = legacy;
+    mixedCase.baseUrlOverride =
+        L"https://generativelanguage.googleapis.com/V1Beta/OpenAI/Chat/Completions";
+    if (ResolveProviderEndpoint(mixedCase, &error) !=
+        L"https://generativelanguage.googleapis.com/V1Beta/OpenAI/chat/completions") {
+        return 936;
+    }
+    // A stored complete URL carrying a query string keeps its verbatim meaning:
+    // re-composing it would append a path after the query.
+    TranslationProviderProfile queried = legacy;
+    queried.baseUrlOverride = L"https://gateway.example/v1/chat/completions?trace=1";
+    if (ResolveProviderEndpoint(queried, &error) !=
+        L"https://gateway.example/v1/chat/completions?trace=1") return 937;
+
+    // A protocol the preset does not offer is refused, not silently mapped.
+    TranslationProviderProfile bogus = legacy;
+    bogus.adapterKind = TranslationAdapterKind::MachineTranslation;
+    if (IsSupportedProviderProfile(bogus, &error)) return 915;
+
+    // Model listing: which profiles can be asked, and with what.
+    TranslationProviderProfile mtProfile;
+    mtProfile.id = L"builtin.google-translate-community.default";
+    mtProfile.presetKind = L"google-translate-community";
+    mtProfile.adapterKind = TranslationAdapterKind::MachineTranslation;
+    mtProfile.authMode = TranslationAuthMode::None;
+    if (SupportsModelListing(mtProfile)) return 916;
+    if (PlanModelListFetch(mtProfile, L"", &error).supported) return 917;
+
+    const auto legacyPlan = PlanModelListFetch(legacy, L"secret-key", &error);
+    if (!legacyPlan.supported || legacyPlan.protocol != ModelListProtocol::OpenAiData ||
+        legacyPlan.url !=
+            L"https://generativelanguage.googleapis.com/v1beta/openai/models") {
+        return 918;
+    }
+    if (!HasHeader(legacyPlan.headers, L"Authorization: Bearer secret-key")) return 919;
+    if (PlanModelListFetch(legacy, L"", &error).supported) return 920;
+    // Gemini's native surface authenticates with the Google header and lists at
+    // `<base>models`; the same profile on the OpenAI-compatible protocol (above)
+    // uses the bearer header and the OpenAI envelope.
+    TranslationProviderProfile nativeProfile = profile;
+    nativeProfile.adapterKind = TranslationAdapterKind::GeminiGenerateContent;
+    nativeProfile.authMode = TranslationAuthMode::ApiKey;
+    const auto nativePlan = PlanModelListFetch(nativeProfile, L"k", &error);
+    if (!nativePlan.supported ||
+        nativePlan.protocol != ModelListProtocol::GoogleModels ||
+        // The page size is part of the URL now: Google's list is paged, and asking for
+        // its documented maximum is what keeps the answer to one request.
+        nativePlan.url !=
+            L"https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000" ||
+        !HasHeader(nativePlan.headers, L"X-Goog-Api-Key: k")) return 921;
+
+    TranslationProviderProfile ollamaProfile;
+    ollamaProfile.id = L"provider.ollama.contract";
+    ollamaProfile.displayName = L"Ollama";
+    ollamaProfile.presetKind = L"ollama";
+    ollamaProfile.adapterKind = TranslationAdapterKind::OllamaChat;
+    ollamaProfile.authMode = TranslationAuthMode::None;
+    ollamaProfile.model = L"llama3";
+    ollamaProfile.customModel = true;
+    const auto ollamaPlan = PlanModelListFetch(ollamaProfile, L"", &error);
+    if (!ollamaPlan.supported ||
+        ollamaPlan.url != L"http://127.0.0.1:11434/api/tags") return 922;
+
+    const auto listingResponse = [](const char* body, const wchar_t* contentType) {
+        HttpResponse response;
+        response.statusCode = 200;
+        response.body = body;
+        response.contentType = contentType;
+        return response;
+    };
+    const auto openAiListing = ParseModelListResponse(ModelListProtocol::OpenAiData,
+        listingResponse(
+            "{\"data\":[{\"id\":\"deepseek-v4-flash\",\"name\":\"DeepSeek V4 Flash\"},"
+            "{\"id\":\"deepseek-v4-pro\"},"
+            "{\"id\":\"deepseek-v4-flash\"},{\"id\":\"\"}]}",
+            L"application/json"));
+    if (!openAiListing.error.empty() || openAiListing.models.size() != 2 ||
+        openAiListing.models.front().id != L"deepseek-v4-flash" ||
+        openAiListing.models.front().label != L"DeepSeek V4 Flash" ||
+        // A model the vendor did not name falls back to its id: it must still list.
+        openAiListing.models.back().label != L"deepseek-v4-pro") return 923;
+    const auto googleListing = ParseModelListResponse(ModelListProtocol::GoogleModels,
+        listingResponse(
+            "{\"models\":[{\"name\":\"models/gemini-2.5-flash\","
+            "\"displayName\":\"Gemini 2.5 Flash\"},"
+            "{\"name\":\"models/gemini-2.5-pro\"}]}", L"application/json"));
+    if (googleListing.models.size() != 2 ||
+        googleListing.models.front().id != L"gemini-2.5-flash" ||
+        googleListing.models.front().label != L"Gemini 2.5 Flash" ||
+        googleListing.models.back().label != L"gemini-2.5-pro") return 924;
+    const auto ollamaListing = ParseModelListResponse(ModelListProtocol::OllamaTags,
+        listingResponse("{\"models\":[{\"name\":\"llama3:latest\"}]}",
+            L"application/json"));
+    if (ollamaListing.models.size() != 1 ||
+        ollamaListing.models.front().id != L"llama3:latest" ||
+        ollamaListing.models.front().label != L"llama3:latest") return 925;
+    if (ParseModelListResponse(ModelListProtocol::OpenAiData,
+            listingResponse("{\"object\":\"list\"}", L"application/json")).error.empty()) {
+        return 926;
+    }
+    // Gemini's OpenAI-compatible surface wraps its error in a JSON *array*: the
+    // message inside has to reach the user instead of a bare status code.
+    HttpResponse geminiError;
+    geminiError.statusCode = 404;
+    geminiError.contentType = L"application/json; charset=UTF-8";
+    geminiError.body =
+        "[{\"error\":{\"code\":404,\"message\":\"models/gemini-3.8-flash is not found\"}}]";
+    const auto errorListing = ParseModelListResponse(
+        ModelListProtocol::OpenAiData, geminiError);
+    if (errorListing.error.find(L"404") == std::wstring::npos ||
+        errorListing.error.find(L"is not found") == std::wstring::npos) return 927;
+
+    // Restore defaults clears the pool and puts the active model back on the
+    // preset's first entry, and touches nothing else.
+    TranslationProviderProfile restore = profile;
+    restore.customModels = {L"vendor/one", L"vendor/two"};
+    restore.model = L"vendor/one";
+    restore.baseUrlOverride = L"https://proxy.example/v1/";
+    restore.temperature = 0.3;
+    restore.advancedOptionsJson = L"{\"top_p\":0.9}";
+    restore.region = L"westus";
+    if (!RestoreModelCatalogDefaults(restore)) return 928;
+    if (!restore.customModels.empty()) return 929;
+    if (restore.model != L"gemini-3.8-flash") return 930;
+    if (restore.baseUrlOverride != L"https://proxy.example/v1/" ||
+        restore.temperature != std::optional<double>(0.3) ||
+        restore.advancedOptionsJson != L"{\"top_p\":0.9}" ||
+        restore.region != L"westus" ||
+        restore.adapterKind != profile.adapterKind ||
+        restore.authMode != profile.authMode) return 931;
+    // A provider with no finite catalog keeps the active model: clearing it would
+    // leave a profile that Apply rejects with "model is required".
+    TranslationProviderProfile noCatalog = legacy;
+    noCatalog.customModels = {L"a", L"b"};
+    noCatalog.model = L"a";
+    if (!RestoreModelCatalogDefaults(noCatalog) || !noCatalog.customModels.empty() ||
+        noCatalog.model != L"a" || !noCatalog.customModel) return 932;
+
+    // The pool has one writer contract: ids the preset *offers* are dropped,
+    // duplicates collapse in order, and the FIFO cap holds.
+    TranslationProviderProfile pool = profile;
+    pool.customModel = true;
+    if (!SetCustomModelPool(pool, {L"vendor/one", L"vendor/one",
+            L"gemini-3.8-flash", L"", L"vendor/two"})) return 933;
+    if (pool.customModels.size() != 2 ||
+        pool.customModels.front() != L"vendor/one" ||
+        pool.customModels.back() != L"vendor/two") return 934;
+    // An id that is only in the *policy catalog* is a real model the user may
+    // adopt: judging the pool by the offered list is what lets a fetched model
+    // (this one used to be offered, and the seed list was slimmed) be kept and
+    // switched to later.
+    TranslationProviderProfile policyOnlyPool = pool;
+    if (!SetCustomModelPool(policyOnlyPool, {L"gemini-2.5-flash"})) return 938;
+    if (policyOnlyPool.customModels.size() != 1 ||
+        policyOnlyPool.customModels.front() != L"gemini-2.5-flash") return 939;
+    std::vector<std::wstring> many;
+    for (int i = 0; i < 60; ++i) {
+        many.push_back(L"m-" + std::to_wstring(i));
+    }
+    SetCustomModelPool(pool, many);
+    if (pool.customModels.size() != kMaxTranslationCustomModels ||
+        pool.customModels.front() != L"m-10" ||
+        pool.customModels.back() != L"m-59") return 935;
+
+    // --- display seeds vs policy catalog ---------------------------------------
+    //
+    // `preset.models` is what the page offers and is deliberately tiny; a retired
+    // id there is one click away from a 404. `preset.modelPolicyIds` is what the
+    // model-level request policy claims and is never shown: a retired id there is
+    // inert, and dropping it would silently downgrade an already-stored profile
+    // onto the conservative policy. These cases pin the invariant between the two
+    // lists and the three id paths a profile can be in.
+    for (const auto& preset : ListTranslationProviderPresets()) {
+        if (preset.models.empty() != preset.modelPolicyIds.empty()) return 940;
+        if (preset.models.empty()) continue;
+        if (preset.models.size() != 1 ||
+            preset.models.front() != preset.modelPolicyIds.front()) return 941;
+        for (const auto& seed : preset.models) {
+            if (!IsModelPolicyKnown(preset, seed)) return 942;
+        }
+    }
+    // Every shipped connection defaults to a model the page offers. Taking the
+    // seed from the head of the policy catalog is what keeps these defaults exactly
+    // what they were before the lists were split: a fresh install must never open
+    // on an id its own Model list cannot show.
+    const TranslationSettings shippedDefaults;
+    for (const auto& shipped : shippedDefaults.providerProfiles) {
+        const auto* preset = FindTranslationProviderPreset(shipped.presetKind);
+        if (!preset || preset->models.empty()) continue;
+        if (shipped.model.empty()) return 945;
+        if (std::find(preset->models.begin(), preset->models.end(), shipped.model) ==
+            preset->models.end()) return 946;
+    }
+
+    // Field-for-field comparison of everything `GetCapabilities` takes from the
+    // model policy. Kept explicit so a new policy field cannot be added without
+    // this contract noticing.
+    const auto samePolicy = [](const ProviderCapabilities& capabilities,
+                               const LlmModelPolicy& policy) {
+        return capabilities.reasoningModes == policy.reasoningModes &&
+            capabilities.defaultReasoning == policy.defaultReasoning &&
+            capabilities.reasoningWireFormat == policy.reasoningWireFormat &&
+            capabilities.supportsTemperature == policy.allowsTemperature &&
+            capabilities.defaultTemperature == policy.defaultTemperature &&
+            capabilities.outputMode == policy.outputMode &&
+            capabilities.instructionChannel == policy.instructionChannel &&
+            capabilities.tokenLimitKind == policy.tokenLimitKind &&
+            capabilities.maxSegmentsPerRequest == policy.maxSegmentsPerRequest &&
+            capabilities.policyRevision == policy.revision;
+    };
+    const auto capabilitiesFor = [](const wchar_t* kind, const wchar_t* model,
+                                    bool custom) {
+        TranslationProviderProfile probe;
+        probe.presetKind = kind;
+        const auto* preset = FindTranslationProviderPreset(kind);
+        probe.adapterKind = preset ? preset->adapterKind
+                                   : TranslationAdapterKind::OpenAIChatCompletions;
+        probe.model = model;
+        probe.customModel = custom;
+        return GetCapabilities(probe);
+    };
+    const struct PolicyPathCase {
+        const wchar_t* kind;
+        const wchar_t* model;
+        bool custom;     // the stored "Custom model" mark
+        bool modelLevel; // expected: the model-level table decides the request shape
+    } policyPaths[] = {
+        // An offered seed: the model-level table applies, mark or no mark.
+        {L"gemini", L"gemini-3.8-flash", false, true},
+        {L"gemini", L"gemini-3.8-flash", true, true},
+        // A policy-only id -- no longer offered, still claimed. This is the case
+        // the whole split exists for: the mark must not push it onto the
+        // conservative path, and neither must its absence.
+        {L"gemini", L"gemini-2.5-flash", true, true},
+        {L"gemini", L"gemini-2.5-flash", false, true},
+        {L"siliconflow", L"tencent/Hunyuan-MT-7B", true, true},
+        {L"deepseek", L"deepseek-v4-pro", true, true},
+        {L"xiaomi-mimo", L"mimo-v2.6-pro", true, true},
+        // An id the preset never published: conservative knobs, vendor dialect.
+        {L"gemini", L"gemini-9.9-unknown", true, false},
+        {L"deepseek", L"deepseek-future-translate-model", true, false},
+        {L"siliconflow", L"Qwen/Qwen-nothing-like-this", true, false},
+    };
+    for (const auto& probe : policyPaths) {
+        const auto* preset = FindTranslationProviderPreset(probe.kind);
+        if (!preset) return 943;
+        const auto expected = ResolveLlmModelPolicy(
+            probe.kind, probe.model, !probe.modelLevel, preset->adapterKind);
+        if (!samePolicy(capabilitiesFor(probe.kind, probe.model, probe.custom),
+                expected)) return 944;
+    }
+
+    // --- display names ---------------------------------------------------------
+    //
+    // A name is display metadata: it never decides membership, order or a request
+    // value, and it lives in a side table pruned to the pool. These cases pin the
+    // rules that keep it from becoming a second authority -- and that a malformed or
+    // absent table can never cost a profile its models.
+    TranslationProviderProfile labeled;
+    labeled.id = L"provider.labels.contract";
+    labeled.displayName = L"Labels";
+    labeled.presetKind = L"custom-openai-compatible";
+    labeled.adapterKind = TranslationAdapterKind::OpenAIChatCompletions;
+    labeled.enabled = false;
+    labeled.authMode = TranslationAuthMode::BearerApiKey;
+    labeled.credentialRef =
+        L"ZenCrop/Translation/provider/provider.labels.contract.custom-openai-compatible";
+    labeled.model = L"vendor/one";
+    labeled.customModel = true;
+    if (!SetCustomModelPool(labeled, {L"vendor/one", L"vendor/two"})) return 947;
+    if (!RememberCustomModelLabels(labeled, {
+            {L"vendor/one", L"Vendor One"},
+            {L"vendor/two", L"vendor/two"},
+            {L"vendor/three", L"Vendor Three"}})) return 948;
+    // Only `vendor/one` keeps a name: `vendor/two`'s name is its id (nothing to
+    // show) and `vendor/three` is not in the pool (the table describes the pool).
+    if (labeled.customModelLabels.size() != 1 ||
+        labeled.customModelLabels[L"vendor/one"] != L"Vendor One") return 949;
+    // Dropping an id from the pool drops its name with it...
+    if (!SetCustomModelPool(labeled, {L"vendor/two"}) ||
+        !labeled.customModelLabels.empty()) return 950;
+    // ...and re-adding it starts from an empty name: the table is pruned, not
+    // revived, so a name always comes from a listing or a picker, never from the
+    // past.
+    if (!SetCustomModelPool(labeled, {L"vendor/two", L"vendor/one"})) return 951;
+    // A table that outlived its pool is pruned on the next write, whoever made the
+    // entry stale: the codec's per-entry check cannot see a key that was never in
+    // the file it read, so the side table must not depend on it.
+    TranslationProviderProfile staleLabels = labeled;
+    staleLabels.customModelLabels[L"vendor/gone"] = L"Gone";
+    if (!RememberCustomModelLabels(staleLabels, {{L"vendor/one", L"Vendor One"}})) return 967;
+    if (staleLabels.customModelLabels.count(L"vendor/gone") != 0) return 968;
+    if (!RememberCustomModelLabels(labeled, {{L"vendor/one", L"Vendor One"}})) return 952;
+    // Idempotent: storing the same name again changes nothing.
+    if (RememberCustomModelLabels(labeled, {{L"vendor/one", L"Vendor One"}})) return 953;
+
+    TranslationSettings labelSettings;
+    labelSettings.providerProfiles.push_back(labeled);
+    TranslationProviderProfile labeledEmpty = labeled;
+    labeledEmpty.id = L"provider.labels.empty";
+    labeledEmpty.credentialRef =
+        L"ZenCrop/Translation/provider/provider.labels.empty.custom-openai-compatible";
+    labeledEmpty.customModelLabels.clear();
+    labelSettings.providerProfiles.push_back(labeledEmpty);
+    labelSettings.activeProviderId = labeled.id;
+    if (!NormalizeTranslationSettingsForPersistence(labelSettings, &error)) return 954;
+    TranslationSettings decodedLabels;
+    if (!ParseTranslationSection(
+            SerializeTranslationSection(labelSettings), decodedLabels, &error)) return 955;
+    const auto findProfile = [](const TranslationSettings& settings,
+                                const std::wstring& id) {
+        return std::find_if(settings.providerProfiles.begin(),
+            settings.providerProfiles.end(),
+            [&](const TranslationProviderProfile& value) { return value.id == id; });
+    };
+    const auto decodedLabeled = findProfile(decodedLabels, labeled.id);
+    if (decodedLabeled == decodedLabels.providerProfiles.end() ||
+        decodedLabeled->customModelLabels.size() != 1 ||
+        decodedLabeled->customModelLabels.count(L"vendor/one") != 1 ||
+        decodedLabeled->customModelLabels.at(L"vendor/one") != L"Vendor One" ||
+        decodedLabeled->customModels != labeled.customModels) return 956;
+    // The profile without names must serialize and read back exactly as before: the
+    // key is omitted, so an older build sees the document it would have written.
+    const auto decodedEmpty = findProfile(decodedLabels, labeledEmpty.id);
+    if (decodedEmpty == decodedLabels.providerProfiles.end() ||
+        !decodedEmpty->customModelLabels.empty()) return 957;
+    // Upstream coverage is advisory: it names the seeds a listing did not contain
+    // and changes nothing -- no seed is removed from the preset, no profile is
+    // rewritten -- because a truncated or proxied listing must never be able to
+    // delete a choice.
+    TranslationProviderProfile seedCoverage;
+    seedCoverage.presetKind = L"gemini";
+    seedCoverage.model = L"gemini-3.8-flash";
+    if (!UnlistedSeedModels(seedCoverage, {{L"gemini-3.8-flash"}}, true).empty()) {
+        return 960;
+    }
+    const auto missingSeed =
+        UnlistedSeedModels(seedCoverage, {{L"gemini-2.5-pro"}}, true);
+    if (missingSeed.size() != 1 ||
+        missingSeed.front() != L"gemini-3.8-flash") return 961;
+    // "The provider listed nothing" is not evidence that everything is retired.
+    if (!UnlistedSeedModels(seedCoverage, {}, true).empty()) return 962;
+    // A preset that offers no seeds has nothing that can go missing.
+    seedCoverage.presetKind = L"openrouter";
+    if (!UnlistedSeedModels(seedCoverage, {{L"anything"}}, true).empty()) return 963;
+    // A paged answer is the same case by another name: a seed that is merely on the
+    // next page is not a retired one, so an incomplete listing says nothing at all.
+    if (!UnlistedSeedModels(seedCoverage, {{L"anything"}}, false).empty()) return 1055;
+
+    // The fetch timestamp is advisory too: it survives a round trip and is omitted
+    // while the profile has never fetched.
+    labeled.modelCatalogFetchedAt = 1710000000;
+    TranslationSettings stampSettings;
+    stampSettings.providerProfiles.push_back(labeled);
+    stampSettings.activeProviderId = labeled.id;
+    if (!NormalizeTranslationSettingsForPersistence(stampSettings, &error)) return 964;
+    TranslationSettings decodedStamp;
+    if (!ParseTranslationSection(
+            SerializeTranslationSection(stampSettings), decodedStamp, &error)) return 965;
+    const auto stampedProfile = findProfile(decodedStamp, labeled.id);
+    if (stampedProfile == decodedStamp.providerProfiles.end() ||
+        stampedProfile->modelCatalogFetchedAt != 1710000000) return 966;
+
+    // A malformed table is ignored, never fatal: display metadata must not be able
+    // to delete a working profile (that is the one thing `customModels` may still do).
+    TranslationSettings malformedLabels;
+    const std::wstring malformedSection =
+        L"{\"schemaVersion\":7,\"activeProviderId\":\"provider.labels.contract\","
+        L"\"providerProfiles\":[{\"id\":\"provider.labels.contract\","
+        L"\"displayName\":\"Labels\",\"presetKind\":\"custom-openai-compatible\","
+        L"\"adapterKind\":\"openai-chat-completions\",\"authMode\":\"bearer-api-key\","
+        L"\"credentialRef\":\"ZenCrop/Translation/provider/provider.labels.contract"
+        L".custom-openai-compatible\",\"model\":\"vendor/one\",\"customModel\":true,"
+        L"\"enabled\":false,\"customModels\":[\"vendor/one\",\"vendor/two\"],"
+        L"\"customModelLabels\":42,\"modelCatalogFetchedAt\":\"soon\"}]}";
+    if (!ParseTranslationSection(malformedSection, malformedLabels, &error)) return 958;
+    const auto malformedProfile = findProfile(malformedLabels, labeled.id);
+    if (malformedProfile == malformedLabels.providerProfiles.end() ||
+        !malformedProfile->customModelLabels.empty() ||
+        malformedProfile->modelCatalogFetchedAt != 0 ||
+        malformedProfile->customModels.size() != 2) return 959;
+
+    // --- the reasoning dialect belongs to the surface, not to the vendor --------
+    //
+    // Both measured surfaces reject the other one's field with a 400 (2026-10-02,
+    // gemini-3.8-flash, real key): the compat surface answers `Unknown name
+    // "generationConfig"` and the native surface `Unknown name "reasoning_effort"`.
+    // So a dialect that belongs to the other surface does not degrade gracefully --
+    // it fails every request. Enumerating every preset/protocol pair keeps the next
+    // preset that grows a second surface from repeating that.
+    // A "surface" is the body family an adapter produces: Gemini's own
+    // (generationConfig), Ollama's (think), and the OpenAI-shaped one shared by
+    // everything else. The tier field only exists in the family it belongs to, and
+    // the wrong one is a hard 400 rather than a no-op -- so this walks *every* preset
+    // x protocol pair, on the listed path and on the unknown-model path, and fails if
+    // the dialect's family does not match the body's.
+    //
+    // Strength boundary -- do not read a green run as "any protocol combination is
+    // safe". This proves the *field family* matches the *body family*; it does not
+    // prove the field *name* is one this vendor accepts. The model-policy branches for
+    // deepseek / siliconflow / xiaomi-mimo never consult the adapter, so they would
+    // still pass if one of those presets ever gained a second, same-family protocol,
+    // and whether that vendor accepts `thinking`/`reasoning_effort` on that surface is
+    // unmeasured (custom-openai-compatible x Gemini is caught only because its family
+    // differs). What makes the gap inert today is that each of those presets offers
+    // exactly one protocol.
+    const auto wireFamily = [](ReasoningWireFormat format) {
+        switch (format) {
+        case ReasoningWireFormat::None: return 0;                  // no tier field
+        case ReasoningWireFormat::GeminiThinkingBudget: return 1;   // Gemini body
+        case ReasoningWireFormat::OllamaThink: return 2;            // Ollama body
+        default: return 3;                                          // OpenAI-shaped body
+        }
+    };
+    for (const bool customModel : {false, true}) {
+        for (const auto& preset : ListTranslationProviderPresets()) {
+            // Machine translation has no tier at all (its `{Off}` is a placeholder, not
+            // a field), so only the LLM presets are part of this contract.
+            if (preset.capabilities.family != TranslationProviderFamily::Llm) continue;
+            for (const auto& option : preset.protocols) {
+                TranslationProviderProfile probe;
+                probe.presetKind = preset.kind;
+                probe.adapterKind = option.adapter;
+                const bool unknownModel = customModel || preset.models.empty();
+                probe.model = unknownModel ? L"vendor/unlisted-probe"
+                                           : preset.models.front();
+                probe.customModel = unknownModel;
+                const auto capabilities = GetCapabilities(probe);
+                const int expected =
+                    option.adapter == TranslationAdapterKind::GeminiGenerateContent
+                    ? 1
+                    : (option.adapter == TranslationAdapterKind::OllamaChat ? 2 : 3);
+                const int actual = wireFamily(capabilities.reasoningWireFormat);
+                // 0 means this profile starts no tier at all, which writes nothing
+                // and is therefore allowed on any surface.
+                if (actual != 0 && actual != expected) return 969;
+                // Measured: gemini-3.x rejects the ladder's `minimal` step with 400 on
+                // both of its surfaces, so it must not be offered there.
+                const bool geminiTiers =
+                    option.adapter == TranslationAdapterKind::GeminiGenerateContent ||
+                    (preset.kind == L"gemini" && actual == 3);
+                if (geminiTiers &&
+                    capabilities.reasoningModes.count(TranslationReasoningMode::Minimal)) {
+                    return 970;
+                }
+                // A ladder that offers `off` next to other tiers needs a field to say
+                // which one was chosen; without one the request goes out unchanged and
+                // the selection is a lie. A single `{Off}` with no field is the honest
+                // shape instead: it is what a model that cannot reason at all gets
+                // (grok's `non-reasoning` ids), where there is nothing to switch.
+                if (capabilities.reasoningModes.size() > 1 &&
+                    capabilities.reasoningModes.count(TranslationReasoningMode::Off) &&
+                    capabilities.reasoningWireFormat == ReasoningWireFormat::None) {
+                    return 971;
+                }
+            }
+        }
+    }
+
+    // --- C1: the authentication surface follows the protocol ---------------------
+    //
+    // Gemini's two surfaces want different credentials (x-goog-api-key vs a bearer
+    // token). Candidate repair paths agreed about that from the start; validation and
+    // the dropdown read it from GetCapabilities, so as long as that function stayed at
+    // the preset level, switching a profile to the compatible protocol produced an
+    // auth mode the profile was then rejected for -- Apply answered
+    // PSNRET_INVALID_NOCHANGEPAGE and both probes refused to start.
+    const auto* geminiAuthPreset = FindTranslationProviderPreset(L"gemini");
+    if (!geminiAuthPreset ||
+        ProviderAuthModes(*geminiAuthPreset,
+            TranslationAdapterKind::GeminiGenerateContent) !=
+            std::set<TranslationAuthMode>{TranslationAuthMode::ApiKey} ||
+        ProviderAuthModes(*geminiAuthPreset,
+            TranslationAdapterKind::OpenAIChatCompletions) !=
+            std::set<TranslationAuthMode>{TranslationAuthMode::BearerApiKey}) return 972;
+
+    TranslationProviderProfile compatAuth;
+    compatAuth.id = L"provider.gemini.compat";
+    compatAuth.displayName = L"Gemini compatibility";
+    compatAuth.presetKind = L"gemini";
+    compatAuth.adapterKind = TranslationAdapterKind::OpenAIChatCompletions;
+    compatAuth.authMode = TranslationAuthMode::BearerApiKey;
+    compatAuth.credentialRef = L"ZenCrop/Translation/provider/provider.gemini.compat";
+    compatAuth.model = L"gemini-2.5-flash";
+    if (!GetCapabilities(compatAuth).authModes.count(TranslationAuthMode::BearerApiKey) ||
+        !IsSupportedProviderProfile(compatAuth, &error)) return 973;
+    compatAuth.adapterKind = TranslationAdapterKind::GeminiGenerateContent;
+    compatAuth.authMode = TranslationAuthMode::ApiKey;
+    if (!GetCapabilities(compatAuth).authModes.count(TranslationAuthMode::ApiKey) ||
+        !IsSupportedProviderProfile(compatAuth, &error)) return 974;
+    // The preset-level answer would reject exactly the mode the protocol requires.
+    compatAuth.authMode = TranslationAuthMode::BearerApiKey;
+    if (IsSupportedProviderProfile(compatAuth, &error)) return 975;
+
+    // --- C2: a custom endpoint follows the protocol it was told to speak ---------
+    TranslationProviderProfile customGemini;
+    customGemini.id = L"provider.custom.gemini";
+    customGemini.displayName = L"Custom Gemini";
+    customGemini.presetKind = L"custom-openai-compatible";
+    customGemini.adapterKind = TranslationAdapterKind::GeminiGenerateContent;
+    customGemini.authMode = TranslationAuthMode::BearerApiKey;
+    customGemini.credentialRef = L"ZenCrop/Translation/provider/provider.custom.gemini";
+    customGemini.baseUrlOverride = L"https://example.invalid/v1beta/";
+    customGemini.model = L"gemini-unlisted-probe";
+    customGemini.customModel = true;
+    const auto customGeminiCapabilities = GetCapabilities(customGemini);
+    if (customGeminiCapabilities.reasoningWireFormat !=
+            ReasoningWireFormat::GeminiThinkingBudget ||
+        !customGeminiCapabilities.reasoningModes.count(TranslationReasoningMode::Off) ||
+        customGeminiCapabilities.reasoningModes.count(TranslationReasoningMode::Minimal)) {
+        return 976;
+    }
+    // The same endpoint on the OpenAI-shaped protocol keeps the OpenAI ladder.
+    auto customChat = customGemini;
+    customChat.adapterKind = TranslationAdapterKind::OpenAIChatCompletions;
+    const auto customChatCapabilities = GetCapabilities(customChat);
+    if (customChatCapabilities.reasoningWireFormat !=
+            ReasoningWireFormat::OpenAiReasoningEffort ||
+        !customChatCapabilities.reasoningModes.count(TranslationReasoningMode::Minimal)) {
+        return 977;
+    }
+
+    // --- M1: clearing the pool also clears the names it described ----------------
+    TranslationProviderProfile restoreLabels;
+    restoreLabels.presetKind = L"custom-openai-compatible";
+    restoreLabels.adapterKind = TranslationAdapterKind::OpenAIChatCompletions;
+    restoreLabels.model = L"vendor/one";
+    restoreLabels.customModel = true;
+    if (!SetCustomModelPool(restoreLabels, {L"vendor/one", L"vendor/two"}) ||
+        !RememberCustomModelLabels(restoreLabels, {{L"vendor/one", L"Vendor One"}})) {
+        return 978;
+    }
+    if (!RestoreModelCatalogDefaults(restoreLabels) ||
+        !restoreLabels.customModels.empty() ||
+        !restoreLabels.customModelLabels.empty()) return 979;
+
+    // --- M2: the button and the fetch ask one question through one resolver ------
+    const struct ListingAgreement {
+        const wchar_t* kind;
+        const wchar_t* baseUrl;
+        bool custom;
+    } listingCases[] = {
+        {L"gemini", L"", false},
+        {L"openrouter", L"", false},
+        {L"ollama", L"", false},
+        {L"custom-openai-compatible", L"", true},
+        {L"custom-openai-compatible", L"https://example.invalid/v1/", true},
+    };
+    for (const auto& entry : listingCases) {
+        const auto* preset = FindTranslationProviderPreset(entry.kind);
+        if (!preset) return 980;
+        TranslationProviderProfile probe;
+        probe.presetKind = entry.kind;
+        probe.adapterKind = preset->adapterKind;
+        probe.model = L"vendor/one";
+        probe.customModel = entry.custom;
+        probe.authMode = TranslationAuthMode::BearerApiKey;
+        probe.baseUrlOverride = entry.baseUrl;
+        if (SupportsModelListing(probe) !=
+            PlanModelListFetch(probe, L"contract-key").supported) return 981;
+    }
+
+    // --- M3: one definition of "which header carries this mode" -------------------
+    if (BuildProviderAuthHeader(TranslationAuthMode::BearerApiKey, L"k") !=
+            L"Authorization: Bearer k" ||
+        BuildProviderAuthHeader(TranslationAuthMode::ApiKey, L"k") !=
+            L"X-Goog-Api-Key: k" ||
+        !BuildProviderAuthHeader(TranslationAuthMode::None, L"k").empty()) return 982;
+
+    // --- M5: an id that would change the request URL cannot be stored -------------
+    TranslationProviderProfile urlProbe = customGemini;
+    urlProbe.model = L"gemini?key=1";
+    if (IsSupportedProviderProfile(urlProbe, &error) ||
+        (urlProbe.model = L"gemini#fragment",
+            IsSupportedProviderProfile(urlProbe, &error)) ||
+        (urlProbe.model = L"gemini flash",
+            IsSupportedProviderProfile(urlProbe, &error))) return 983;
+    // Ids legitimately carry '/', ':' and '.'.
+    urlProbe.model = L"Qwen/Qwen3.5-9B:free";
+    if (!IsSupportedProviderProfile(urlProbe, &error)) return 984;
+
+    // --- M5 (continued): the rule has one implementation and four doors ----------
+    // "The page accepted it" has to imply "the loader reads it back", so the
+    // accepting side (pool, listing, picker, validator) and the repairing side (the
+    // persistence reader) ask the same function instead of restating the rule.
+    if (SanitizeModelIdentifier(L"Qwen/Qwen 3") != L"Qwen/Qwen3" ||
+        SanitizeModelIdentifier(L"a?b#c") != L"abc" ||
+        SanitizeModelIdentifier(L" \t\r\n") != L"") return 993;
+    if (IsStorableModelIdentifier(L"") || IsStorableModelIdentifier(L"Qwen/Qwen 3") ||
+        IsStorableModelIdentifier(L"a?b") || IsStorableModelIdentifier(L"a#b") ||
+        IsStorableModelIdentifier(L"a b")) return 994;
+    if (!IsStorableModelIdentifier(L"Qwen/Qwen3.5-9B:free") ||
+        !IsStorableModelIdentifier(L"models/gemini-3.8-flash")) return 995;
+    // The rule is "no character a request URL cannot carry", not "no ASCII space":
+    // an IME's full-width space, a pasted non-breaking space, a control byte and a
+    // pasted BOM are exactly as fatal, and all four satisfied the old rule.
+    if (IsStorableModelIdentifier(L"Qwen\u00A0/Qwen3") ||
+        IsStorableModelIdentifier(L"Qwen\u3000") ||
+        IsStorableModelIdentifier(L"a\x1F" L"b") ||
+        IsStorableModelIdentifier(L"a\x7F" L"b") ||
+        IsStorableModelIdentifier(L"a\x85" L"b") ||
+        IsStorableModelIdentifier(L"\xFEFF" L"qwen/qwen3")) return 1021;
+    if (SanitizeModelIdentifier(L"a\u00A0b\u3000c\x1F" L"d") != L"abcd") return 1022;
+
+    // The endpoint rule now covers the whole URL, not just its authority: a space or
+    // a control character in the path was accepted here and then either escaped or
+    // failed in a way the user could not read. `?` stays legitimate (Azure's
+    // `?api-version=`) and a percent escape stays the way to carry a space.
+    {
+        TranslationProviderProfile endpointProbe = customGemini;
+        endpointProbe.baseUrlOverride = L"https://example.invalid/v1beta\u00A0v1/";
+        if (!ResolveProviderBaseUrl(endpointProbe, &error).empty()) return 1023;
+        endpointProbe.baseUrlOverride = L"https://example.invalid/v1beta v1/";
+        if (!ResolveProviderBaseUrl(endpointProbe, &error).empty()) return 1024;
+        endpointProbe.baseUrlOverride =
+            L"https://example.invalid/v1beta/?api-version=3.0";
+        if (ResolveProviderBaseUrl(endpointProbe, &error).empty()) return 1025;
+        endpointProbe.baseUrlOverride = L"https://example.invalid/v1beta%20v1/";
+        if (ResolveProviderBaseUrl(endpointProbe, &error).empty()) return 1026;
+    }
+
+    // Door 1, the pool: refused, and the ids around it still go in.
+    {
+        TranslationProviderProfile poolProbe = customGemini;
+        poolProbe.customModels.clear();
+        if (!SetCustomModelPool(poolProbe, {L"vendor/one", L"vendor/two?x=1",
+                L"vendor/three", L"vendor four"})) return 996;
+        if (poolProbe.customModels.size() != 2 ||
+            poolProbe.customModels.front() != L"vendor/one" ||
+            poolProbe.customModels.back() != L"vendor/three") return 997;
+    }
+    // Door 2, applying a choice: repaired, because this is what fills both the
+    // profile's model and the pool, and refusing here would leave the page holding an
+    // id the next Apply rejects.
+    {
+        TranslationProviderProfile applyProbe = customGemini;
+        applyProbe.customModels.clear();
+        if (ApplyTranslationModelChoice(applyProbe, L"vend or?x") ||
+            applyProbe.model != L"vendorx" || applyProbe.customModels.size() != 1 ||
+            applyProbe.customModels.front() != L"vendorx") return 998;
+    }
+    // Door 3, a vendor listing: dropped, so a gateway cannot invent a row that leads
+    // to a request Apply would refuse.
+    {
+        HttpResponse listingResponse;
+        listingResponse.statusCode = 200;
+        listingResponse.contentType = L"application/json";
+        listingResponse.body = R"({"data":[{"id":"vendor/one"},)"
+            R"({"id":"vendor two"},{"id":"vendor?three"}]})";
+        const auto listing = ParseModelListResponse(
+            ModelListProtocol::OpenAiData, listingResponse);
+        if (!listing.error.empty() || listing.models.size() != 1 ||
+            listing.models.front().id != L"vendor/one") return 999;
+    }
+    // Door 4, the reader: repaired rather than refused. `?`, `#` and inner spaces
+    // were storable in v3.1.6 (it checked the length only), so a file it wrote must
+    // still load -- refusing here failed the *whole* translation section and then
+    // rewrote it with defaults, which is the one outcome worse than a repaired id.
+    {
+        const std::wstring legacyBadIdJson =
+            L"{\"schemaVersion\":7,\"activeProviderId\":\"provider.legacy.badid\","
+            L"\"providerProfiles\":["
+            L"{\"id\":\"provider.legacy.badid\",\"displayName\":\"Legacy Bad\","
+            L"\"presetKind\":\"openrouter\","
+            L"\"adapterKind\":\"openai-chat-completions\","
+            L"\"authMode\":\"bearer-api-key\","
+            L"\"credentialRef\":\"ZenCrop/Translation/provider/provider.legacy.badid\","
+            L"\"model\":\"qwen/qwen 3\",\"customModel\":true,"
+            L"\"customModels\":[\"keep/me\",\"bad id\",\"nbsp\u00A0id\",\"  \"],"
+            L"\"customModelLabels\":{\"bad id\":\"Bad Name\"},"
+            L"\"advancedOptionsJson\":\"{}\"},"
+            L"{\"id\":\"provider.legacy.good\",\"displayName\":\"Legacy Good\","
+            L"\"presetKind\":\"openrouter\","
+            L"\"adapterKind\":\"openai-chat-completions\","
+            L"\"authMode\":\"bearer-api-key\","
+            L"\"credentialRef\":\"ZenCrop/Translation/provider/provider.legacy.good\","
+            L"\"model\":\"good/model\",\"customModel\":true,"
+            L"\"advancedOptionsJson\":\"{}\"}]}";
+        TranslationSettings repairedSettings;
+        bool repairedEntries = false;
+        if (!ParseTranslationSection(
+                legacyBadIdJson, repairedSettings, &error, &repairedEntries)) {
+            return 1000;
+        }
+        // The repair is a change, so the pre-write backup contract has to fire.
+        if (!repairedEntries) return 1001;
+        // Both profiles survive the one bad id. The loader also ensures its own
+        // default Google connection, so the entries are looked up by id rather than
+        // counted: what has to hold is that the bad id cost nobody their profile.
+        const auto findProfile = [&](const wchar_t* id) {
+            return std::find_if(repairedSettings.providerProfiles.begin(),
+                repairedSettings.providerProfiles.end(),
+                [&](const TranslationProviderProfile& profile) {
+                    return profile.id == id;
+                });
+        };
+        const auto repairedIt = findProfile(L"provider.legacy.badid");
+        if (repairedIt == repairedSettings.providerProfiles.end() ||
+            findProfile(L"provider.legacy.good") ==
+                repairedSettings.providerProfiles.end()) return 1002;
+        if (repairedIt->model != L"qwen/qwen3") return 1003;
+        // Both stored ids survive with the forbidden characters removed, the
+        // whitespace-only entry is gone, and the repaired active model joins the pool
+        // at the end of the read (it is unlisted, and the profile is marked custom).
+        if (repairedIt->customModels.size() != 4 ||
+            repairedIt->customModels[0] != L"keep/me" ||
+            repairedIt->customModels[1] != L"badid" ||
+            repairedIt->customModels[2] != L"nbspid" ||
+            repairedIt->customModels[3] != L"qwen/qwen3") return 1004;
+        // The display name follows the repaired key; otherwise it describes an id the
+        // pool no longer holds and RememberCustomModelLabels prunes it.
+        const auto repairedLabel =
+            repairedIt->customModelLabels.find(L"badid");
+        if (repairedLabel == repairedIt->customModelLabels.end() ||
+            repairedLabel->second != L"Bad Name") return 1005;
+        const auto untouched = findProfile(L"provider.legacy.good");
+        if (untouched->model != L"good/model") return 1006;
+        // And the gate the finding is really about: every write normalizes and
+        // validates the profiles it is about to persist, so this id used to make
+        // *every later save* fail (the load itself tolerates it -- it is the save
+        // path that runs IsSupportedProviderProfile over each profile). The section
+        // now round-trips through that gate instead of blocking the writer.
+        TranslationSettings normalizedSettings = repairedSettings;
+        if (!NormalizeTranslationSettingsForPersistence(
+                normalizedSettings, &error)) return 1009;
+        // The same property without a file behind it: a profile that somehow holds
+        // such an id (an in-memory snapshot, an import) is repaired by the writer
+        // rather than stopping every later write of every other setting.
+        TranslationSettings writerProbe;
+        writerProbe.providerProfiles.push_back(customGemini);
+        writerProbe.providerProfiles.back().model = L"vend or?x";
+        writerProbe.activeProviderId = writerProbe.providerProfiles.back().id;
+        writerProbe.enabled = true;
+        if (!NormalizeTranslationSettingsForPersistence(writerProbe, &error)) {
+            return 1010;
+        }
+        // Nothing usable left after the repair: the preset's offered seed, so the
+        // profile still loads as a usable connection.
+        const std::wstring blankModelJson =
+            L"{\"schemaVersion\":7,\"activeProviderId\":\"provider.legacy.blank\","
+            L"\"providerProfiles\":[{\"id\":\"provider.legacy.blank\","
+            L"\"displayName\":\"Legacy Blank\",\"presetKind\":\"gemini\","
+            L"\"adapterKind\":\"gemini-generate-content\",\"authMode\":\"api-key\","
+            L"\"credentialRef\":\"ZenCrop/Translation/provider/provider.legacy.blank\","
+            L"\"model\":\"   \",\"customModel\":true,"
+            L"\"advancedOptionsJson\":\"{}\"}]}";
+        TranslationSettings blankSettings;
+        if (!ParseTranslationSection(
+                blankModelJson, blankSettings, &error, nullptr)) return 1007;
+        const auto* blankProfile = FindActiveTranslationProvider(blankSettings);
+        const auto* geminiPreset = FindTranslationProviderPreset(L"gemini");
+        if (!blankProfile || !geminiPreset || geminiPreset->models.empty() ||
+            blankProfile->model != geminiPreset->models.front() ||
+            blankProfile->customModel) return 1008;
+    }
+
+    // --- shipped built-ins: one connection per provider --------------------------
+    // The manager seeds the table's entries, and a user profile for the same preset
+    // already *is* that connection. Seeding beside it produced two rows for one
+    // provider, one of them a system-owned entry Delete refuses -- and the Add menu
+    // refuses the mirror-image case, so before this rule only one of the two orders
+    // was bounded.
+    {
+        TranslationSettings seeding;
+        seeding.providerProfiles.clear();
+        for (const auto& builtIn : kBuiltInOpenAiCompatibleProviderDefaults) {
+            TranslationProviderProfile candidate;
+            candidate.id = builtIn.id;
+            candidate.presetKind = builtIn.presetKind;
+            if (!ShouldAddBuiltInProviderProfile(seeding, candidate)) return 1011;
+            seeding.providerProfiles.push_back(candidate);
+        }
+        // An id that is already there is never added twice.
+        if (ShouldAddBuiltInProviderProfile(
+                seeding, seeding.providerProfiles.front())) return 1012;
+
+        // The user's own Xiaomi profile (created by an older build, before the
+        // shipped entry existed): its twin is not seeded, other presets still are.
+        TranslationSettings withUser;
+        withUser.providerProfiles.clear();
+        TranslationProviderProfile userXiaomi;
+        userXiaomi.id = L"provider.user.xiaomi";
+        userXiaomi.presetKind = L"xiaomi-mimo";
+        withUser.providerProfiles.push_back(userXiaomi);
+        TranslationProviderProfile xiaomiBuiltIn;
+        xiaomiBuiltIn.id = L"builtin.xiaomi-mimo.default";
+        xiaomiBuiltIn.presetKind = L"xiaomi-mimo";
+        TranslationProviderProfile geminiBuiltIn;
+        geminiBuiltIn.id = L"builtin.gemini.default";
+        geminiBuiltIn.presetKind = L"gemini";
+        if (ShouldAddBuiltInProviderProfile(withUser, xiaomiBuiltIn)) return 1013;
+        if (!ShouldAddBuiltInProviderProfile(withUser, geminiBuiltIn)) return 1014;
+
+        // The pair: both sides are labelled by the page, and the redundant built-in
+        // is the one the user may remove.
+        withUser.providerProfiles.push_back(xiaomiBuiltIn);
+        if (!SharesProviderPreset(withUser, xiaomiBuiltIn.id) ||
+            !SharesProviderPreset(withUser, userXiaomi.id)) return 1015;
+        if (!CanDeleteProviderProfile(withUser, xiaomiBuiltIn.id)) return 1016;
+        if (!CanDeleteProviderProfile(withUser, userXiaomi.id)) return 1017;
+
+        // A built-in that stands alone stays protected, and nothing else in the list
+        // can make it deletable.
+        TranslationSettings lonely;
+        lonely.providerProfiles.clear();
+        lonely.providerProfiles.push_back(geminiBuiltIn);
+        if (CanDeleteProviderProfile(lonely, geminiBuiltIn.id)) return 1018;
+        if (SharesProviderPreset(lonely, geminiBuiltIn.id)) return 1019;
+        // An id that is not in the list at all: nothing to protect.
+        if (!CanDeleteProviderProfile(lonely, L"provider.absent")) return 1020;
+    }
+
+    // --- the model's answer may be wrapped --------------------------------------
+    const std::string plainAnswer = R"({"targetLanguage":"en","translations":[]})";
+    if (ExtractJsonAnswer(plainAnswer) != plainAnswer) return 985;
+    if (ExtractJsonAnswer("```json\n" + plainAnswer + "\n```") != plainAnswer) return 986;
+    if (ExtractJsonAnswer("```\n" + plainAnswer + "\n```") != plainAnswer) return 987;
+    if (ExtractJsonAnswer("Here it is: " + plainAnswer + " Hope that helps") !=
+        plainAnswer) return 988;
+    // A brace inside a translated sentence cannot end the object early.
+    const std::string bracedAnswer = R"({"text":"a { b } c"})";
+    if (ExtractJsonAnswer("```json\n" + bracedAnswer + "\n```") != bracedAnswer) {
+        return 989;
+    }
+    // A balanced pair that is not JSON (a prose aside) must not end the search: the
+    // object the contract asked for may still follow.
+    if (ExtractJsonAnswer("{see the note} then " + plainAnswer) != plainAnswer) {
+        return 990;
+    }
+    // With no object, or an unbalanced one, the input comes back unchanged so the
+    // caller's parse still fails on it.
+    // Escapes inside a string: the scanner counts backslashes rather than treating the
+    // character after every backslash as escaped. A Windows path or a LaTeX `\\` in a
+    // translated sentence therefore cannot end the object early, and a quote after an
+    // *even* number of backslashes really does close the string -- that pair is one
+    // literal backslash, which is JSON, not a scanner bug.
+    const std::string backslashAnswer =
+        R"({"targetLanguage":"en","translations":[{"id":"s1","text":"C:\\tmp\\{a} \"q\" \\ end"}]})";
+    if (ExtractJsonAnswer("```json\n" + backslashAnswer + "\n```") !=
+        backslashAnswer) return 1045;
+    if (ExtractJsonAnswer("note: " + backslashAnswer + " done") !=
+        backslashAnswer) return 1046;
+    const std::string escapedPair = R"({"a":"x\\","b":1})";
+    if (ExtractJsonAnswer("pre " + escapedPair + " post") != escapedPair) return 1047;
+    if (ExtractJsonAnswer("not json at all") != "not json at all") return 991;
+    const std::string unbalanced = "```json\n{\"a\": 1\n```";
+    if (ExtractJsonAnswer(unbalanced) != unbalanced) return 992;
+
+    return 0;
+}
+
 int main() {
     wchar_t testDataDirectory[2] = {};
     if (GetEnvironmentVariableW(
@@ -8658,6 +10486,12 @@ int main() {
         std::cerr << "expanded provider contract failed: "
                   << expandedProviderResult << "\n";
         return expandedProviderResult;
+    }
+    const int protocolResult = TestProviderProtocolAndModelCatalogContract();
+    if (protocolResult != 0) {
+        std::cerr << "provider protocol contract failed: "
+                  << protocolResult << "\n";
+        return protocolResult;
     }
     const int googleCommunityLiveResult = TestGoogleCommunityLiveSmoke();
     if (googleCommunityLiveResult != 0) {

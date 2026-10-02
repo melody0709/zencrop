@@ -1,9 +1,12 @@
 #include "TranslationProviderSettingsPage.h"
 
 #include "TranslationComboUtils.h"
+#include "TranslationBudget.h"
 #include "TranslationCredentialRollback.h"
 #include "TranslationCredentialStore.h"
 #include "TranslationEngineFactory.h"
+#include "TranslationModelListing.h"
+#include "TranslationModelPickerDialog.h"
 #include "TranslationProviderCatalog.h"
 #include "TranslationTextUtils.h"
 
@@ -18,6 +21,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <ctime>
 #include <cwctype>
 #include <exception>
 #include <memory>
@@ -30,6 +34,17 @@ namespace {
 
 constexpr UINT kProviderTestDone = WM_APP + 0x5F;
 constexpr UINT_PTR kProviderTestPollTimer = 0x51;
+// Model listing runs on the same worker machinery as the connection test, with
+// its own completion message and poll timer so neither action can finish the
+// other; a single `busy` rule (see BeginModelFetch) keeps the two from running at
+// once, because both read the same credential and share the status line.
+constexpr UINT kProviderFetchDone = WM_APP + 0x60;
+constexpr UINT_PTR kProviderFetchPollTimer = 0x52;
+// OpenRouter publishes 458 models and the envelope carries metadata per model, so
+// the listing needs more room than a translation response. This is a guard
+// against a runaway gateway, not a budget: anything past it is reported instead
+// of being parsed in half.
+constexpr size_t kMaxModelListingBytes = 8u * 1024u * 1024u;
 // Upper bound for the free-text temperature field. The engines document 0..2,
 // and the value is user-typed free text, so the page must police it rather than
 // let std::stod accept "0.7abc" or an out-of-range value.
@@ -38,6 +53,18 @@ constexpr double kMaxProviderTemperature = 2.0;
 const wchar_t* TemperatureHint() {
     return S::IsChinese() ? L"Temperature \u5fc5\u987b\u662f 0 \u5230 2 \u4e4b\u95f4\u7684\u6570\u5b57\u3002"
                           : L"Temperature must be a number between 0 and 2.";
+}
+
+// An id carrying a character a request URL cannot hold (a `?`/`#`, or any space or
+// control character -- including the full-width and non-breaking ones an IME or a
+// paste brings along) is refused at every door: the pool rejects it, the validator
+// rejects it at Apply. Saying so while the text is still in the field is what keeps
+// that refusal from reading as "I typed exactly this id".
+const wchar_t* ModelIdHint() {
+    return S::IsChinese()
+        ? L"\u6a21\u578b id \u4e0d\u80fd\u5305\u542b ?\u3001# \u6216\u4efb\u4f55"
+          L"\u7a7a\u767d\u4e0e\u63a7\u5236\u5b57\u7b26\u3002"
+        : L"A model id cannot contain '?', '#', or any space or control character.";
 }
 
 // Validation runs over every profile, including ones the page is not showing.
@@ -95,7 +122,25 @@ struct ProviderPageState {
     std::mutex testMutex;
     TranslationResult testResult;
     bool testCompleted = false;
+    // Invalidates an in-flight action's completion. ONE counter serves both
+    // actions: they are mutually exclusive (see BeginTest / BeginModelFetch), so a
+    // second counter could only give the shared liveness predicate a way to compare
+    // against the wrong one -- which is exactly how every first fetch used to be
+    // dropped and left the page stuck on "Fetching...".
     std::atomic<uint64_t> generation{0};
+    // Model listing ("Fetch available models"). Keeps its own result slot rather
+    // than sharing the test's: the two actions have different result shapes, and a
+    // shared slot would let a fetch completion be consumed by the connection test.
+    bool fetching = false;
+    std::shared_ptr<AsyncHttpRequest> fetchOperation;
+    std::mutex fetchMutex;
+    std::vector<ModelNameEntry> fetchedModels;
+    std::wstring fetchError;
+    bool fetchCompleted = false;
+    // Whether `fetchedModels` is the vendor's whole list. Kept beside the models
+    // because it travels with them from the worker to the advice below, and a
+    // half-list must not be read as "the rest is retired".
+    bool fetchComplete = false;
     zencrop::ScopedHFONT hHintFont;
     bool regionShifted = false;
     int regionStepPx = 0;
@@ -104,6 +149,10 @@ struct ProviderPageState {
     // the user typed, and so the field can explain itself while typing.
     bool temperatureInvalid = false;
     bool temperatureHintShown = false;
+    // Same contract for the free-text model field: the current contents cannot become
+    // a request, so the field explains itself while it is being typed.
+    bool modelIdInvalid = false;
+    bool modelIdHintShown = false;
     // The status label is three hint-font lines tall. Provider diagnostics can be
     // far longer (an OpenRouter guardrail refusal runs past 300 characters), so
     // the label shows a clipped preview and the whole *status* text follows the
@@ -124,6 +173,10 @@ struct ProviderPageState {
 void SetText(HWND page, int id, const std::wstring& value) {
     if (GetDlgItem(page, id)) SetDlgItemTextW(page, id, value.c_str());
 }
+
+// Defined with the other action helpers below; declared here because RenderProfile
+// must not re-enable a button while an action owns it.
+void RefreshProviderActionButtons(HWND page, ProviderPageState& state);
 
 // A profile can hold edits Apply has not consumed yet: a typed API key (kept
 // only in state.pendingKey, or staged as Clear) or a temperature the parser
@@ -233,6 +286,47 @@ void SetProviderTestStatus(
             reinterpret_cast<LPARAM>(&tool))) {
         state.testStatusToolTipRegistered = true;
     }
+}
+
+std::wstring FormatFetchedAt(std::int64_t seconds) {
+    const std::time_t value = static_cast<std::time_t>(seconds);
+    std::tm local = {};
+    if (localtime_s(&local, &value) != 0) return {};
+    wchar_t buffer[32] = {};
+    if (wcsftime(buffer, std::size(buffer), L"%Y-%m-%d %H:%M", &local) == 0) {
+        return {};
+    }
+    return buffer;
+}
+
+// The status line doubles as the idle hint area. While no action owns it, it says
+// whether the offered models are still just the seed list and when the provider's
+// own list was last read -- which is the only thing that tells a user the built-in
+// list may be stale. An action's own text is left alone (and replaces this one
+// until the next render).
+void SetProviderIdleStatus(HWND page, ProviderPageState& state,
+    const TranslationProviderProfile& profile) {
+    if (state.testing || state.fetching) return;
+    const auto* preset = FindTranslationProviderPreset(profile.presetKind);
+    if (!preset) preset = FindBuiltInProviderPreset(profile.id);
+    const bool hasSeeds = preset && !preset->models.empty();
+    if (profile.modelCatalogFetchedAt <= 0) {
+        if (!hasSeeds) {
+            SetProviderTestStatus(page, state, S::IsChinese()
+                ? L"\u5c1a\u65e0\u6a21\u578b\u5217\u8868\uff1a\u8bf7\u5148 Fetch available models\u3002"
+                : L"No model list yet -- use Fetch available models first.");
+            return;
+        }
+        SetProviderTestStatus(page, state, S::IsChinese()
+            ? L"\u5f53\u524d\u53ea\u663e\u793a\u5185\u7f6e\u79cd\u5b50\u6a21\u578b\uff1a"
+              L"\u70b9 Fetch available models \u83b7\u53d6\u8be5\u670d\u52a1\u5546\u7684\u6700\u65b0\u5217\u8868\u3002"
+            : L"Seed models only -- use Fetch available models to load this provider's current list.");
+        return;
+    }
+    const std::wstring when = FormatFetchedAt(profile.modelCatalogFetchedAt);
+    SetProviderTestStatus(page, state, (S::IsChinese()
+        ? L"\u6a21\u578b\u5217\u8868\u5df2\u6293\u53d6\uff1a" : L"Model list fetched ")
+        + when + (S::IsChinese() ? L"\u3002" : L"."));
 }
 
 void EnsureProviderTestStatusToolTip(HWND page, ProviderPageState& state) {
@@ -481,11 +575,19 @@ bool CanRemoveCurrentModel(const TranslationProviderProfile& profile) {
 void NormalizeProfileDisplayDefaults(TranslationProviderProfile& profile) {
     const auto* preset = FindTranslationProviderPreset(profile.presetKind);
     if (!preset) return;
-    if (!profile.customModel && !preset->models.empty() &&
-        (profile.model.empty() ||
-         std::find(preset->models.begin(), preset->models.end(), profile.model) ==
-             preset->models.end())) {
-        profile.model = preset->models.front();
+    const bool offered =
+        std::find(preset->models.begin(), preset->models.end(), profile.model) !=
+        preset->models.end();
+    if (!profile.customModel && (profile.model.empty() || !offered)) {
+        if (IsModelPolicyKnown(*preset, profile.model)) {
+            // The preset still claims this id's request policy; it simply is not
+            // offered any more (the display seeds were slimmed). Mark it instead of
+            // replacing the user's model with the seed: the mark is what the page
+            // renders and what keeps the id in the pool.
+            profile.customModel = true;
+        } else if (!preset->models.empty()) {
+            profile.model = preset->models.front();
+        }
     }
     if (profile.customModel && profile.model.empty() && !profile.customModels.empty()) {
         profile.model = profile.customModels.front();
@@ -529,12 +631,21 @@ void NormalizeBuiltInProfileForDisplay(TranslationProviderProfile& profile) {
     // the correct endpoint/model instead of showing a stale preset.
     profile.displayName = fixedPreset->displayName;
     profile.presetKind = fixedPreset->kind;
-    profile.adapterKind = fixedPreset->adapterKind;
+    // The API protocol is part of the saved connection now, so it survives this
+    // repair: only a value this preset does not offer falls back to the native
+    // one. Forcing the native adapter here silently reverted the user's protocol
+    // choice on every built-in profile -- and with it the auth surface, which for
+    // a Gemini profile switched to the OpenAI-compatible endpoint meant a bearer
+    // token was replaced by `x-goog-api-key` (a guaranteed 401).
+    profile.adapterKind = NormalizeProviderAdapter(
+        *fixedPreset, profile.adapterKind);
     profile.baseUrlOverride.clear();
-    profile.authMode = fixedPreset->capabilities.authModes.count(
+    const auto builtInAuthModes = ProviderAuthModes(
+        *fixedPreset, profile.adapterKind);
+    profile.authMode = builtInAuthModes.count(
             TranslationAuthMode::BearerApiKey)
         ? TranslationAuthMode::BearerApiKey
-        : (fixedPreset->capabilities.authModes.count(TranslationAuthMode::ApiKey)
+        : (builtInAuthModes.count(TranslationAuthMode::ApiKey)
             ? TranslationAuthMode::ApiKey
             : TranslationAuthMode::None);
     if (profile.model.empty()) {
@@ -542,19 +653,24 @@ void NormalizeBuiltInProfileForDisplay(TranslationProviderProfile& profile) {
             profile.model = fixedPreset->models.front();
             profile.customModel = false;
         }
-    } else if (!fixedPreset->models.empty()) {
+    } else if (!fixedPreset->models.empty() &&
+               std::find(fixedPreset->models.begin(), fixedPreset->models.end(),
+                   profile.model) == fixedPreset->models.end()) {
         // Repair a *stale* model from another preset only. Deliberately does NOT
         // clear `customModel` for a model that happens to be in the catalog: the
         // built-in profiles are the only way to reach some vendors (the Add
         // dialog excludes presets that already have a built-in profile), so
         // clearing it here made "Custom model" impossible to keep checked and
         // left unlisted models unreachable entirely. Persistence keeps the mark
-        // too (see IsListedProviderModel): a listed id takes the model-level
+        // too (see IsModelPolicyKnown): a policy-known id takes the model-level
         // policy regardless of the flag, so the page may show what the user
         // asked for without changing the request shape.
-        if (!profile.customModel &&
-            std::find(fixedPreset->models.begin(), fixedPreset->models.end(),
-                profile.model) == fixedPreset->models.end()) {
+        //
+        // An id the policy catalog still claims is kept and marked: the seed list
+        // was slimmed, not the vendor's model retired.
+        if (IsModelPolicyKnown(*fixedPreset, profile.model)) {
+            profile.customModel = true;
+        } else if (!profile.customModel) {
             profile.model = fixedPreset->models.front();
         }
     }
@@ -630,8 +746,19 @@ TranslationProviderProfile* ProfileById(
     return it == state.pending.providerProfiles.end() ? nullptr : &*it;
 }
 
-std::wstring ProviderComboLabel(const TranslationProviderProfile& profile) {
+std::wstring ProviderComboLabel(
+    const TranslationProviderProfile& profile,
+    const TranslationSettings& settings) {
     std::wstring label = profile.displayName;
+    // The shipped entry is marked only where the list is ambiguous. Two rows for one
+    // provider are a legitimate configuration -- a built-in beside the profile the
+    // user created (or copied, for a vendor's second account) -- and nothing else in
+    // this list told them apart. Marking every built-in instead would print the word
+    // on most of the list, where it explains nothing.
+    if (FindBuiltInProviderPreset(profile.id) &&
+        SharesProviderPreset(settings, profile.id)) {
+        label += L" (Built-in)";
+    }
     const auto capabilities = GetCapabilities(profile);
     if (capabilities.maturity == ProviderMaturity::Experimental) {
         label += L" (Experimental)";
@@ -646,7 +773,8 @@ void FillProfiles(HWND page, ProviderPageState& state) {
     HWND combo = GetDlgItem(page, IDC_PROVIDER_PROFILE);
     ClearCombo(combo, state.profileIds);
     for (const auto& profile : state.pending.providerProfiles) {
-        AddCombo(combo, ProviderComboLabel(profile), profile.id, state.profileIds);
+        AddCombo(combo, ProviderComboLabel(profile, state.pending), profile.id,
+            state.profileIds);
     }
     SelectCombo(combo, state.selectedProviderId);
     state.selectedProviderId = ComboValue(combo);
@@ -694,12 +822,6 @@ void RestoreMissingBuiltInProfiles(TranslationSettings& settings) {
     // ever seeded them, so a hand-edited or older settings file showed neither
     // entry and the manager could not bring one back.
     for (const auto& builtIn : kBuiltInOpenAiCompatibleProviderDefaults) {
-        const auto existing = std::find_if(
-            settings.providerProfiles.begin(), settings.providerProfiles.end(),
-            [&](const TranslationProviderProfile& profile) {
-                return profile.id == builtIn.id;
-            });
-        if (existing != settings.providerProfiles.end()) continue;
         const auto* preset = FindTranslationProviderPreset(builtIn.presetKind);
         if (!preset) continue;
         TranslationProviderProfile profile;
@@ -712,6 +834,11 @@ void RestoreMissingBuiltInProfiles(TranslationSettings& settings) {
         profile.authMode = TranslationAuthMode::BearerApiKey;
         profile.credentialRef = CredentialTargetForRestoredBuiltIn(profile);
         profile.reasoningMode = TranslationReasoningMode::Off;
+        // Seeded only when this preset has no connection yet (see the predicate):
+        // adding it beside a profile the user created in an earlier build is how the
+        // manager ended up with two rows for one provider, one of them a system-owned
+        // entry the Delete button refuses.
+        if (!ShouldAddBuiltInProviderProfile(settings, profile)) continue;
         settings.providerProfiles.push_back(std::move(profile));
     }
     if (settings.providerProfiles.empty()) return;
@@ -726,7 +853,8 @@ void RestoreMissingBuiltInProfiles(TranslationSettings& settings) {
 }
 
 void UpdateProfileComboLabel(
-    HWND page, const TranslationProviderProfile& profile) {
+    HWND page, const TranslationSettings& settings,
+    const TranslationProviderProfile& profile) {
     const HWND combo = GetDlgItem(page, IDC_PROVIDER_PROFILE);
     if (!combo) return;
     const LRESULT count = SendMessageW(combo, CB_GETCOUNT, 0, 0);
@@ -741,10 +869,40 @@ void UpdateProfileComboLabel(
         // any arithmetic here moved them to the wrong provider. The rule lives in
         // ReplaceComboItemLabel() (TranslationComboUtils.h) and is pinned by a
         // test.
-        ReplaceComboItemLabel(
-            combo, static_cast<int>(index), ProviderComboLabel(profile), value);
+        ReplaceComboItemLabel(combo, static_cast<int>(index),
+            ProviderComboLabel(profile, settings), value);
         return;
     }
+}
+
+// The API protocol combo. Its entries are catalog data, so the selection is
+// stored as the option index and read back through the preset rather than being
+// copied into an owned string list.
+void FillProtocol(HWND page, const TranslationProviderProfile& profile) {
+    const HWND combo = GetDlgItem(page, IDC_PROVIDER_PROTOCOL);
+    if (!combo) return;
+    SendMessageW(combo, CB_RESETCONTENT, 0, 0);
+    const auto* preset = FindTranslationProviderPreset(profile.presetKind);
+    if (!preset) {
+        EnableWindow(combo, FALSE);
+        return;
+    }
+    LRESULT selected = CB_ERR;
+    for (size_t i = 0; i < preset->protocols.size(); ++i) {
+        const auto& option = preset->protocols[i];
+        const int index = static_cast<int>(SendMessageW(
+            combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(option.label)));
+        SendMessageW(combo, CB_SETITEMDATA, index, static_cast<LPARAM>(i));
+        if (option.adapter == profile.adapterKind) selected = index;
+    }
+    if (selected == CB_ERR && !preset->protocols.empty()) {
+        SendMessageW(combo, CB_SETCURSEL, 0, 0);
+    } else if (selected != CB_ERR) {
+        SendMessageW(combo, CB_SETCURSEL, selected, 0);
+    }
+    // One protocol is not a choice; the row stays visible (it names the adapter
+    // actually in use) but cannot be changed.
+    EnableWindow(combo, preset->protocols.size() > 1);
 }
 
 void FillAuthMode(HWND page, const TranslationProviderProfile& profile) {
@@ -886,7 +1044,7 @@ void RenderProfile(HWND page, ProviderPageState& state) {
     // codec pass, so the page cannot rely on load-time normalization alone.
     ClampReasoningMode(*profile);
     NormalizeProfileDisplayDefaults(*profile);
-    UpdateProfileComboLabel(page, *profile);
+    UpdateProfileComboLabel(page, state.pending, *profile);
     const auto* preset = FindTranslationProviderPreset(profile->presetKind);
     const ProviderCapabilities capabilities = GetCapabilities(*profile);
     SetText(page, IDC_PROVIDER_NAME, profile->displayName);
@@ -898,11 +1056,15 @@ void RenderProfile(HWND page, ProviderPageState& state) {
     const bool builtInProfile = FindBuiltInProviderPreset(profile->id) != nullptr;
     EnableWindow(GetDlgItem(page, IDC_PROVIDER_NAME), !builtInProfile);
     state.temperatureHintShown = false;
-    SetProviderTestStatus(page, state, L"");
+    state.modelIdHintShown = false;
+    SetProviderIdleStatus(page, state, *profile);
+    FillProtocol(page, *profile);
     FillAuthMode(page, *profile);
     const bool llm = capabilities.family == TranslationProviderFamily::Llm;
     for (const int id : {IDC_PROVIDER_MODEL_LABEL, IDC_PROVIDER_MODEL,
                          IDC_PROVIDER_CUSTOM_MODEL, IDC_PROVIDER_REMOVE_MODEL,
+                         IDC_PROVIDER_MANAGE_MODELS, IDC_PROVIDER_FETCH_MODELS,
+                         IDC_PROVIDER_RESTORE_MODELS,
                          IDC_PROVIDER_REASONING_LABEL, IDC_PROVIDER_REASONING,
                          IDC_PROVIDER_TEMPERATURE_LABEL, IDC_PROVIDER_TEMPERATURE,
                          IDC_PROVIDER_ADVANCED_LABEL, IDC_PROVIDER_ADVANCED}) {
@@ -947,12 +1109,30 @@ void RenderProfile(HWND page, ProviderPageState& state) {
             SetText(page, IDC_PROVIDER_MODEL, profile->model);
         }
     }
-    std::wstring endpoint;
-    std::wstring endpointError;
-    endpoint = ResolveProviderEndpoint(*profile, &endpointError);
-    SetText(page, IDC_PROVIDER_ENDPOINT, profile->baseUrlOverride.empty() ? endpoint : profile->baseUrlOverride);
+    // The field is a Base URL now. The request path comes from the API protocol,
+    // and demanding a complete URL here is exactly what invited the "fill in DSH's
+    // base URL, get a bare 404" trap this redesign removes. A stored legacy value
+    // that still is a complete request URL is shown in its base form -- and
+    // ResolveProviderEndpoint composes it back to the very same URL, so an
+    // existing profile keeps working unchanged.
+    std::wstring baseUrlError;
+    const std::wstring baseUrl = ResolveProviderBaseUrl(*profile, &baseUrlError);
+    // What the field shows is what will be sent, so the question is asked through the
+    // same predicate the resolver and the protocol switch use. Deciding it from the
+    // stored bit alone was wrong in both directions: a profile carried over from before
+    // the base semantics shows the derived base and quietly rewrites a complete URL on
+    // the next Apply, and a query-bearing address whose bit an edit cleared gets the
+    // base normalization applied -- which appends a slash *after* the query, turning
+    // `...completions?api-version=3.1` into `...completions?api-version=3.1/`, and that
+    // value is what a later Apply writes back.
+    const std::wstring endpointText = EndpointIsCompleteRequestUrl(*profile)
+        ? profile->baseUrlOverride : baseUrl;
+    SetText(page, IDC_PROVIDER_ENDPOINT, endpointText);
+    const wchar_t* cueBanner = capabilities.family == TranslationProviderFamily::Llm
+        ? L"https://api.example.com/v1/"
+        : L"https://api.example.com/v2/translate";
     SendMessageW(GetDlgItem(page, IDC_PROVIDER_ENDPOINT), EM_SETCUEBANNER, TRUE,
-        reinterpret_cast<LPARAM>(L"https://api.example.com/v1/chat/completions"));
+        reinterpret_cast<LPARAM>(cueBanner));
     SetText(page, IDC_PROVIDER_ADVANCED, profile->advancedOptionsJson);
     if (profile->temperature.has_value()) {
         std::wstring temperature = std::to_wstring(*profile->temperature);
@@ -1035,7 +1215,33 @@ void RenderProfile(HWND page, ProviderPageState& state) {
         EnableWindow(keyEdit, credentialAuth);
         if (!credentialAuth) SetText(page, IDC_PROVIDER_KEY, L"");
     }
-    EnableWindow(GetDlgItem(page, IDC_PROVIDER_DELETE), !builtInProfile);
+    // The same predicate the Delete handler asks, so the button and the handler can
+    // never disagree: gating this on "is it built-in" left the relaxation unreachable
+    // -- every built-in row was greyed out, so the click branch that had just been
+    // taught to allow a redundant built-in could never run.
+    EnableWindow(GetDlgItem(page, IDC_PROVIDER_DELETE),
+        CanDeleteProviderProfile(state.pending, profile->id));
+    // Model catalogue actions. Fetch needs a protocol that publishes a listing
+    // *and* a base URL to ask; restore needs something to restore, so it is greyed
+    // out while the pool is already empty; the picker is the pool's editor.
+    // Both action buttons come from one place, so a re-render mid-action cannot
+    // re-enable the button that action disabled.
+    RefreshProviderActionButtons(page, state);
+    // Restore also covers the case where nothing is pooled yet but the active model
+    // was typed in by hand (it only enters the pool on focus loss), so gating this
+    // on the pool alone left that state with no way back to the catalog default.
+    //
+    // It also requires a catalog *to* restore. A preset that has none (OpenRouter,
+    // Ollama, a custom endpoint) can only lose by this action: the pool is cleared
+    // and there is no default model to put back, so the button used to promise a
+    // restore and deliver a deletion. The picker still clears a pool on request
+    // (`Clear all`), which is where that belongs.
+    const bool hasCatalog = preset && !preset->models.empty();
+    const bool catalogDefaultSelected = hasCatalog &&
+        profile->model == preset->models.front() && !profile->customModel;
+    EnableWindow(GetDlgItem(page, IDC_PROVIDER_RESTORE_MODELS),
+        hasCatalog && (!profile->customModels.empty() || !catalogDefaultSelected));
+    EnableWindow(GetDlgItem(page, IDC_PROVIDER_MANAGE_MODELS), llm);
 }
 
 void ReadControlsIntoProfile(
@@ -1051,8 +1257,20 @@ void ReadControlsIntoProfile(
     }
     profile.enabled = IsDlgButtonChecked(
         page, IDC_PROVIDER_ENABLED) == BST_CHECKED;
-    UpdateProfileComboLabel(page, profile);
+    UpdateProfileComboLabel(page, state.pending, profile);
     const auto* preset = FindTranslationProviderPreset(profile.presetKind);
+    // Read the API protocol first: it decides which auth surface and which
+    // reasoning dialect this profile has, so every capability derived below has to
+    // see the new value already.
+    if (preset && preset->protocols.size() > 1) {
+        const LRESULT protocolIndex = SendMessageW(
+            GetDlgItem(page, IDC_PROVIDER_PROTOCOL), CB_GETCURSEL, 0, 0);
+        if (protocolIndex != CB_ERR &&
+            static_cast<size_t>(protocolIndex) < preset->protocols.size()) {
+            profile.adapterKind =
+                preset->protocols[static_cast<size_t>(protocolIndex)].adapter;
+        }
+    }
     const auto currentCapabilities = GetCapabilities(profile);
     const bool customModel = currentCapabilities.requiresModel &&
         IsDlgButtonChecked(
@@ -1065,6 +1283,20 @@ void ReadControlsIntoProfile(
     auto* auth = GetDlgItem(page, IDC_PROVIDER_AUTH_MODE);
     const LRESULT authIndex = SendMessageW(auth, CB_GETCURSEL, 0, 0);
     if (authIndex != CB_ERR) profile.authMode = static_cast<TranslationAuthMode>(SendMessageW(auth, CB_GETITEMDATA, authIndex, 0));
+    if (preset) {
+        // Switching the API protocol can invalidate the stored auth mode: Gemini's
+        // native surface takes `x-goog-api-key` while its OpenAI-compatible surface
+        // wants a bearer token. Repair it here so the combo the next render fills
+        // agrees with the profile that will be saved.
+        const auto offered = ProviderAuthModes(*preset, profile.adapterKind);
+        if (!offered.count(profile.authMode)) {
+            profile.authMode = offered.count(TranslationAuthMode::BearerApiKey)
+                ? TranslationAuthMode::BearerApiKey
+                : (offered.count(TranslationAuthMode::ApiKey)
+                    ? TranslationAuthMode::ApiKey
+                    : TranslationAuthMode::None);
+        }
+    }
     if (TranslationAuthUsesCredential(profile.authMode) &&
         profile.credentialRef.empty()) {
         profile.credentialRef = CredentialTargetForPreset(profile, profile.presetKind);
@@ -1072,6 +1304,16 @@ void ReadControlsIntoProfile(
     const std::wstring endpoint = ReadText(page, IDC_PROVIDER_ENDPOINT);
     std::wstring normalizedEndpoint = endpoint;
     TrimWhitespace(normalizedEndpoint);
+    // An edit is a new statement about the endpoint, so the "this is already the
+    // complete request URL" marking a pre-v8 file carried stops applying once the
+    // value changes -- otherwise the newly typed value would keep being sent verbatim,
+    // protocol path and all, the opposite of what typing a base URL means. Comparing
+    // against the value that was *stored* is what leaves an untouched legacy profile
+    // intact across an Apply that changed something else.
+    if (profile.completeEndpointOverride &&
+        normalizedEndpoint != profile.baseUrlOverride) {
+        profile.completeEndpointOverride = false;
+    }
     profile.baseUrlOverride = (preset && preset->capabilities.allowsCustomBaseUrl)
         ? normalizedEndpoint : L"";
     profile.region = currentCapabilities.acceptsRegion
@@ -1149,6 +1391,22 @@ bool ValidateState(HWND page, ProviderPageState& state) {
             return false;
         }
     }
+    // The model-id rule, over *every* profile for the same reason the loop above
+    // exists -- and here the reason is not only a better message. Both this function
+    // and the persistence codec gate their profile check on `enabled`, while the
+    // codec's per-profile re-parse *repairs* an unusable id (deliberately, with no
+    // backup). So a dirty id typed on a **disabled** profile used to reach the file
+    // rewritten and unannounced, which is exactly the silent rewrite the typed-field
+    // hint was added to prevent: the hint is UX, this is the invariant. Empty models
+    // are skipped, so the presets that have none by design stay legal.
+    for (const auto& profile : state.pending.providerProfiles) {
+        if (!GetCapabilities(profile).requiresModel || profile.model.empty() ||
+            IsStorableModelIdentifier(profile.model)) {
+            continue;
+        }
+        ReportProfileProblem(page, profile, ModelIdHint());
+        return false;
+    }
     const auto* active = FindActiveTranslationProvider(state.pending);
     if (state.pending.enabled && (!active || !active->enabled)) {
         MessageBoxW(page,
@@ -1198,6 +1456,10 @@ bool ValidateState(HWND page, ProviderPageState& state) {
 }
 
 void CancelProviderTest(HWND page, ProviderPageState& state);
+// Defined with the listing trio further down; declared here because
+// ResetCurrentProfileToDefaults (which runs before them) must stop an in-flight
+// listing as well as an in-flight connection test.
+void CancelModelFetch(HWND page, ProviderPageState& state);
 
 // Preconditions for a *probe*, which are far narrower than Apply's contract: only
 // the profile on screen and its (possibly pending) credential matter. Running the
@@ -1233,6 +1495,9 @@ bool ValidateProbeTarget(HWND page, ProviderPageState& state) {
 
 void ResetCurrentProfileToDefaults(HWND page, ProviderPageState& state) {
     CancelProviderTest(page, state);
+    // A listing already in flight would otherwise land on the profile this reset
+    // just changed and open the picker for the old endpoint.
+    CancelModelFetch(page, state);
     ReadCurrentControls(page, state);
     auto* profile = CurrentProfile(page, state);
     if (!profile) return;
@@ -1274,6 +1539,20 @@ void ResetCurrentProfileToDefaults(HWND page, ProviderPageState& state) {
     PropSheet_Changed(GetParent(page), page);
 }
 
+// The one place that decides whether the two network actions can be started.
+// While either runs, BOTH buttons are disabled: they read the same credential and
+// write the same status line, and a button that silently does nothing (the two
+// Begin* functions refuse to start while the other action is in flight) reads as a
+// broken button. Used by the two Begin/Finish/Cancel pairs and by RenderProfile, so
+// a re-render during an action cannot re-enable it.
+void RefreshProviderActionButtons(HWND page, ProviderPageState& state) {
+    const bool busy = state.testing || state.fetching;
+    EnableWindow(GetDlgItem(page, IDC_PROVIDER_TEST), !busy);
+    const auto* profile = CurrentProfile(page, state);
+    EnableWindow(GetDlgItem(page, IDC_PROVIDER_FETCH_MODELS),
+        !busy && profile && SupportsModelListing(*profile));
+}
+
 void FinishTest(HWND page, ProviderPageState& state) {
     if (!state.testing) return;
     state.testing = false;
@@ -1291,7 +1570,7 @@ void FinishTest(HWND page, ProviderPageState& state) {
         result.success ? L"Connection succeeded" :
             (result.error.empty() ? L"Connection failed" : result.error));
     SetText(page, IDC_PROVIDER_TEST, L"Test connection");
-    EnableWindow(GetDlgItem(page, IDC_PROVIDER_TEST), TRUE);
+    RefreshProviderActionButtons(page, state);
 }
 
 void CancelProviderTest(HWND page, ProviderPageState& state) {
@@ -1311,9 +1590,318 @@ void CancelProviderTest(HWND page, ProviderPageState& state) {
         state.testCompleted = false;
         state.testResult = {};
     }
-    EnableWindow(GetDlgItem(page, IDC_PROVIDER_TEST), TRUE);
+    RefreshProviderActionButtons(page, state);
 }
 
+// --- Model catalogue: fetch, restore, picker ---------------------------------
+
+// Defined below with the other worker-completion guards; declared here because the
+// listing publisher above it needs it.
+bool IsLiveProviderPageCallback(
+    HWND page, ProviderPageState* state, uint64_t generation) noexcept;
+
+void OpenModelPicker(HWND page, ProviderPageState& state,
+    const std::vector<ModelNameEntry>* fetched) {
+    auto* profile = CurrentProfile(page, state);
+    if (!profile) return;
+    const auto capabilities = GetCapabilities(*profile);
+    if (capabilities.family != TranslationProviderFamily::Llm) return;
+    const auto* preset = FindTranslationProviderPreset(profile->presetKind);
+    ModelPickerRequest request;
+    if (preset) request.listed = preset->models;
+    // The pool itself is ids only; the names live in the display side table, and
+    // the picker must show them so a listed id and a remembered name can be told
+    // apart at a glance.
+    for (const auto& id : profile->customModels) {
+        ModelNameEntry entry;
+        entry.id = id;
+        const auto label = profile->customModelLabels.find(id);
+        if (label != profile->customModelLabels.end()) entry.label = label->second;
+        request.pool.push_back(std::move(entry));
+    }
+    request.active = profile->model;
+    request.capacity = kMaxTranslationCustomModels;
+    request.maxIdLength = kMaxTranslationModelLength;
+    {
+        const auto capabilities = GetCapabilities(*profile);
+        request.allowsCustomModel = capabilities.requiresModel &&
+            capabilities.allowsCustomModel;
+    }
+    if (fetched) request.available = *fetched;
+    ModelPickerResult result;
+    if (!ShowTranslationModelPicker(page, request, result) || !result.modified) {
+        return;
+    }
+    // The pool is written through its single contract, never by assigning the
+    // picker's vector: catalog ids, duplicates and the FIFO cap are decided there.
+    // The display names are a second, purely cosmetic write: it cannot change the
+    // pool, and it prunes itself to whatever the pool write kept.
+    std::vector<std::wstring> poolIds;
+    poolIds.reserve(result.pool.size());
+    for (const auto& entry : result.pool) {
+        poolIds.push_back(entry.id);
+    }
+    const bool poolChanged = SetCustomModelPool(*profile, poolIds);
+    const bool labelsChanged = RememberCustomModelLabels(*profile, result.pool);
+    bool activeChanged = false;
+    if (!result.active.empty() && result.active != profile->model) {
+        ApplyTranslationModelChoice(*profile, result.active);
+        activeChanged = true;
+    } else {
+        // Re-derive the "unlisted id" mark even when the active model did not
+        // change, because the pool it belongs to may have. Same gate as
+        // ApplyTranslationModelChoice: a preset that refuses custom models must
+        // never end up marked as using one, or Apply rejects the whole profile.
+        const auto capabilities = GetCapabilities(*profile);
+        profile->customModel = capabilities.requiresModel &&
+            capabilities.allowsCustomModel &&
+            !IsListedProviderModel(*profile, profile->model);
+    }
+    ClampReasoningMode(*profile);
+    RenderProfile(page, state);
+    if (poolChanged || labelsChanged || activeChanged) {
+        PropSheet_Changed(GetParent(page), page);
+    }
+}
+
+// Same exception boundary as PublishProviderTestResult, and for the same reason:
+// this runs on the HTTP worker, where a bad allocation or a mutex failure must
+// not escape and leave the page stuck in "Fetching...".
+void PublishModelFetchResult(HWND page, ProviderPageState* state,
+    uint64_t generation, ModelListResult outcome) noexcept {
+    bool postCompletion = false;
+    try {
+        if (!IsLiveProviderPageCallback(page, state, generation)) return;
+        {
+            std::lock_guard<std::mutex> lock(state->fetchMutex);
+            state->fetchCompleted = true;
+            try {
+                state->fetchedModels = std::move(outcome.models);
+                state->fetchError = std::move(outcome.error);
+                state->fetchComplete = outcome.complete;
+            } catch (...) {
+                state->fetchedModels.clear();
+                state->fetchError = L"Model listing failed unexpectedly.";
+                state->fetchComplete = false;
+            }
+        }
+        postCompletion = true;
+    } catch (...) {
+        try {
+            if (!IsLiveProviderPageCallback(page, state, generation)) return;
+            std::lock_guard<std::mutex> lock(state->fetchMutex);
+            state->fetchCompleted = true;
+            state->fetchedModels.clear();
+            state->fetchError = L"Model listing failed unexpectedly.";
+            state->fetchComplete = false;
+            postCompletion = true;
+        } catch (...) {
+        }
+    }
+    if (!postCompletion) return;
+    try {
+        PostMessageW(page, kProviderFetchDone, 0, 0);
+    } catch (...) {
+    }
+}
+
+void BeginModelFetch(HWND page, ProviderPageState& state) {
+    // One network action at a time: both read the same credential and share the
+    // status line, so overlapping them would let one finish the other's state.
+    if (state.fetching || state.testing) return;
+    // The listing request uses the protocol, the address, the auth mode and the key --
+    // not the model, the temperature or the advanced options. Validating the whole
+    // translation profile here made the first-run flow circular: a preset with no
+    // seeds (OpenRouter, Ollama, a custom endpoint) starts with an empty model, so the
+    // one action that would tell the user which models exist was the one action refused
+    // for having no model -- while the page invites them to do exactly that. The full
+    // check still runs for Test connection and for Apply.
+    ReadCurrentControls(page, state);
+    auto* profile = CurrentProfile(page, state);
+    if (!profile) return;
+    std::wstring targetError;
+    if (!ValidateListingTarget(*profile, &targetError)) {
+        ReportProfileProblem(page, *profile, targetError);
+        return;
+    }
+    if (state.credentialIntent == CredentialIntent::Clear) {
+        SetProviderTestStatus(page, state, S::IsChinese()
+            ? L"\u5df2\u5f85\u6e05\u9664 API Key\uff1a\u8bf7\u5148 Apply \u6216\u53d6\u6d88\u6e05\u9664\uff0c\u518d\u83b7\u53d6\u6a21\u578b\u3002"
+            : L"Clear is pending: Apply or cancel it before fetching models.");
+        return;
+    }
+    std::wstring key = state.pendingKey;
+    if (TranslationAuthUsesCredential(profile->authMode) &&
+        state.credentialIntent != CredentialIntent::Replace) {
+        std::wstring ignoredError;
+        TranslationCredentialStore::ReadKeyAtTarget(
+            profile->credentialRef, key, ignoredError);
+    }
+    std::wstring planError;
+    ModelListFetchPlan plan = PlanModelListFetch(*profile, key, &planError);
+    ClearSensitiveString(key);
+    if (!plan.supported) {
+        SetProviderTestStatus(page, state, planError);
+        return;
+    }
+    HttpRequestOptions options;
+    options.timeoutMs = 15000;
+    options.receiveTimeoutMs = kConnectionProbeBudget.attemptTimeoutMs;
+    options.deadlineMs = kConnectionProbeBudget.requestDeadlineMs;
+    options.maxResponseBytes = kMaxModelListingBytes;
+    options.allowRedirects = false;
+    state.fetching = true;
+    {
+        std::lock_guard<std::mutex> lock(state.fetchMutex);
+        state.fetchCompleted = false;
+        state.fetchedModels.clear();
+        state.fetchError.clear();
+        state.fetchComplete = false;
+    }
+    const uint64_t generation = ++state.generation;
+    RefreshProviderActionButtons(page, state);
+    SetText(page, IDC_PROVIDER_FETCH_MODELS, S::IsChinese() ? L"\u83b7\u53d6\u4e2d..." : L"Fetching...");
+    SetProviderTestStatus(page, state, S::IsChinese()
+        ? L"\u6b63\u5728\u83b7\u53d6\u8be5\u670d\u52a1\u5546\u7684\u6a21\u578b\u6e05\u5355..."
+        : L"Fetching the provider's model list...");
+    // The completion message normally arrives right after the worker callback;
+    // the poll is the same lossless fallback the connection test uses.
+    SetTimer(page, kProviderFetchPollTimer, 100, nullptr);
+    auto* statePtr = &state;
+    const ModelListProtocol protocol = plan.protocol;
+    try {
+        state.fetchOperation = AsyncHttpRequest::StartGet(
+            plan.url, plan.headers, options,
+            [page, statePtr, generation, protocol](HttpResponse response) noexcept {
+                PublishModelFetchResult(page, statePtr, generation,
+                    ParseModelListResponse(protocol, response));
+            });
+    } catch (...) {
+        ModelListResult failure;
+        failure.error = L"Model listing could not be started.";
+        PublishModelFetchResult(page, statePtr, generation, std::move(failure));
+    }
+    ProviderHeadersWipe(plan.headers);
+    if (!state.fetchOperation) {
+        bool completed = false;
+        try {
+            std::lock_guard<std::mutex> lock(state.fetchMutex);
+            completed = state.fetchCompleted;
+        } catch (...) {
+            completed = false;
+        }
+        if (!completed) {
+            ModelListResult failure;
+            failure.error = L"Model listing could not be started.";
+            PublishModelFetchResult(page, statePtr, generation, std::move(failure));
+        }
+    }
+}
+
+void FinishModelFetch(HWND page, ProviderPageState& state) {
+    if (!state.fetching) return;
+    state.fetching = false;
+    KillTimer(page, kProviderFetchPollTimer);
+    if (state.fetchOperation) {
+        state.fetchOperation->Join();
+        state.fetchOperation.reset();
+    }
+    std::vector<ModelNameEntry> models;
+    std::wstring error;
+    bool listingComplete = false;
+    {
+        std::lock_guard<std::mutex> lock(state.fetchMutex);
+        models = state.fetchedModels;
+        error = state.fetchError;
+        listingComplete = state.fetchComplete;
+    }
+    SetText(page, IDC_PROVIDER_FETCH_MODELS, L"Fetch available models");
+    RefreshProviderActionButtons(page, state);
+    auto* profile = CurrentProfile(page, state);
+    if (!error.empty()) {
+        SetProviderTestStatus(page, state, error);
+        return;
+    }
+    if (models.empty()) {
+        SetProviderTestStatus(page, state, S::IsChinese()
+            ? L"\u8be5\u670d\u52a1\u5546\u672a\u8fd4\u56de\u4efb\u4f55\u6a21\u578b\u3002"
+            : L"The provider returned no models.");
+        return;
+    }
+    std::wstring status = (S::IsChinese()
+        ? L"\u83b7\u53d6\u5230 " : L"Fetched ") + std::to_wstring(models.size()) +
+        (S::IsChinese() ? L" \u4e2a\u6a21\u578b\u3002" : L" model(s).");
+    // Not continuing to the next page is a deliberate trade this round, so the user is
+    // told rather than left to assume the list is whole: "the seed is gone" advice is
+    // suppressed above, but the count on screen would otherwise look complete.
+    if (!listingComplete) {
+        status += S::IsChinese()
+            ? L" \u8fd9\u4e0d\u662f\u5b8c\u6574\u6e05\u5355\uff08\u4f9b\u5e94\u5546\u5206\u9875\u6216\u6570\u91cf\u8d85\u8fc7\u4e0a\u9650\uff09\u3002"
+            : L" This is not the complete list (the provider pages it, or it exceeds "
+              L"the 2000-entry limit).";
+    }
+    if (profile) {
+        // The provider has just answered: this is the newest list we have, and the
+        // only moment at which "a seed is no longer listed upstream" can be seen.
+        // Advisory throughout -- no seed is removed from the preset and no profile
+        // is rewritten, because a listing that was truncated or served by a proxy
+        // must never be able to delete a choice. A paged answer is that same case: the
+        // seeds it did not mention may sit on the next page, so the advice is dropped
+        // instead of drawn from half a list.
+        const std::vector<std::wstring> unlisted =
+            UnlistedSeedModels(*profile, models, listingComplete);
+        if (!unlisted.empty()) {
+            std::wstring names;
+            for (const auto& id : unlisted) {
+                if (!names.empty()) names += L", ";
+                names += id;
+            }
+            // English is this page's default language, so the singular/plural split
+            // is spelled out rather than left as "Seed a, b is ...".
+            status += S::IsChinese()
+                ? L" \u5185\u7f6e\u79cd\u5b50 " + names +
+                    L" \u5df2\u4e0d\u5728\u4f9b\u5e94\u5546\u5217\u8868\u4e2d\u3002"
+                : (unlisted.size() == 1
+                    ? L" Seed " + names + L" is no longer in the provider's list."
+                    : L" Seeds " + names + L" are no longer in the provider's list.");
+        }
+        profile->modelCatalogFetchedAt =
+            static_cast<std::int64_t>(std::time(nullptr));
+        // Names the provider reported are worth keeping even if the user cancels the
+        // picker: they describe ids the pool already holds. Ids that are not
+        // remembered are ignored by the writer, so this cannot swell the pool.
+        RememberCustomModelLabels(*profile, models);
+        PropSheet_Changed(GetParent(page), page);
+    }
+    SetProviderTestStatus(page, state, status);
+    OpenModelPicker(page, state, &models);
+}
+
+void CancelModelFetch(HWND page, ProviderPageState& state) {
+    if (!state.fetching && !state.fetchOperation) return;
+    ++state.generation;
+    KillTimer(page, kProviderFetchPollTimer);
+    state.fetching = false;
+    if (state.fetchOperation) {
+        state.fetchOperation->Cancel();
+        state.fetchOperation->Join();
+        state.fetchOperation.reset();
+    }
+    {
+        std::lock_guard<std::mutex> lock(state.fetchMutex);
+        state.fetchCompleted = false;
+        state.fetchedModels.clear();
+        state.fetchError.clear();
+        state.fetchComplete = false;
+    }
+    SetText(page, IDC_PROVIDER_FETCH_MODELS, L"Fetch available models");
+    RefreshProviderActionButtons(page, state);
+}
+
+// Both actions answer to this one predicate, so both must be launched with, and
+// cancelled by, the same counter. (A per-action counter is a silent failure mode
+// rather than a compile error: the mismatched generation makes every completion
+// "not live", and the page just never leaves its in-flight state.)
 bool IsLiveProviderPageCallback(
     HWND page, ProviderPageState* state, uint64_t generation) noexcept {
     if (!page || !state || !IsWindow(page)) return false;
@@ -1372,7 +1960,8 @@ void PublishProviderTestResult(
 }
 
 void BeginTest(HWND page, ProviderPageState& state) {
-    if (state.testing) return;
+    // One network action at a time (see BeginModelFetch).
+    if (state.testing || state.fetching) return;
     // Probe-scoped validation only: see ValidateProbeTarget.
     if (!ValidateProbeTarget(page, state)) return;
     auto* profile = CurrentProfile(page, state);
@@ -1423,7 +2012,7 @@ void BeginTest(HWND page, ProviderPageState& state) {
         state.testResult = {};
     }
     const uint64_t generation = ++state.generation;
-    EnableWindow(GetDlgItem(page, IDC_PROVIDER_TEST), FALSE);
+    RefreshProviderActionButtons(page, state);
     SetText(page, IDC_PROVIDER_TEST, L"Testing...");
     SetProviderTestStatus(page, state, L"Testing connection...");
     // The completion message is normally delivered immediately after the
@@ -1635,6 +2224,24 @@ INT_PTR CALLBACK TranslationProviderSettingsPageProc(
         if (state->testing && completed) FinishTest(page, *state);
         return TRUE;
     }
+    if (message == kProviderFetchDone) {
+        bool completed = false;
+        {
+            std::lock_guard<std::mutex> lock(state->fetchMutex);
+            completed = state->fetchCompleted;
+        }
+        if (completed) FinishModelFetch(page, *state);
+        return TRUE;
+    }
+    if (message == WM_TIMER && wParam == kProviderFetchPollTimer) {
+        bool completed = false;
+        {
+            std::lock_guard<std::mutex> lock(state->fetchMutex);
+            completed = state->fetchCompleted;
+        }
+        if (state->fetching && completed) FinishModelFetch(page, *state);
+        return TRUE;
+    }
     if (message == WM_COMMAND) {
         if (state->renderingControls) return TRUE;
         const int control = LOWORD(wParam);
@@ -1648,6 +2255,7 @@ INT_PTR CALLBACK TranslationProviderSettingsPageProc(
                 return TRUE;
             }
             CancelProviderTest(page, *state);
+            CancelModelFetch(page, *state);
             if (auto* previous = ProfileById(*state, state->renderedProviderId)) {
                 ReadControlsIntoProfile(page, *state, *previous);
             }
@@ -1664,6 +2272,7 @@ INT_PTR CALLBACK TranslationProviderSettingsPageProc(
             // the only way the dialog stays trustworthy.
             if (!ConfirmDiscardUnappliedEdits(page, *state)) return TRUE;
             CancelProviderTest(page, *state);
+            CancelModelFetch(page, *state);
             ReadCurrentControls(page, *state);
             const std::wstring presetKind = SelectProviderPreset(
                 page, state->pending);
@@ -1683,6 +2292,7 @@ INT_PTR CALLBACK TranslationProviderSettingsPageProc(
             // key change on the source profile must be confirmed first.
             if (!ConfirmDiscardUnappliedEdits(page, *state)) return TRUE;
             CancelProviderTest(page, *state);
+            CancelModelFetch(page, *state);
             ReadCurrentControls(page, *state);
             auto* current = CurrentProfile(page, *state);
             if (current) {
@@ -1701,9 +2311,10 @@ INT_PTR CALLBACK TranslationProviderSettingsPageProc(
             }
         } else if (control == IDC_PROVIDER_DELETE && notification == BN_CLICKED) {
             CancelProviderTest(page, *state);
+            CancelModelFetch(page, *state);
             auto* current = CurrentProfile(page, *state);
             if (!current) return TRUE;
-            if (FindBuiltInProviderPreset(current->id)) {
+            if (!CanDeleteProviderProfile(state->pending, current->id)) {
                 MessageBoxW(page,
                     L"Built-in provider profiles cannot be deleted.\n\n"
                     L"Disable it, or use Add or Copy to create a removable profile.",
@@ -1712,9 +2323,18 @@ INT_PTR CALLBACK TranslationProviderSettingsPageProc(
             }
             ReadCurrentControls(page, *state);
             const auto id = state->selectedProviderId;
+            // A built-in is only deletable when it is the redundant half of a pair, so
+            // the wording says what actually happens: nothing else changes, and the
+            // shipped entry comes back if the provider is ever left without one.
             const int choice = MessageBoxW(page,
-                L"Delete this custom profile and retain its securely stored API key?\n\n"
-                L"Choose No to cancel.", L"Provider", MB_YESNO | MB_ICONQUESTION);
+                FindBuiltInProviderPreset(id)
+                    ? L"Delete this built-in profile?\n\n"
+                      L"Another profile already covers this provider. A built-in entry "
+                      L"is added back automatically if the provider is ever left "
+                      L"without one.\n\nChoose No to cancel."
+                    : L"Delete this custom profile and retain its securely stored API key?\n\n"
+                      L"Choose No to cancel.",
+                L"Provider", MB_YESNO | MB_ICONQUESTION);
             if (choice != IDYES) return TRUE;
             state->pending.providerProfiles.erase(
                 std::remove_if(state->pending.providerProfiles.begin(),
@@ -1740,8 +2360,46 @@ INT_PTR CALLBACK TranslationProviderSettingsPageProc(
         } else if (control == IDC_PROVIDER_RESET && notification == BN_CLICKED) {
             state->modelEdited = false;
             ResetCurrentProfileToDefaults(page, *state);
+        } else if (control == IDC_PROVIDER_FETCH_MODELS && notification == BN_CLICKED) {
+            BeginModelFetch(page, *state);
+        } else if (control == IDC_PROVIDER_MANAGE_MODELS && notification == BN_CLICKED) {
+            CancelProviderTest(page, *state);
+            CancelModelFetch(page, *state);
+            OpenModelPicker(page, *state, nullptr);
+        } else if (control == IDC_PROVIDER_RESTORE_MODELS && notification == BN_CLICKED) {
+            CancelProviderTest(page, *state);
+            CancelModelFetch(page, *state);
+            ReadCurrentControls(page, *state);
+            auto* current = CurrentProfile(page, *state);
+            if (!current) return TRUE;
+            if (!current->customModels.empty()) {
+                // The pool is the one thing the profile-level Reset deliberately
+                // preserves, so this is the only action that discards it -- and it
+                // asks first, naming how many ids would go.
+                std::wstring message = S::IsChinese()
+                    ? L"\u6062\u590d\u9ed8\u8ba4\u6a21\u578b\u76ee\u5f55\uff1a\u5c06\u6e05\u7a7a\u4f60\u5df2\u6536\u7eb3\u7684 "
+                    : L"Restore the default model catalog? This clears the ";
+                message += std::to_wstring(current->customModels.size());
+                message += S::IsChinese()
+                    ? L" \u4e2a\u81ea\u5b9a\u4e49\u6a21\u578b\uff0c\u5e76\u628a\u5f53\u524d\u6a21\u578b\u6062\u590d\u4e3a\u9884\u8bbe\u9996\u9879\u3002\n\n"
+                      L"\u7aef\u70b9\u3001API \u534f\u8bae\u3001\u8ba4\u8bc1\u3001\u601d\u8003\u6863\u4f4d\u3001\u6e29\u5ea6\u4e0e\u9ad8\u7ea7\u53c2\u6570\u4e0d\u4f1a\u6539\u53d8\u3002"
+                    : L" custom model(s) you collected and puts the active model back "
+                      L"on the preset's first entry.\n\n"
+                      L"The base URL, API protocol, auth, reasoning tier, temperature "
+                      L"and advanced options are left alone.";
+                if (MessageBoxW(page, message.c_str(), L"Provider",
+                        MB_YESNO | MB_ICONQUESTION) != IDYES) {
+                    return TRUE;
+                }
+            }
+            if (!RestoreModelCatalogDefaults(*current)) return TRUE;
+            NormalizeProfileDisplayDefaults(*current);
+            ClampReasoningMode(*current);
+            RenderProfile(page, *state);
+            PropSheet_Changed(GetParent(page), page);
         } else if (control == IDC_PROVIDER_REMOVE_MODEL && notification == BN_CLICKED) {
             CancelProviderTest(page, *state);
+            CancelModelFetch(page, *state);
             ReadCurrentControls(page, *state);
             auto* current = CurrentProfile(page, *state);
             // The guard already refuses a removal that would leave the profile
@@ -1773,6 +2431,7 @@ INT_PTR CALLBACK TranslationProviderSettingsPageProc(
             PropSheet_Changed(GetParent(page), page);
         } else if (control == IDC_PROVIDER_KEY_ACTION && notification == BN_CLICKED) {
             CancelProviderTest(page, *state);
+            CancelModelFetch(page, *state);
             auto* profile = CurrentProfile(page, *state);
             if (!profile || !TranslationAuthUsesCredential(profile->authMode)) return TRUE;
             if (state->keyRevealed) {
@@ -1814,6 +2473,7 @@ INT_PTR CALLBACK TranslationProviderSettingsPageProc(
             PropSheet_Changed(GetParent(page), page);
         } else if (control == IDC_PROVIDER_KEY_CLEAR && notification == BN_CLICKED) {
             CancelProviderTest(page, *state);
+            CancelModelFetch(page, *state);
             ClearRevealedKey(*state);
             state->credentialIntent = CredentialIntent::Clear;
             ClearSensitiveString(state->pendingKey);
@@ -1850,6 +2510,7 @@ INT_PTR CALLBACK TranslationProviderSettingsPageProc(
             BeginTest(page, *state);
         } else if (control == IDC_PROVIDER_MODEL && notification == CBN_EDITCHANGE) {
             CancelProviderTest(page, *state);
+            CancelModelFetch(page, *state);
             state->modelEdited = true;
             auto* current = CurrentProfile(page, *state);
             if (current) {
@@ -1861,6 +2522,15 @@ INT_PTR CALLBACK TranslationProviderSettingsPageProc(
                     current->customModel ? BST_CHECKED : BST_UNCHECKED, 0);
                 EnableWindow(GetDlgItem(page, IDC_PROVIDER_REMOVE_MODEL),
                     CanRemoveCurrentModel(*current));
+                state->modelIdInvalid = !current->model.empty() &&
+                    !IsStorableModelIdentifier(current->model);
+                if (state->modelIdInvalid && !state->modelIdHintShown) {
+                    state->modelIdHintShown = true;
+                    SetProviderTestStatus(page, *state, ModelIdHint());
+                } else if (!state->modelIdInvalid && state->modelIdHintShown) {
+                    state->modelIdHintShown = false;
+                    SetProviderTestStatus(page, *state, L"");
+                }
                 PropSheet_Changed(GetParent(page), page);
             }
         } else if (control == IDC_PROVIDER_MODEL && notification == CBN_KILLFOCUS) {
@@ -1876,6 +2546,7 @@ INT_PTR CALLBACK TranslationProviderSettingsPageProc(
             }
         } else if (control == IDC_PROVIDER_MODEL && notification == CBN_SELCHANGE) {
             CancelProviderTest(page, *state);
+            CancelModelFetch(page, *state);
             auto* current = CurrentProfile(page, *state);
             if (current) {
                 if (state->modelEdited) {
@@ -1910,13 +2581,95 @@ INT_PTR CALLBACK TranslationProviderSettingsPageProc(
                    (control == IDC_PROVIDER_ENABLED &&
                     notification == BN_CLICKED) ||
                    ((control == IDC_PROVIDER_REASONING ||
-                     control == IDC_PROVIDER_AUTH_MODE) &&
+                     control == IDC_PROVIDER_AUTH_MODE ||
+                     control == IDC_PROVIDER_PROTOCOL) &&
                     notification == CBN_SELCHANGE)) {
             CancelProviderTest(page, *state);
-            const bool identityChanged = control == IDC_PROVIDER_AUTH_MODE;
+            CancelModelFetch(page, *state);
+            // Changing the API protocol is an identity change like switching the
+            // auth mode: it can replace the offered auth surface (and therefore the
+            // credential the profile would use), so it re-renders and applies the
+            // same "did we lose the credential target" rule.
+            const bool identityChanged = control == IDC_PROVIDER_AUTH_MODE ||
+                control == IDC_PROVIDER_PROTOCOL;
             const bool capabilityChanged = identityChanged ||
                 control == IDC_PROVIDER_CUSTOM_MODEL;
+            // A *complete* request address (one the resolver keeps verbatim, because it
+            // was stored before the base semantics or because a query pins its version)
+            // belongs to the protocol it was written for. Switching protocol while it
+            // stands would send the new protocol's body to the old protocol's address --
+            // Responses selected, Chat sent -- and neither saving nor reopening would fix
+            // it. Nothing in such a value says which part is the path, so the switch is
+            // refused with the two ways out rather than guessed at: make the field a base
+            // URL, or type the new protocol's full address.
+            const bool protocolControl = control == IDC_PROVIDER_PROTOCOL;
+            auto* beforeProtocol = CurrentProfile(page, *state);
+            const TranslationAdapterKind previousAdapter =
+                beforeProtocol ? beforeProtocol->adapterKind
+                               : TranslationAdapterKind::DeepSeekChat;
             ReadCurrentControls(page, *state);
+            if (protocolControl) {
+                auto* switched = CurrentProfile(page, *state);
+                if (switched && switched->adapterKind != previousAdapter &&
+                    EndpointIsCompleteRequestUrl(*switched)) {
+                    const std::wstring blocked =
+                        (S::IsChinese()
+                            ? L"这个档案的端点是一个完整请求地址：\n\n"
+                            : L"This profile's endpoint is a complete request URL:\n\n") +
+                        switched->baseUrlOverride +
+                        (S::IsChinese()
+                            ? L"\n\n它属于当前的 API 协议，切换协议后无法在不知道哪一段是路径的情况下改写，"
+                              L"否则会用新协议的请求体发往旧协议的地址。\n\n"
+                              L"请按这个顺序操作：\n"
+                              L"① 先把端点清空，或改成基址（例如 https://host/v1/）；\n"
+                              L"② 再切换 API 协议。\n\n"
+                              L"（只改地址再切协议同样会被拒：代码无法区分这是旧协议的地址还是你刚填的新协议地址。"
+                              L"此外，协议切好之后新填的地址只有两种会被原样使用：带 ? 的版本固定地址，"
+                               L"以及与所选协议匹配的标准路径（chat/completions、responses、api/chat）；"
+                              L"其他任意完整地址（例如 https://host/invoke）目前只能靠旧档案迁移保留，"
+                              L"新填的会被当作基址并追加协议路径。要支持新填这类地址需要另加一个"
+                              L"“完整请求地址”的显式声明，本版没有。）\n\n本次切换已取消。"
+                            : L"\n\nIt belongs to the current API protocol, and switching "
+                              L"would mean sending the new protocol's body to the old "
+                              L"protocol's address -- nothing in the value says which "
+                              L"part is the path, so it is not rewritten for you.\n\n"
+                              L"Do it in this order:\n"
+                              L"1. clear the endpoint, or make it a base URL "
+                              L"(for example https://host/v1/);\n"
+                              L"2. switch the API protocol.\n\n"
+                              L"(Editing the address and then switching is refused "
+                              L"too: the code cannot tell an old-protocol address from "
+                              L"one you just typed for the new protocol. And a newly "
+                              L"typed address is sent as it stands only in two shapes: "
+                              L"one carrying a '?' (a version-pinned address), and one "
+                               L"ending in a standard request path matching the selected "
+                               L"protocol -- chat/completions, responses, api/chat. "
+                               L"Any other complete address (say "
+                              L"https://host/invoke) is currently preserved only by the "
+                              L"migration of a pre-v8 profile; a newly typed one is "
+                              L"treated as a base and gets the protocol path appended. "
+                              L"Supporting that needs an explicit \"this is a complete "
+                              L"request URL\" declaration, which this version does not "
+                              L"have.)\n\nThe switch was cancelled.");
+                    MessageBoxW(page, blocked.c_str(), L"Provider",
+                        MB_OK | MB_ICONINFORMATION);
+                    // Put the protocol back: a refused selection is not an identity the
+                    // page goes on keeping.
+                    if (const auto* preset = FindTranslationProviderPreset(
+                            switched->presetKind)) {
+                        for (size_t i = 0; i < preset->protocols.size(); ++i) {
+                            if (preset->protocols[i].adapter != previousAdapter) {
+                                continue;
+                            }
+                            SendMessageW(GetDlgItem(page, IDC_PROVIDER_PROTOCOL),
+                                CB_SETCURSEL, static_cast<LRESULT>(i), 0);
+                            break;
+                        }
+                    }
+                    ReadCurrentControls(page, *state);
+                    return TRUE;
+                }
+            }
             // Only losing the credential *target* invalidates a key the user typed
             // but has not applied. Bearer API key and API key use one target (the
             // credential ref derives from the profile id and preset), so switching
@@ -1947,6 +2700,16 @@ INT_PTR CALLBACK TranslationProviderSettingsPageProc(
             if (capabilityChanged) {
                 RenderProfile(page, *state);
             }
+            // The endpoint decides whether a listing address exists at all, so the
+            // fetch button follows it. Refreshed here, after the new value has been
+            // read, and *without* a re-render: a re-render would fight the field being
+            // typed into. The cancel helpers cannot cover it -- they return at once when
+            // nothing is running, and when something is running they refresh before
+            // the new endpoint is known -- so both directions stayed stale: a complete
+            // address edited into a usable base left the button greyed out, and a usable
+            // base edited into a complete address left it clickable and only refused
+            // after the click.
+            RefreshProviderActionButtons(page, *state);
             PropSheet_Changed(GetParent(page), page);
         }
         return TRUE;
@@ -2015,7 +2778,14 @@ INT_PTR CALLBACK TranslationProviderSettingsPageProc(
         return TRUE;
     }
     if (message == WM_DESTROY) {
+        // Both worker operations must be cancelled *and joined* before the state
+        // is deleted: the completion callbacks still reach this page while the
+        // window is being destroyed, and ~ProviderPageState destroys its members
+        // in reverse declaration order -- so a request left to the last
+        // shared_ptr would run its callback against an already-destroyed mutex and
+        // result vector.
         CancelProviderTest(page, *state);
+        CancelModelFetch(page, *state);
         // A restore that never succeeded cannot outlive the dialog: the key was
         // only in memory, and the user was told so when the rollback failed.
         translation::ResetCredentialRollback(state->pendingRestore);

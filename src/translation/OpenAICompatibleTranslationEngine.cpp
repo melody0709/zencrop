@@ -367,6 +367,18 @@ void ApplyReasoningPolicy(
             body["reasoning_history"] = "disabled";
         }
         break;
+    case ReasoningWireFormat::OpenAiReasoningEffort:
+        // The OpenAI parameter name at the top level. `none` is the documented
+        // "do not think" value on the surfaces that accept this field at all;
+        // `ProviderDefault` sends nothing, which is what keeps this opt-in (a
+        // vendor that rejects the field can be left on the default, and its own
+        // error message is what the user sees).
+        if (mode == TranslationReasoningMode::Off) {
+            body["reasoning_effort"] = "none";
+        } else if (effort) {
+            body["reasoning_effort"] = effort;
+        }
+        break;
     case ReasoningWireFormat::None:
     default:
         break;
@@ -406,7 +418,7 @@ json BuildRequestBody(
     if (profile.adapterKind == TranslationAdapterKind::OpenAIResponses ||
         profile.adapterKind == TranslationAdapterKind::XaiResponses) {
         body = {
-            {"model", WideToUtf8(profile.model)},
+            {"model", WideToUtf8(RequestModelId(profile))},
             {"instructions", WideToUtf8(instructions)},
             {"input", WideToUtf8(userPayload)},
             {"stream", false},
@@ -436,7 +448,7 @@ json BuildRequestBody(
         }
     } else {
         body = {
-            {"model", WideToUtf8(profile.model)},
+            {"model", WideToUtf8(RequestModelId(profile))},
             {"messages", json::array({
                 {{"role", "system"}, {"content", WideToUtf8(instructions)}},
                 {{"role", "user"}, {"content", WideToUtf8(userPayload)}},
@@ -530,13 +542,15 @@ TranslationResult ParseResponse(
         return fail(ErrorCode::SchemaMismatch,
             L"Translation provider response is not JSON.");
     }
+    // Declared outside the parse block so the failure path below can quote what the
+    // model actually answered.
+    std::string content;
     try {
         const json outer = json::parse(response.body);
         if (!outer.is_object()) {
             return fail(ErrorCode::SchemaMismatch,
                 L"Translation provider response schema is invalid.");
         }
-        std::string content;
         std::wstring responseModel;
         if (adapterKind == TranslationAdapterKind::OpenAIResponses ||
             adapterKind == TranslationAdapterKind::XaiResponses) {
@@ -673,7 +687,10 @@ TranslationResult ParseResponse(
                     {"text", content}}}},
             };
         } else {
-            payload = json::parse(content);
+            // The model was asked for one JSON object, not for a file: a fenced or
+            // prose-wrapped answer used to fail here even though the object inside
+            // was exactly the contract (see ExtractJsonAnswer).
+            payload = json::parse(ExtractJsonAnswer(content));
         }
         const char* translationArrayKey = nullptr;
         if (payload.is_object() && payload.contains("translations") &&
@@ -745,8 +762,23 @@ TranslationResult ParseResponse(
         return fail(ErrorCode::SchemaMismatch,
             L"Translation provider response schema is invalid.");
     } catch (const json::exception&) {
+        // Quote a bounded, single-line prefix of what the model answered: "invalid
+        // JSON" alone cannot distinguish a fenced answer from a truncated one from a
+        // refusal written in prose, and the reader has no other way to see the raw
+        // text. Scope of the quote: 80 UTF-16 code units, single line, and it lands
+        // in the in-app error plus the local diagnostics log
+        // (%LOCALAPPDATA%\ZenCrop\translation_diagnostics.log, already truncated to
+        // 160 characters per line) -- i.e. model output stays on the user's own
+        // machine, which is where the provider's own error text already goes.
+        std::wstring excerpt = Utf8ToWide(content);
+        for (wchar_t& character : excerpt) {
+            if (character == L'\r' || character == L'\n' || character == L'\t') {
+                character = L' ';
+            }
+        }
+        TruncateUtf16Safe(excerpt, 80);
         return fail(ErrorCode::InvalidJson,
-            L"Translation provider returned invalid JSON.");
+            L"Translation provider returned invalid JSON. Raw: " + excerpt);
     }
 }
 
@@ -807,11 +839,10 @@ OpenAICompatibleTranslationEngine::IssueTranslate(
             ErrorCode::Configuration, profileError, request.requestId));
         return {};
     }
-    if (profile->adapterKind == TranslationAdapterKind::GeminiGenerateContent) {
-        std::wstring model = profile->model;
-        if (model.rfind(L"models/", 0) == 0) model.erase(0, 7);
-        endpoint += L"/" + model + L":generateContent";
-    }
+    // The endpoint already carries the protocol's request path -- including the
+    // Gemini model path, which ResolveProviderEndpoint composes -- so nothing is
+    // appended here. Appending it again was correct while the resolver returned a
+    // base URL only; now it would double the suffix.
     TranslationRequest normalized = request;
     normalized.sourceLanguage = NormalizeLanguageCode(normalized.sourceLanguage, true);
     normalized.targetLanguage = NormalizeLanguageCode(normalized.targetLanguage, false);
@@ -872,11 +903,11 @@ OpenAICompatibleTranslationEngine::IssueTranslate(
     // batch id the provider cannot look up. Without the header the response
     // carries the provider id ("ti_..."), and the local batch id is recorded in
     // the translation diagnostics log instead.
-    if (profile->authMode == TranslationAuthMode::BearerApiKey) {
-        headers.insert(headers.begin(), L"Authorization: Bearer " + key);
-    } else if (profile->authMode == TranslationAuthMode::ApiKey) {
-        headers.insert(headers.begin(), L"X-Goog-Api-Key: " + key);
-    }
+    // One definition for the whole module (see BuildProviderAuthHeader): the model
+    // listing and the DeepSeek engine ask the same question, and three copies of the
+    // answer is what let the reasoning dialect drift away from its surface.
+    const std::wstring authHeader = BuildProviderAuthHeader(profile->authMode, key);
+    if (!authHeader.empty()) headers.insert(headers.begin(), authHeader);
     std::wstring requestError;
     json requestBody = BuildRequestBody(
         settings_, *profile, normalized, kMaxOutputTokens, requestError);

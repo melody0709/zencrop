@@ -1413,7 +1413,9 @@ void TranslationResultWindow::SetModelSelection(const std::wstring& model) {
         if (modelOptions_[index] != model) continue;
         modelIndex_ = static_cast<int>(index);
         if (modelCombo_) {
-            SetWindowTextW(modelCombo_, modelOptions_[index].c_str());
+            SetWindowTextW(modelCombo_, ModelDisplayText(index).c_str());
+            // The tooltip keeps the exact id: the control may show a name, but the
+            // value the request will carry has to stay readable somewhere.
             UpdateModelToolTip(modelOptions_[index]);
             InvalidateRect(modelCombo_, nullptr, TRUE);
         }
@@ -1421,6 +1423,9 @@ void TranslationResultWindow::SetModelSelection(const std::wstring& model) {
         return;
     }
     modelOptions_.insert(modelOptions_.begin(), model);
+    // A model that was not in the list was just chosen, so its name is unknown here
+    // (the list is rebuilt on the next refresh and picks the side table up).
+    modelLabels_.insert(modelLabels_.begin(), std::wstring());
     modelIndex_ = 0;
     if (modelCombo_) {
         SetWindowTextW(modelCombo_, model.c_str());
@@ -1429,6 +1434,14 @@ void TranslationResultWindow::SetModelSelection(const std::wstring& model) {
         InvalidateRect(modelCombo_, nullptr, TRUE);
     }
     LayoutControls();
+}
+
+std::wstring TranslationResultWindow::ModelDisplayText(size_t index) const {
+    if (index >= modelOptions_.size()) return {};
+    if (index < modelLabels_.size() && !modelLabels_[index].empty()) {
+        return modelLabels_[index];
+    }
+    return modelOptions_[index];
 }
 
 void TranslationResultWindow::UpdateModelToolTip(const std::wstring& model) {
@@ -1447,6 +1460,7 @@ void TranslationResultWindow::UpdateModelToolTip(const std::wstring& model) {
 
 void TranslationResultWindow::RefreshModelOptions() {
     modelOptions_.clear();
+    modelLabels_.clear();
     modelIndex_ = -1;
     const TranslationSettings settings = LoadTranslationSettings();
     const auto* profile = FindActiveTranslationProvider(settings);
@@ -1471,22 +1485,32 @@ void TranslationResultWindow::RefreshModelOptions() {
     if (!preset) {
         preset = FindBuiltInProviderPreset(profile->id);
     }
+    // Names come from the display side table and only describe ids the pool holds;
+    // a catalog seed therefore has none, and the id is what gets painted.
+    const auto labelFor = [&](const std::wstring& model) {
+        const auto label = profile->customModelLabels.find(model);
+        return label == profile->customModelLabels.end()
+            ? std::wstring() : label->second;
+    };
     if (preset) {
         for (const auto& m : preset->models) {
             if (std::find(modelOptions_.begin(), modelOptions_.end(), m) == modelOptions_.end()) {
                 modelOptions_.push_back(m);
+                modelLabels_.push_back(labelFor(m));
             }
         }
     }
     for (const auto& m : profile->customModels) {
         if (!m.empty() && std::find(modelOptions_.begin(), modelOptions_.end(), m) == modelOptions_.end()) {
             modelOptions_.push_back(m);
+            modelLabels_.push_back(labelFor(m));
         }
     }
     if (!profile->model.empty()) {
         auto it = std::find(modelOptions_.begin(), modelOptions_.end(), profile->model);
         if (it == modelOptions_.end()) {
             modelOptions_.insert(modelOptions_.begin(), profile->model);
+            modelLabels_.insert(modelLabels_.begin(), labelFor(profile->model));
             modelIndex_ = 0;
         } else {
             modelIndex_ = static_cast<int>(std::distance(modelOptions_.begin(), it));
@@ -1496,7 +1520,10 @@ void TranslationResultWindow::RefreshModelOptions() {
     }
     const std::wstring currentModel = SelectedModel();
     if (modelCombo_) {
-        SetWindowTextW(modelCombo_, currentModel.c_str());
+        // The control paints the name; the tooltip keeps the exact id.
+        SetWindowTextW(modelCombo_, modelIndex_ >= 0
+            ? ModelDisplayText(static_cast<size_t>(modelIndex_)).c_str()
+            : currentModel.c_str());
         UpdateModelToolTip(currentModel);
         SetControlVisible(modelCombo_, !modelOptions_.empty());
         InvalidateRect(modelCombo_, nullptr, TRUE);
@@ -1510,7 +1537,7 @@ void TranslationResultWindow::ShowModelMenu() {
     ConfigureCompactPopupMenu(menu);
     for (size_t index = 0; index < modelOptions_.size(); ++index) {
         AppendCompactPopupItem(menu, kModelMenuBase + static_cast<int>(index),
-            modelOptions_[index]);
+            ModelDisplayText(index));
         if (static_cast<int>(index) == modelIndex_) {
             CheckMenuItem(menu, kModelMenuBase + static_cast<int>(index), MF_BYCOMMAND | MF_CHECKED);
         }
@@ -1533,7 +1560,8 @@ void TranslationResultWindow::ShowModelMenu() {
     if (index == modelIndex_) return;
     modelIndex_ = index;
     const std::wstring selected = modelOptions_[static_cast<size_t>(modelIndex_)];
-    SetWindowTextW(modelCombo_, selected.c_str());
+    SetWindowTextW(modelCombo_,
+        ModelDisplayText(static_cast<size_t>(modelIndex_)).c_str());
     UpdateModelToolTip(selected);
     InvalidateRect(modelCombo_, nullptr, TRUE);
     SetStage(S::IsChinese()
@@ -2836,7 +2864,9 @@ void TranslationResultWindow::LayoutControls(bool redraw) {
         }
         if (showModel && modelIndex_ >= 0 &&
             modelIndex_ < static_cast<int>(modelOptions_.size())) {
-            modelTextWidth = measureLabel(modelOptions_[static_cast<size_t>(modelIndex_)]);
+            // Width of what the control actually paints (the name when it has one).
+            modelTextWidth = measureLabel(
+                ModelDisplayText(static_cast<size_t>(modelIndex_)));
         }
         if (ocrRouteIndex_ >= 0 &&
             ocrRouteIndex_ < static_cast<int>(ocrRoutes_.size())) {
@@ -3405,7 +3435,11 @@ void TranslationResultWindow::DrawOwnerDrawControl(const DRAWITEMSTRUCT& draw) {
         } else if (id == kModelCombo) {
             if (modelIndex_ >= 0 &&
                 modelIndex_ < static_cast<int>(modelOptions_.size())) {
-                visualLabel = modelOptions_[static_cast<size_t>(modelIndex_)].c_str();
+                // Painted through a buffer: ModelDisplayText returns a temporary
+                // whenever the provider gave the model a name.
+                compactLabelBuffer = ModelDisplayText(
+                    static_cast<size_t>(modelIndex_));
+                visualLabel = compactLabelBuffer.c_str();
             }
         } else if (compactHeader && id == kSourceCombo) {
             if (sourceLanguageIndex_ >= 0 &&

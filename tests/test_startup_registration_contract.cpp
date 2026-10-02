@@ -299,7 +299,7 @@ void TestCommitPatchTranslationKeepsExternalProvider() {
     env.Write(
         L"{\n"
         L"  \"translation\": {\n"
-        L"    \"schemaVersion\": 7,\n"
+        L"    \"schemaVersion\": 8,\n"
         L"    \"enabled\": true,\n"
         L"    \"sourceLanguage\": \"en\",\n"
         L"    \"targetLanguage\": \"zh-Hans\",\n"
@@ -310,7 +310,7 @@ void TestCommitPatchTranslationKeepsExternalProvider() {
 
     SettingsDraft draft;
     draft.baseline = GetSharedSettings();
-    draft.baseline.translation.schemaVersion = 7;
+    draft.baseline.translation.schemaVersion = 8;
     draft.baseline.translation.enabled = true;
     draft.baseline.translation.sourceLanguage = L"en";
     draft.baseline.translation.targetLanguage = L"zh-Hans";
@@ -325,7 +325,7 @@ void TestCommitPatchTranslationKeepsExternalProvider() {
     env.Write(
         L"{\n"
         L"  \"translation\": {\n"
-        L"    \"schemaVersion\": 7,\n"
+        L"    \"schemaVersion\": 8,\n"
         L"    \"enabled\": true,\n"
         L"    \"sourceLanguage\": \"en\",\n"
         L"    \"targetLanguage\": \"zh-Hans\",\n"
@@ -522,7 +522,7 @@ void TestCommitPatchCreatesMissingTranslationSection() {
 
     const std::wstring updated = env.Read();
     Expect(updated.find(L"\"translation\": {") != std::wstring::npos, "Translation section is written");
-    Expect(updated.find(L"\"schemaVersion\": 7") != std::wstring::npos, "Minimal section carries the schema version");
+    Expect(updated.find(L"\"schemaVersion\": 8") != std::wstring::npos, "Minimal section carries the schema version");
     Expect(updated.find(L"\"enabled\": true") != std::wstring::npos, "Minimal section carries the enabled flag");
     Expect(updated.find(L"\"sourceLanguage\": \"ja\"") != std::wstring::npos, "User's language change is applied");
 
@@ -541,7 +541,7 @@ void TestSaveSettingsPreservesUnrecognizedTopLevel() {
     env.Write(
         L"{\n"
         L"  \"general\": {\n    \"language\": \"en\"\n  },\n"
-        L"  \"translation\": {\n    \"schemaVersion\": 7,\n    \"enabled\": true,\n    \"sourceLanguage\": \"en\"\n  },\n"
+        L"  \"translation\": {\n    \"schemaVersion\": 8,\n    \"enabled\": true,\n    \"sourceLanguage\": \"en\"\n  },\n"
         L"  \"customFlag\": 42,\n"
         L"  \"customExtension\": {\n    \"pluginName\": \"Alpha\"\n  }\n"
         L"}"

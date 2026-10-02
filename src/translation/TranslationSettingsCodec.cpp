@@ -255,7 +255,8 @@ std::wstring SelectFallbackProviderId(
 bool ParseProfile(
     const json& value,
     TranslationProviderProfile& profile,
-    std::wstring* error) {
+    std::wstring* error,
+    bool* repaired) {
     if (!value.is_object()) {
         SetError(error, L"Translation provider profile must be an object.");
         return false;
@@ -287,11 +288,21 @@ bool ParseProfile(
         !readString("model", L"", profile.model) ||
         !readString("credentialRef", L"", profile.credentialRef) ||
         !readString("advancedOptionsJson", L"{}", profile.advancedOptionsJson) ||
+        !readBool("completeEndpointOverride", false,
+            profile.completeEndpointOverride) ||
         !readBool("enabled", true, profile.enabled) ||
         !readBool("customModel", false, profile.customModel)) {
         SetError(error, L"Translation provider profile contains an invalid field type.");
         return false;
     }
+    // A stored id may carry a character a request URL cannot hold: builds before
+    // v3.1.7 checked only its length, so `Qwen/Qwen 3` was writable, and -- once the
+    // validator learned the character rule -- one such id made the *whole*
+    // translation section unreadable and rewritable. Repair it on the way in and let
+    // the caller back the file up (`repaired`) instead of failing the load.
+    const std::wstring rawModel = profile.model;
+    profile.model = translation::SanitizeModelIdentifier(rawModel);
+    if (profile.model != rawModel && repaired) *repaired = true;
     profile.customModels.clear();
     if (value.contains("customModels")) {
         if (!value["customModels"].is_array()) {
@@ -299,25 +310,43 @@ bool ParseProfile(
             return false;
         }
         for (const auto& item : value["customModels"]) {
-            if (item.is_string()) {
-                std::wstring customName = Utf8ToWide(item.get<std::string>());
-                while (!customName.empty() && (customName.front() == L' ' || customName.front() == L'\t' ||
-                                              customName.front() == L'\r' || customName.front() == L'\n')) {
-                    customName.erase(customName.begin());
-                }
-                while (!customName.empty() && (customName.back() == L' ' || customName.back() == L'\t' ||
-                                              customName.back() == L'\r' || customName.back() == L'\n')) {
-                    customName.pop_back();
-                }
-                if (!customName.empty() && customName.size() <= kMaxTranslationModelLength &&
-                    std::find(profile.customModels.begin(), profile.customModels.end(), customName) ==
-                        profile.customModels.end()) {
-                    if (profile.customModels.size() >= kMaxTranslationCustomModels) {
-                        profile.customModels.erase(profile.customModels.begin());
-                    }
-                    profile.customModels.push_back(std::move(customName));
-                }
+            if (!item.is_string()) continue;
+            const std::wstring rawName = Utf8ToWide(item.get<std::string>());
+            // The same repair as the active model, through the same function: an id
+            // the request cannot carry is stripped, and one that leaves nothing
+            // behind is dropped. Both are a change worth backing the file up for.
+            std::wstring customName =
+                translation::SanitizeModelIdentifier(rawName);
+            if (customName != rawName && repaired) *repaired = true;
+            if (customName.empty() ||
+                customName.size() > kMaxTranslationModelLength ||
+                std::find(profile.customModels.begin(), profile.customModels.end(),
+                    customName) != profile.customModels.end()) {
+                continue;
             }
+            if (profile.customModels.size() >= kMaxTranslationCustomModels) {
+                profile.customModels.erase(profile.customModels.begin());
+            }
+            profile.customModels.push_back(std::move(customName));
+        }
+    }
+    // Display names are pure metadata, so they are collected leniently: unlike
+    // `customModels`, a malformed value must never cost a profile its identity, and
+    // a downgrade or a hand-edited file must not delete a working provider over a
+    // name. Trimming, length caps and "a name equal to its id is not stored" live in
+    // RememberCustomModelLabels, which is applied at the end of this function --
+    // after the pool has settled, so a name can only describe an id the pool holds.
+    std::vector<translation::ModelNameEntry> labelEntries;
+    if (value.contains("customModelLabels") &&
+        value["customModelLabels"].is_object()) {
+        for (const auto& item : value["customModelLabels"].items()) {
+            if (!item.value().is_string()) continue;
+            // The key is a model id, so it gets the same repair the pool does: a
+            // name has to land on the id the pool now holds, otherwise
+            // RememberCustomModelLabels prunes it as an orphan.
+            labelEntries.push_back({
+                translation::SanitizeModelIdentifier(Utf8ToWide(item.key())),
+                Utf8ToWide(item.value().get<std::string>())});
         }
     }
     // The active model joins the pool at the end of this function, once the
@@ -361,13 +390,17 @@ bool ParseProfile(
             translation::FindBuiltInProviderPreset(profile.id)) {
         profile.displayName = builtInPreset->displayName;
         profile.presetKind = builtInPreset->kind;
-        profile.adapterKind = builtInPreset->adapterKind;
+        // The protocol the user selected is part of the saved connection and
+        // survives; only a value this preset does not offer is repaired.
+        profile.adapterKind = translation::NormalizeProviderAdapter(
+            *builtInPreset, profile.adapterKind);
         profile.baseUrlOverride.clear();
-        profile.authMode = builtInPreset->capabilities.authModes.count(
+        const auto builtInAuthModes = translation::ProviderAuthModes(
+            *builtInPreset, profile.adapterKind);
+        profile.authMode = builtInAuthModes.count(
                 TranslationAuthMode::BearerApiKey)
             ? TranslationAuthMode::BearerApiKey
-            : (builtInPreset->capabilities.authModes.count(
-                    TranslationAuthMode::ApiKey)
+            : (builtInAuthModes.count(TranslationAuthMode::ApiKey)
                 ? TranslationAuthMode::ApiKey
                 : TranslationAuthMode::None);
         if (profile.model.empty()) {
@@ -375,17 +408,25 @@ bool ParseProfile(
                 profile.model = builtInPreset->models.front();
                 profile.customModel = false;
             }
-        } else if (!builtInPreset->models.empty()) {
-            // A model the catalog has since adopted stays a valid selection, and
-            // the user's "Custom model" mark is left in place: the engine decides
-            // its policy from the catalog (see translation::IsListedProviderModel),
-            // so the flag no longer has to be rewritten for the request shape to
-            // stay right. Only a *stale* model from a different preset is repaired.
-            if (!profile.customModel &&
-                std::find(builtInPreset->models.begin(),
-                          builtInPreset->models.end(), profile.model) ==
-                    builtInPreset->models.end()) {
+        } else if (!builtInPreset->models.empty() &&
+                   std::find(builtInPreset->models.begin(),
+                             builtInPreset->models.end(), profile.model) ==
+                       builtInPreset->models.end()) {
+            // The model is not one this preset currently offers. Two cases, and
+            // they must not be confused:
+            //   - the preset still claims the id's request policy (it is in the
+            //     policy catalog, the seed list was simply slimmed): keep the user's
+            //     model and mark it as outside the offered list. The mark is what
+            //     the page renders and what keeps the id reachable through the
+            //     custom-model pool. The request shape is unchanged -- the policy
+            //     judge reads the same catalog.
+            //   - never published by this preset at all: a stale id from another
+            //     one, which is repaired to the offered seed.
+            if (translation::IsModelPolicyKnown(*builtInPreset, profile.model)) {
+                profile.customModel = true;
+            } else if (!profile.customModel) {
                 profile.model = builtInPreset->models.front();
+                profile.customModel = false;
             }
         }
         const std::wstring profileTarget =
@@ -403,21 +444,37 @@ bool ParseProfile(
             profile.credentialRef = profileTarget + L"." + profile.presetKind;
         }
     }
-    // presetKind is the provider identity authority. adapterKind and authMode
-    // are serialized for forward diagnostics only; normalize legacy v3
-    // profiles to the current preset instead of allowing a stale transport to
-    // survive after the provider protocol changes.
+    // presetKind is the provider identity authority. adapterKind is serialized so
+    // the chosen API protocol survives a restart; a value the preset does not
+    // offer is a stale transport (a protocol table that changed, or a hand-edited
+    // file) and is normalized to the preset's native protocol.
     if (const auto* preset =
             translation::FindTranslationProviderPreset(profile.presetKind)) {
-        profile.adapterKind = preset->adapterKind;
-        if (!preset->capabilities.authModes.count(profile.authMode)) {
-            profile.authMode = preset->capabilities.authModes.count(
+        profile.adapterKind = translation::NormalizeProviderAdapter(
+            *preset, profile.adapterKind);
+        const auto authModes = translation::ProviderAuthModes(
+            *preset, profile.adapterKind);
+        if (!authModes.count(profile.authMode)) {
+            profile.authMode = authModes.count(
                     TranslationAuthMode::BearerApiKey)
                 ? TranslationAuthMode::BearerApiKey
-                : (preset->capabilities.authModes.count(
-                        TranslationAuthMode::ApiKey)
+                : (authModes.count(TranslationAuthMode::ApiKey)
                     ? TranslationAuthMode::ApiKey
                     : TranslationAuthMode::None);
+        }
+    }
+    // Nothing usable is left after the character repair: fall back to the preset's
+    // offered seed, the shape the built-in repair above already uses, so an unusable
+    // model becomes a usable default instead of an unloadable section. Reported as a
+    // repair, so the file this came from is copied before the next write.
+    if (profile.model.empty()) {
+        if (const auto* preset =
+                translation::FindTranslationProviderPreset(profile.presetKind)) {
+            if (preset->capabilities.requiresModel && !preset->models.empty()) {
+                profile.model = preset->models.front();
+                profile.customModel = false;
+                if (repaired) *repaired = true;
+            }
         }
     }
     // One contract, shared with the settings page and the result window: the pool
@@ -523,6 +580,18 @@ bool ParseProfile(
     } else {
         profile.temperature.reset();
     }
+    // Advisory timestamp, read leniently like the display names: a nonsense value
+    // costs the "list fetched ..." hint, never the profile.
+    profile.modelCatalogFetchedAt = 0;
+    if (value.contains("modelCatalogFetchedAt") &&
+        value["modelCatalogFetchedAt"].is_number_integer()) {
+        const std::int64_t fetchedAt =
+            value["modelCatalogFetchedAt"].get<std::int64_t>();
+        if (fetchedAt > 0) profile.modelCatalogFetchedAt = fetchedAt;
+    }
+    // Applied last, on the settled pool: the table is pruned to it, trimmed and
+    // capped by the one implementation of those rules.
+    translation::RememberCustomModelLabels(profile, labelEntries);
     return true;
 }
 
@@ -535,6 +604,10 @@ json SerializeProfile(const TranslationProviderProfile& profile) {
         {"enabled", profile.enabled},
         {"authMode", AuthModeName(profile.authMode)},
         {"baseUrlOverride", WideToUtf8(profile.baseUrlOverride)},
+        // Only when set: a v8 file that carries `false` on every profile is noise,
+        // and the default has to stay false so a hand-written file keeps the base
+        // semantics.
+        {"completeEndpointOverride", profile.completeEndpointOverride},
         {"region", WideToUtf8(profile.region)},
         {"model", WideToUtf8(profile.model)},
         {"customModel", profile.customModel},
@@ -550,6 +623,24 @@ json SerializeProfile(const TranslationProviderProfile& profile) {
         }
     }
     value["customModels"] = std::move(customModelsJson);
+    // Display names, iterated in pool order so the file is stable across saves.
+    // Omitted entirely when there is nothing to show: an older build then sees the
+    // exact document it would have written itself.
+    json customLabelsJson = json::object();
+    for (const auto& m : profile.customModels) {
+        const auto label = profile.customModelLabels.find(m);
+        if (label == profile.customModelLabels.end()) continue;
+        if (label->second.empty() || label->second == m) continue;
+        customLabelsJson[WideToUtf8(m)] = WideToUtf8(label->second);
+    }
+    if (!customLabelsJson.empty()) {
+        value["customModelLabels"] = std::move(customLabelsJson);
+    }
+    // Omitted when the profile has never fetched, so an untouched profile keeps
+    // producing byte-identical JSON.
+    if (profile.modelCatalogFetchedAt > 0) {
+        value["modelCatalogFetchedAt"] = profile.modelCatalogFetchedAt;
+    }
     if (profile.temperature.has_value()) value["temperature"] = profile.temperature.value();
     else value["temperature"] = nullptr;
     return value;
@@ -667,7 +758,12 @@ bool ParseTranslationSection(
                 }
                 TranslationProviderProfile profile;
                 std::wstring profileError;
-                if (!ParseProfile(entry, profile, &profileError)) {
+                // Set when the reader had to repair this profile (a model id an
+                // older build could write but a request cannot carry). The entry
+                // still loads -- that is the whole point -- but the file it came
+                // from is copied before the next write.
+                bool profileRepaired = false;
+                if (!ParseProfile(entry, profile, &profileError, &profileRepaired)) {
                     // A single unusable *optional* field must not delete the
                     // whole profile. advancedOptionsJson and temperature carry
                     // no identity: retry once with them cleared so the profile,
@@ -677,7 +773,8 @@ bool ParseTranslationSection(
                     json sanitized = entry;
                     sanitized["advancedOptionsJson"] = "{}";
                     sanitized["temperature"] = nullptr;
-                    if (!ParseProfile(sanitized, salvaged, &profileError)) {
+                    if (!ParseProfile(
+                            sanitized, salvaged, &profileError, &profileRepaired)) {
                         dropEntry();
                         continue;
                     }
@@ -685,6 +782,45 @@ bool ParseTranslationSection(
                     // did not. A later save still needs a copy of those bytes.
                     dropEntry();
                     profile = std::move(salvaged);
+                }
+                if (profileRepaired) dropEntry();
+                // A file from before v8 stored the complete request URL, and used it
+                // verbatim: the protocol path was part of what the user typed. Saying
+                // so from the one fact that is actually known -- the file's own version
+                // -- is what keeps `https://gateway.example/invoke` from turning into
+                // `https://gateway.example/invoke/chat/completions` on upgrade. The bit
+                // is persisted with the profile, so it survives the first save; the
+                // page drops it the moment the field is edited, since an edit is a new
+                // statement about the endpoint.
+                // Only a *model* provider's endpoint changed meaning. A machine-
+                // translation preset (DeepLX and friends) has always addressed a
+                // complete URL and the resolver still hands it over untouched, so
+                // running the LLM base/path split over it would strip a path the
+                // request needs -- a self-hosted `/responses` would become `/`.
+                const auto* migrationPreset =
+                    translation::FindTranslationProviderPreset(profile.presetKind);
+                if (schemaVersion < 8 && !profile.baseUrlOverride.empty() &&
+                    migrationPreset &&
+                    migrationPreset->capabilities.family ==
+                        translation::TranslationProviderFamily::Llm) {
+                    // Strip a known path only if this profile's protocol composes the
+                    // exact old URL. A different protocol suffix or path casing must
+                    // keep its complete-address semantics across the first save.
+                    translation::StoredEndpointMeaning meaning =
+                        translation::InterpretStoredEndpoint(
+                            profile.baseUrlOverride);
+                    if (!meaning.verbatim) {
+                        TranslationProviderProfile candidate = profile;
+                        candidate.baseUrlOverride = meaning.base;
+                        candidate.completeEndpointOverride = false;
+                        if (translation::ResolveProviderEndpoint(candidate) != profile.baseUrlOverride) {
+                            meaning.base = profile.baseUrlOverride;
+                            meaning.verbatim = true;
+                        }
+                    }
+                    profile.baseUrlOverride = meaning.base;
+                    profile.completeEndpointOverride = meaning.verbatim;
+                    dropEntry();
                 }
                 if (schemaVersion < 4 && profile.temperature.has_value()) {
                     const bool oldDeepSeekDefault =
@@ -708,7 +844,14 @@ bool ParseTranslationSection(
                 }
                 const auto* preset = translation::FindTranslationProviderPreset(
                     profile.presetKind);
-                if (!preset || profile.adapterKind != preset->adapterKind) {
+                // ParseProfile already normalized the adapter to one this preset
+                // offers, so only the unknown-preset half of this check can still
+                // fire here; the protocol half is a defensive guard for a future
+                // path that skips that normalization. It no longer marks an entry
+                // as dropped, because an unoffered protocol is now repaired
+                // instead of discarded.
+                if (!preset ||
+                    !translation::FindProtocolOption(*preset, profile.adapterKind)) {
                     dropEntry();
                     continue;
                 }
@@ -911,7 +1054,13 @@ bool NormalizeTranslationSettingsForPersistence(
 
         TranslationProviderProfile normalized;
         std::wstring profileError;
-        if (!ParseProfile(SerializeProfile(profile), normalized, &profileError)) {
+        // No repair flag on the save path: this parses our own serialized bytes, and
+        // the value it produces is the value the reader would produce from the same
+        // file, so a hypothetical unstorable id converges instead of diverging. The
+        // user-visible gate is the page's Apply, which refuses such an id with
+        // IsSupportedProviderProfile before anything is written.
+        if (!ParseProfile(
+                SerializeProfile(profile), normalized, &profileError, nullptr)) {
             SetError(error, profileError.empty()
                 ? L"Translation provider profile is invalid." : profileError.c_str());
             return false;

@@ -167,7 +167,7 @@ json BuildRequestBody(const TranslationSettings& settings,
         {{"role", "user"}, {"content", WideToUtf8(prompt.taskPayloadJson)}},
     });
     json body = {
-        {"model", WideToUtf8(profile->model)},
+        {"model", WideToUtf8(RequestModelId(*profile))},
         {"messages", messages},
         {"stream", false},
         {"response_format", {{"type", "json_object"}}},
@@ -361,11 +361,16 @@ std::shared_ptr<AsyncHttpRequest> DeepSeekTranslationEngine::IssueTranslate(
             credentialError, request.requestId));
         return {};
     }
+    // One definition for the whole module (see BuildProviderAuthHeader). This engine
+    // only serves presets whose auth modes are bearer-only, so the helper returns
+    // exactly the line this used to hardcode -- and a profile the validation layer
+    // would have rejected can no longer disagree with the header that is sent.
     std::vector<std::wstring> headers = {
-        L"Authorization: Bearer " + key,
         L"Content-Type: application/json",
         L"Accept: application/json",
     };
+    const std::wstring authHeader = BuildProviderAuthHeader(profile->authMode, key);
+    if (!authHeader.empty()) headers.insert(headers.begin(), authHeader);
     HttpRequestOptions options;
     options.timeoutMs = kConnectTimeoutMs;
     const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -505,7 +510,10 @@ TranslationResult DeepSeekTranslationEngine::ParseResponse(
             return MakeError(ErrorCode::EmptyContent,
                 L"DeepSeek returned empty content.", request.requestId);
         }
-        const json payload = json::parse(content);
+        // Same contract as the OpenAI-compatible engine: the model owes us one JSON
+        // object, not a file, so a markdown fence or a sentence around it is not a
+        // failure (see translation::ExtractJsonAnswer).
+        const json payload = json::parse(translation::ExtractJsonAnswer(content));
         if (!payload.is_object() || !payload.contains("targetLanguage") ||
             !payload["targetLanguage"].is_string() ||
             !payload.contains("translations") || !payload["translations"].is_array()) {

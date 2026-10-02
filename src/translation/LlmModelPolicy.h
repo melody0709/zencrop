@@ -41,6 +41,13 @@ enum class ReasoningWireFormat {
     OllamaThink,
     ThinkingDisabled,
     ThinkingAndHistoryDisabled,
+    // The OpenAI parameter name and value set, sent at the top level:
+    // `reasoning_effort: "none" | "minimal" | "low" | "medium" | "high"`. This is
+    // what the OpenAI-compatible surface of the vendors that do not document a
+    // vendor-specific "do not think" field accepts, so it is the dialect used for
+    // a user-supplied endpoint (`custom-openai-compatible`) and for a preset whose
+    // OpenAI-compatible protocol was selected explicitly.
+    OpenAiReasoningEffort,
 };
 
 struct LlmModelPolicy {
@@ -64,6 +71,18 @@ LlmModelPolicy ResolveLlmModelPolicy(
     const std::wstring& presetKind,
     const std::wstring& model,
     bool customModel);
+
+// Adapter-aware form. A profile may run a preset over a *different* API protocol
+// than the preset's native one (Gemini over its OpenAI-compatible surface is the
+// motivating case), and the "do not think" field belongs to that protocol, not to
+// the vendor name: the native `generationConfig.thinkingConfig` must not be
+// injected into an OpenAI-shaped body. Only the reasoning dialect follows the
+// adapter; output mode, token limit and temperature stay the preset's.
+LlmModelPolicy ResolveLlmModelPolicy(
+    const std::wstring& presetKind,
+    const std::wstring& model,
+    bool customModel,
+    TranslationAdapterKind adapter);
 
 // The one definition of "which reasoning mode will this request actually
 // carry". A stored mode can be stale -- a profile written before the model

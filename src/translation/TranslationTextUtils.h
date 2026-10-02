@@ -62,6 +62,27 @@ inline void TruncateUtf16Safe(std::wstring& text, std::size_t maxLength) {
     }
 }
 
+// The model's answer with a markdown fence, or prose around it, removed.
+//
+// Engines on the prompt-JSON contract ask the model for "one JSON object only",
+// but a model that was not handed an API-level schema is free to answer the way it
+// writes everything else. Measured 2026-10-02 against gemini-3.8-flash with a real
+// key: the same request returns a bare object when `responseMimeType` is set and a
+// ```json fenced one when it is not -- and the fenced answer failed as
+// ErrorCode::InvalidJson ("returned invalid JSON") even though the object inside
+// was exactly what the contract asked for. It is not deterministic either: three
+// consecutive runs of one shape produced two fenced answers and one bare one.
+//
+// This unwraps the *wrapper* and nothing else: the first balanced `{...}` **that
+// parses as a JSON object** is returned (string- and escape-aware, so a brace inside
+// a translated sentence cannot end it early; a balanced run that is not JSON -- a
+// prose aside like "{see the note}" -- is skipped rather than returned, because the
+// object the contract asked for may still follow). When no such object exists the
+// input comes back unchanged, so a genuinely malformed answer still fails the
+// caller's parse. Every field check (ids, languages, segment count) still runs on
+// the parsed object.
+std::string ExtractJsonAnswer(std::string_view content);
+
 // The provider's own error text is what distinguishes "response_format is not
 // supported" from "reasoning is mandatory for this endpoint" from "this :free
 // slug is gone"; the status code alone cannot, and every one of those cases has

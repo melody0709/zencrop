@@ -1,6 +1,7 @@
 #include "TranslationProviderCatalog.h"
 
 #include <algorithm>
+#include <cwchar>
 #include <cmath>
 #include <cwctype>
 #include <limits>
@@ -10,6 +11,28 @@
 namespace translation {
 namespace {
 
+// Human name of an API protocol. Declared before BuildPresets() because the preset
+// table builds its protocol entries from it.
+const wchar_t* AdapterDisplayLabel(TranslationAdapterKind adapter) {
+    switch (adapter) {
+    case TranslationAdapterKind::OpenAIChatCompletions:
+        return L"OpenAI Chat Completions";
+    case TranslationAdapterKind::OpenAIResponses:
+        return L"OpenAI Responses";
+    case TranslationAdapterKind::XaiResponses:
+        return L"xAI Responses";
+    case TranslationAdapterKind::GeminiGenerateContent:
+        return L"Gemini GenerateContent";
+    case TranslationAdapterKind::OllamaChat:
+        return L"Ollama Chat";
+    case TranslationAdapterKind::DeepSeekChat:
+        return L"DeepSeek Chat";
+    case TranslationAdapterKind::MachineTranslation:
+        return L"Direct translation";
+    }
+    return L"OpenAI Chat Completions";
+}
+
 std::vector<TranslationProviderPreset> BuildPresets() {
     TranslationProviderPreset deepseek;
     deepseek.kind = L"deepseek";
@@ -18,7 +41,7 @@ std::vector<TranslationProviderPreset> BuildPresets() {
     deepseek.adapterKind = TranslationAdapterKind::DeepSeekChat;
     deepseek.endpoint = L"https://api.deepseek.com/chat/completions";
     deepseek.dataHost = L"api.deepseek.com";
-    deepseek.models = {L"deepseek-v4-flash", L"deepseek-v4-pro"};
+    deepseek.modelPolicyIds = {L"deepseek-v4-flash", L"deepseek-v4-pro"};
     deepseek.capabilities.authModes = {TranslationAuthMode::BearerApiKey};
     deepseek.capabilities.endpoint = deepseek.endpoint;
     deepseek.capabilities.dataHost = deepseek.dataHost;
@@ -28,7 +51,7 @@ std::vector<TranslationProviderPreset> BuildPresets() {
         const wchar_t* displayName,
         const wchar_t* endpoint,
         const wchar_t* dataHost,
-        std::vector<std::wstring> models) {
+        std::vector<std::wstring> policyIds) {
         TranslationProviderPreset preset;
         preset.kind = kind;
         preset.displayName = displayName;
@@ -36,7 +59,9 @@ std::vector<TranslationProviderPreset> BuildPresets() {
         preset.adapterKind = TranslationAdapterKind::OpenAIChatCompletions;
         preset.endpoint = endpoint;
         preset.dataHost = dataHost;
-        preset.models = std::move(models);
+        // This is the policy catalog, not the offered list: the display seeds are
+        // assigned in one place once every preset exists (see SeedDisplayModels).
+        preset.modelPolicyIds = std::move(policyIds);
         preset.capabilities.authModes = {TranslationAuthMode::BearerApiKey};
         preset.capabilities.allowsCustomModel = true;
         preset.capabilities.endpoint = preset.endpoint;
@@ -55,7 +80,7 @@ std::vector<TranslationProviderPreset> BuildPresets() {
         L"gemini", L"Gemini",
         L"https://generativelanguage.googleapis.com/v1beta/models",
         L"generativelanguage.googleapis.com",
-        {L"gemini-2.5-flash-lite", L"gemini-2.5-flash", L"gemini-2.5-pro"});
+        {L"gemini-3.8-flash", L"gemini-2.5-flash", L"gemini-2.5-pro"});
     gemini.adapterName = L"Gemini GenerateContent";
     gemini.adapterKind = TranslationAdapterKind::GeminiGenerateContent;
     gemini.capabilities.authModes = {TranslationAuthMode::ApiKey};
@@ -328,7 +353,7 @@ std::vector<TranslationProviderPreset> BuildPresets() {
     deepLx.capabilities.maxSegmentsPerRequest = 1;
     deepLx.capabilities.maturity = ProviderMaturity::SelfHosted;
     deepLx.capabilities.policyRevision = 2;
-    return {
+    std::vector<TranslationProviderPreset> result = {
         deepseek,
         openai,
         gemini,
@@ -357,6 +382,100 @@ std::vector<TranslationProviderPreset> BuildPresets() {
         googleCommunity,
         deepLx,
     };
+
+    // Display seeds: the head of each policy catalog, assigned here -- after every
+    // preset exists -- so the offered list and the policy judge cannot drift apart
+    // and a new preset cannot forget to declare one. One seed per preset keeps every
+    // new profile's default model exactly what it was before the two lists were
+    // split; every other id is one `Fetch available models` away. A preset that ever
+    // needs a second seed should raise the count here, not grow a second list.
+    for (auto& preset : result) {
+        if (!preset.modelPolicyIds.empty()) {
+            preset.models.assign(
+                preset.modelPolicyIds.begin(), preset.modelPolicyIds.begin() + 1);
+        }
+    }
+
+    // The API protocol table is built here, after every preset is finalized, so
+    // the native entry always reflects the preset's own adapter (a preset that
+    // changes its adapter halfway through construction cannot leave a stale first
+    // entry behind), and so the presets that accept a second surface declare it in
+    // one place instead of three.
+    for (auto& preset : result) {
+        preset.protocols.clear();
+        if (preset.capabilities.family == TranslationProviderFamily::DirectMt) {
+            // Machine translation keeps the complete-URL semantics it has always
+            // had: its single entry mirrors the preset endpoint and carries no
+            // listing path.
+            preset.protocols.push_back(ProviderProtocolOption{
+                .adapter = preset.adapterKind,
+                .label = AdapterDisplayLabel(preset.adapterKind),
+                .baseUrl = preset.endpoint,
+            });
+            continue;
+        }
+        const bool geminiNative =
+            preset.adapterKind == TranslationAdapterKind::GeminiGenerateContent;
+        const bool ollamaNative =
+            preset.adapterKind == TranslationAdapterKind::OllamaChat;
+        // Gemini's *listing* path is `models` for both surfaces, but the native
+        // surface answers `{"models":[{"name":"models/..."}]}` while the
+        // OpenAI-compatible surface answers the OpenAI envelope.
+        const std::wstring nativeBase = geminiNative
+            ? L"https://generativelanguage.googleapis.com/v1beta/"
+            : BaseUrlFromRequestEndpoint(preset.endpoint, true);
+        preset.protocols.push_back(ProviderProtocolOption{
+            .adapter = preset.adapterKind,
+            .label = AdapterDisplayLabel(preset.adapterKind),
+            .baseUrl = preset.kind == L"custom-openai-compatible"
+                ? std::wstring() : nativeBase,
+            .modelListPath = ollamaNative ? L"api/tags" : L"models",
+            .modelListProtocol = geminiNative ? ModelListProtocol::GoogleModels
+                : (ollamaNative ? ModelListProtocol::OllamaTags
+                                : ModelListProtocol::OpenAiData),
+        });
+        if (preset.kind == L"custom-openai-compatible") {
+            // The user supplies the base URL; the protocol decides the request
+            // path, the auth surface and the reasoning dialect.
+            preset.protocols.push_back(ProviderProtocolOption{
+                .adapter = TranslationAdapterKind::OpenAIResponses,
+                .label = AdapterDisplayLabel(TranslationAdapterKind::OpenAIResponses),
+                .modelListPath = L"models",
+                .modelListProtocol = ModelListProtocol::OpenAiData,
+            });
+            preset.protocols.push_back(ProviderProtocolOption{
+                .adapter = TranslationAdapterKind::GeminiGenerateContent,
+                .label = AdapterDisplayLabel(
+                    TranslationAdapterKind::GeminiGenerateContent),
+                .modelListPath = L"models",
+                .modelListProtocol = ModelListProtocol::GoogleModels,
+            });
+        }
+        if (geminiNative) {
+            preset.protocols.push_back(ProviderProtocolOption{
+                .adapter = TranslationAdapterKind::OpenAIChatCompletions,
+                .label = AdapterDisplayLabel(
+                    TranslationAdapterKind::OpenAIChatCompletions),
+                .baseUrl = L"https://generativelanguage.googleapis.com/v1beta/openai/",
+                .modelListPath = L"models",
+                .modelListProtocol = ModelListProtocol::OpenAiData,
+                .authModes = {TranslationAuthMode::BearerApiKey},
+            });
+        }
+        if (preset.adapterKind == TranslationAdapterKind::OpenAIResponses ||
+            preset.adapterKind == TranslationAdapterKind::XaiResponses) {
+            // The same host also serves the Chat Completions surface.
+            preset.protocols.push_back(ProviderProtocolOption{
+                .adapter = TranslationAdapterKind::OpenAIChatCompletions,
+                .label = AdapterDisplayLabel(
+                    TranslationAdapterKind::OpenAIChatCompletions),
+                .baseUrl = nativeBase,
+                .modelListPath = L"models",
+                .modelListProtocol = ModelListProtocol::OpenAiData,
+            });
+        }
+    }
+    return result;
 }
 
 const std::vector<TranslationProviderPreset>& Presets() {
@@ -364,11 +483,82 @@ const std::vector<TranslationProviderPreset>& Presets() {
     return presets;
 }
 
+// --- API protocol table -----------------------------------------------------
+
 std::wstring Lower(std::wstring value) {
     std::transform(value.begin(), value.end(), value.begin(),
         [](wchar_t ch) { return static_cast<wchar_t>(towlower(ch)); });
     while (!value.empty() && value.back() == L'.') value.pop_back();
     return value;
+}
+
+// The request path a protocol appends to its base URL. Gemini composes its own
+// (the model id is part of the path), and machine translation keeps a complete
+// URL, so both answer an empty suffix.
+const wchar_t* RequestSuffixForAdapter(TranslationAdapterKind adapter) {
+    switch (adapter) {
+    case TranslationAdapterKind::OpenAIChatCompletions:
+    case TranslationAdapterKind::DeepSeekChat:
+        return L"chat/completions";
+    case TranslationAdapterKind::OpenAIResponses:
+    case TranslationAdapterKind::XaiResponses:
+        return L"responses";
+    case TranslationAdapterKind::OllamaChat:
+        return L"api/chat";
+    default:
+        return L"";
+    }
+}
+
+// Request paths that mark the end of a base URL. Every one of them is a *path
+// segment*: `.../proxyresponses` is not a request URL and must not be split.
+const wchar_t* const kRequestSuffixes[] = {
+    L"chat/completions",
+    L"responses",
+    L"api/chat",
+};
+
+bool EndsWithRequestSuffix(const std::wstring& value, const wchar_t* suffix) {
+    const size_t length = wcslen(suffix);
+    if (value.size() < length) return false;
+    // Tolerate path casing in base-URL input. Legacy migration separately checks
+    // the exact round trip before replacing a stored complete request URL.
+    for (size_t i = 0; i < length; ++i) {
+        const wchar_t left = static_cast<wchar_t>(
+            towlower(value[value.size() - length + i]));
+        const wchar_t right = static_cast<wchar_t>(towlower(suffix[i]));
+        if (left != right) return false;
+    }
+    // Either the whole value is the suffix, or the character before it is the
+    // segment separator.
+    return value.size() == length || value[value.size() - length - 1] == L'/';
+}
+
+// Fragment / authority / plain-HTTP rules for the URL a profile will be sent to.
+// Shared by the base-URL path and the legacy complete-URL path so both cannot
+// drift into accepting different things. Defined after the authority parser it
+// depends on.
+
+std::wstring TrimCopy(const std::wstring& value) {
+    const size_t first = value.find_first_not_of(L" \t\r\n");
+    if (first == std::wstring::npos) return {};
+    const size_t last = value.find_last_not_of(L" \t\r\n");
+    return value.substr(first, last - first + 1);
+}
+
+// Trailing-slash form of a base URL, so composition is a plain concatenation.
+std::wstring NormalizeBaseUrlValue(std::wstring value) {
+    value = TrimCopy(value);
+    if (!value.empty() && value.back() != L'/') value.push_back(L'/');
+    return value;
+}
+
+const ProviderProtocolOption* FindProtocol(
+    const TranslationProviderPreset& preset, TranslationAdapterKind adapter) {
+    for (const auto& option : preset.protocols) {
+        if (option.adapter == adapter) return &option;
+    }
+    return nullptr;
 }
 
 bool ParseEndpointAuthority(const std::wstring& endpoint,
@@ -474,6 +664,75 @@ bool IsLoopbackHost(const std::wstring& host) {
         normalized == L"::1";
 }
 
+// Characters a URL can never carry unescaped: every Unicode space (not just U+0020)
+// and every control character. A model id is one path segment and an endpoint is a
+// whole URL, so the two rules are the same rule plus their own delimiters -- and
+// both used to be narrower (the id only for `?`/`#`/ASCII spaces, the endpoint only
+// inside its authority), which is how a full-width space from an IME, a non-breaking
+// space from a document or a pasted BOM reached a request line and came back as a
+// 404 (or a 400) with no explanation. No real provider id or base URL contains one,
+// so refusing them cannot cost a working configuration.
+bool IsUrlUnsafeCharacter(wchar_t ch) {
+    if (ch <= 0x20) return true;                   // C0 controls + ASCII space
+    if (ch >= 0x7F && ch <= 0x9F) return true;     // DEL + C1 controls (incl. NEL)
+    switch (ch) {
+    case 0x00A0:  // no-break space
+    case 0x1680:  // ogham space mark
+    case 0x2000: case 0x2001: case 0x2002: case 0x2003: case 0x2004:
+    case 0x2005: case 0x2006: case 0x2007: case 0x2008: case 0x2009:
+    case 0x200A:  // en/em/thin/hair spaces and friends
+    case 0x2028: case 0x2029:  // line/paragraph separators
+    case 0x202F:  // narrow no-break space
+    case 0x205F:  // medium mathematical space
+    case 0x3000:  // ideographic (full-width) space
+    case 0xFEFF:  // zero-width no-break space: a BOM pasted into the field
+        return true;
+    default:
+        return false;
+    }
+}
+
+// A model id is one URL path segment, so the two delimiters that would end it are
+// forbidden on top of everything no URL carries.
+bool IsForbiddenModelIdentifierChar(wchar_t ch) {
+    return ch == L'?' || ch == L'#' || IsUrlUnsafeCharacter(ch);
+}
+
+// Fragment / authority / plain-HTTP rules for the URL a profile will be sent to.
+// Shared by the base-URL path and the legacy complete-URL path so the two cannot
+// drift into accepting different things.
+bool ValidateProviderUrl(const std::wstring& url, std::wstring* error) {
+    if (url.find(L'#') != std::wstring::npos) {
+        if (error) *error = L"Provider endpoint must not contain a fragment.";
+        return false;
+    }
+    // The authority check below only sees the host: a space or a control character in
+    // the path was accepted here, and the transport then either escaped it or failed
+    // in a way the user could not read. `?` is legitimate (Azure's `?api-version=`),
+    // so only the characters no URL carries are refused.
+    for (const wchar_t ch : url) {
+        if (IsUrlUnsafeCharacter(ch)) {
+            if (error) {
+                *error = L"Provider endpoint must not contain spaces or control "
+                    L"characters.";
+            }
+            return false;
+        }
+    }
+    std::wstring host;
+    std::wstring authorityError;
+    if (!ParseEndpointAuthority(url, host, authorityError)) {
+        if (error) *error = authorityError;
+        return false;
+    }
+    const std::wstring scheme = Lower(url.substr(0, url.find(L"://")));
+    if (scheme == L"http" && !IsLoopbackHost(host)) {
+        if (error) *error = L"Plain HTTP is only allowed for a loopback provider.";
+        return false;
+    }
+    return true;
+}
+
 bool IsSafeCredentialReference(const std::wstring& value) {
     if (value == kLegacyTranslationCredentialTarget) return true;
     constexpr wchar_t prefix[] = L"ZenCrop/Translation/provider/";
@@ -572,6 +831,41 @@ std::vector<TranslationProviderPreset> ListAddableTranslationProviderPresets(
     return presets;
 }
 
+bool ShouldAddBuiltInProviderProfile(
+    const TranslationSettings& settings,
+    const TranslationProviderProfile& builtIn) {
+    if (builtIn.id.empty() || builtIn.presetKind.empty()) return false;
+    for (const auto& profile : settings.providerProfiles) {
+        if (profile.id == builtIn.id) return false;
+        if (profile.presetKind == builtIn.presetKind) return false;
+    }
+    return true;
+}
+
+bool SharesProviderPreset(
+    const TranslationSettings& settings, const std::wstring& id) {
+    const auto profile = std::find_if(settings.providerProfiles.begin(),
+        settings.providerProfiles.end(),
+        [&](const TranslationProviderProfile& candidate) {
+            return candidate.id == id;
+        });
+    if (profile == settings.providerProfiles.end()) return false;
+    return std::any_of(settings.providerProfiles.begin(),
+        settings.providerProfiles.end(),
+        [&](const TranslationProviderProfile& candidate) {
+            return candidate.id != id &&
+                candidate.presetKind == profile->presetKind;
+        });
+}
+
+bool CanDeleteProviderProfile(
+    const TranslationSettings& settings, const std::wstring& id) {
+    // A user profile is always removable; only the shipped entries are protected,
+    // and only while they are the preset's only representative.
+    if (!FindBuiltInProviderPreset(id)) return true;
+    return SharesProviderPreset(settings, id);
+}
+
 TranslationProviderProfile CreateTranslationProviderProfile(
     const TranslationProviderPreset& preset,
     const std::wstring& profileId) {
@@ -667,6 +961,119 @@ bool IsListedProviderModel(
     return preset && !model.empty() && IsListedModel(*preset, model);
 }
 
+bool IsModelPolicyKnown(
+    const TranslationProviderPreset& preset, const std::wstring& model) {
+    if (model.empty()) return false;
+    // The offered seeds are checked too, so the "seeds are the head of the policy
+    // catalog" invariant is never load-bearing for a request.
+    return IsListedModel(preset, model) ||
+        std::find(preset.modelPolicyIds.begin(), preset.modelPolicyIds.end(),
+            model) != preset.modelPolicyIds.end();
+}
+
+namespace {
+
+// Stores one unlisted id in the pool, enforcing length, catalog and FIFO rules.
+// Split out of RememberCustomModel() so the model picker can add a whole list
+// without re-implementing the contract (and without pretending each id is the
+// active model).
+bool RememberCustomModelId(
+    TranslationProviderProfile& profile, const std::wstring& model) {
+    std::wstring value = model;
+    TrimModelIdentifier(value);
+    const auto* preset = ResolveProfilePreset(profile);
+    if (value.empty() || value.size() > kMaxTranslationModelLength) return false;
+    // A user- or vendor-supplied id is refused rather than repaired: an id whose
+    // characters would have to be escaped in a request URL never enters the pool
+    // (and therefore never appears in a menu that leads to a request).
+    if (!IsStorableModelIdentifier(value)) return false;
+    if (preset && IsListedModel(*preset, value)) return false;
+    if (std::find(profile.customModels.begin(), profile.customModels.end(),
+            value) != profile.customModels.end()) {
+        return false;
+    }
+    if (profile.customModels.size() >= kMaxTranslationCustomModels) {
+        profile.customModels.erase(profile.customModels.begin());
+    }
+    profile.customModels.push_back(std::move(value));
+    return true;
+}
+
+} // namespace
+
+std::wstring SanitizeModelIdentifier(const std::wstring& model) {
+    std::wstring value;
+    value.reserve(model.size());
+    for (const wchar_t ch : model) {
+        if (IsForbiddenModelIdentifierChar(ch)) continue;
+        value.push_back(ch);
+    }
+    return value;
+}
+
+bool PoolFitsWithinCapacity(size_t kept, size_t added, size_t capacity) {
+    return capacity == 0 || kept + added <= capacity;
+}
+
+bool ActiveModelJoinsPool(
+    const std::wstring& active,
+    bool allowsCustomModel,
+    const std::vector<std::wstring>& catalogIds,
+    const std::vector<std::wstring>& poolIds) {
+    if (active.empty() || !allowsCustomModel) return false;
+    // Same gate the pool writer applies, so "will this join?" cannot be true for an id
+    // RememberCustomModelId would refuse.
+    if (!IsStorableModelIdentifier(active)) return false;
+    // A catalog model is the caller's business (it stays a listed id), and an id that
+    // is already in the kept pool is not an addition.
+    if (std::find(catalogIds.begin(), catalogIds.end(), active) != catalogIds.end()) {
+        return false;
+    }
+    return std::find(poolIds.begin(), poolIds.end(), active) == poolIds.end();
+}
+
+bool IsStorableModelIdentifier(const std::wstring& model) {
+    // One definition of the rule: an id is storable exactly when the repair would
+    // not change it, so the accepting side and the repairing side cannot drift.
+    return !model.empty() && SanitizeModelIdentifier(model) == model;
+}
+
+void PruneCustomModelLabels(TranslationProviderProfile& profile) {
+    if (profile.customModelLabels.empty()) return;
+    std::erase_if(profile.customModelLabels, [&](const auto& entry) {
+        return std::find(profile.customModels.begin(), profile.customModels.end(),
+                   entry.first) == profile.customModels.end();
+    });
+}
+
+bool RememberCustomModelLabels(
+    TranslationProviderProfile& profile,
+    const std::vector<ModelNameEntry>& labels) {
+    // Prune before merging: the table describes the pool, so an id the pool does
+    // not hold cannot keep a name even if the caller passed one.
+    PruneCustomModelLabels(profile);
+    const std::map<std::wstring, std::wstring> previous = profile.customModelLabels;
+    for (const auto& entry : labels) {
+        std::wstring id = entry.id;
+        TrimModelIdentifier(id);
+        if (id.empty() || id.size() > kMaxTranslationModelLength) continue;
+        if (std::find(profile.customModels.begin(), profile.customModels.end(), id) ==
+            profile.customModels.end()) {
+            continue;
+        }
+        std::wstring label = entry.label;
+        TrimModelIdentifier(label);
+        // Nothing to show, or the name is the id: storing it would only bloat the
+        // file and make "has a display name" impossible to ask.
+        if (label.empty() || label == id ||
+            label.size() > kMaxTranslationModelLength) {
+            continue;
+        }
+        profile.customModelLabels[id] = std::move(label);
+    }
+    return profile.customModelLabels != previous;
+}
+
 void RememberCustomModel(TranslationProviderProfile& profile) {
     TrimModelIdentifier(profile.model);
     const auto* preset = ResolveProfilePreset(profile);
@@ -678,26 +1085,39 @@ void RememberCustomModel(TranslationProviderProfile& profile) {
             return IsListedModel(*preset, remembered);
         });
     }
-    if (!profile.customModel || profile.model.empty() ||
-        profile.model.size() > kMaxTranslationModelLength) {
-        return;
+    if (profile.customModel) {
+        RememberCustomModelId(profile, profile.model);
     }
-    if (preset && IsListedModel(*preset, profile.model)) return;
-    if (std::find(profile.customModels.begin(), profile.customModels.end(),
-            profile.model) != profile.customModels.end()) {
-        return;
+    PruneCustomModelLabels(profile);
+}
+
+bool SetCustomModelPool(
+    TranslationProviderProfile& profile, const std::vector<std::wstring>& models) {
+    const std::vector<std::wstring> previous = profile.customModels;
+    const std::map<std::wstring, std::wstring> previousLabels =
+        profile.customModelLabels;
+    profile.customModels.clear();
+    const auto* preset = ResolveProfilePreset(profile);
+    for (const auto& model : models) {
+        std::wstring value = model;
+        TrimModelIdentifier(value);
+        if (value.empty() || value.size() > kMaxTranslationModelLength) continue;
+        if (preset && IsListedModel(*preset, value)) continue;
+        RememberCustomModelId(profile, value);
     }
-    if (profile.customModels.size() >= kMaxTranslationCustomModels) {
-        profile.customModels.erase(profile.customModels.begin());
-    }
-    profile.customModels.push_back(profile.model);
+    PruneCustomModelLabels(profile);
+    return profile.customModels != previous ||
+        profile.customModelLabels != previousLabels;
 }
 
 bool ApplyTranslationModelChoice(
     TranslationProviderProfile& profile,
     const std::wstring& model) {
-    profile.model = model;
-    TrimModelIdentifier(profile.model);
+    // The single "apply a chosen model" funnel: the characters a request URL cannot
+    // carry are repaired here rather than stored, because an id that
+    // IsSupportedProviderProfile would reject would otherwise only surface at Apply
+    // time. Same rule as the pool writers enforce, one implementation.
+    profile.model = SanitizeModelIdentifier(model);
     const bool listed = IsListedProviderModel(profile, profile.model);
     // Capabilities below still read the previous flag, which is sound: whether
     // a profile needs a model (and may use a custom one) comes from the preset,
@@ -719,7 +1139,8 @@ ProviderCapabilities GetCapabilities(
             TranslationAuthMode::None,
         };
         const auto policy = ResolveLlmModelPolicy(
-            profile.presetKind, profile.model, profile.customModel);
+            profile.presetKind, profile.model, profile.customModel,
+            profile.adapterKind);
         custom.reasoningModes = policy.reasoningModes;
         custom.defaultReasoning = policy.defaultReasoning;
         custom.reasoningWireFormat = policy.reasoningWireFormat;
@@ -739,14 +1160,18 @@ ProviderCapabilities GetCapabilities(
     if (capabilities.family == TranslationProviderFamily::DirectMt) {
         return capabilities;
     }
-    // A listed id always takes the model-level policy, whatever the user's
-    // "Custom model" mark says. The mark belongs to the page; deriving the
-    // request shape from it downgraded catalog models onto the conservative
-    // path (no temperature, prompt-JSON output and -- on the presets without a
-    // measured custom-model dialect -- no reasoning field at all).
+    // A policy-known id always takes the model-level policy, whatever the user's
+    // "Custom model" mark says and whether or not the id is still offered. The
+    // mark belongs to the page; deriving the request shape from it downgraded
+    // catalog models onto the conservative path (no temperature, prompt-JSON
+    // output and -- on the presets without a measured custom-model dialect -- no
+    // reasoning field at all). Judging by the policy catalog rather than by the
+    // offered seeds is what keeps an id that has stopped being offered -- fetched,
+    // or retired from the seed list -- on the policy its vendor needs.
     const auto policy = ResolveLlmModelPolicy(
         profile.presetKind, profile.model,
-        profile.customModel && !IsListedModel(*preset, profile.model));
+        profile.customModel && !IsModelPolicyKnown(*preset, profile.model),
+        profile.adapterKind);
     capabilities.reasoningModes = policy.reasoningModes;
     capabilities.defaultReasoning = policy.defaultReasoning;
     capabilities.reasoningWireFormat = policy.reasoningWireFormat;
@@ -757,6 +1182,17 @@ ProviderCapabilities GetCapabilities(
     capabilities.tokenLimitKind = policy.tokenLimitKind;
     capabilities.maxSegmentsPerRequest = policy.maxSegmentsPerRequest;
     capabilities.policyRevision = policy.revision;
+    // The API protocol decides which authentication actually works -- Gemini's
+    // native surface takes `x-goog-api-key`, its OpenAI-compatible surface wants a
+    // bearer token -- so this set has to come from the same definition the three
+    // repair paths use. Leaving it at the preset level made the compat protocol
+    // unreachable in practice: ReadControlsIntoProfile repaired the stored mode to
+    // Bearer (as that protocol requires), and IsSupportedProviderProfile then
+    // rejected it against the preset-level `{ApiKey}` -- so Apply answered
+    // PSNRET_INVALID_NOCHANGEPAGE, Test connection and Fetch models refused to
+    // start, and the combo displayed an auth mode the profile did not have.
+    // Identity for every protocol that declares nothing of its own.
+    capabilities.authModes = ProviderAuthModes(*preset, profile.adapterKind);
     return capabilities;
 }
 
@@ -773,8 +1209,13 @@ bool IsSupportedProviderProfile(
         if (error) *error = L"Unknown translation provider preset.";
         return false;
     }
-    if (profile.adapterKind != preset->adapterKind) {
-        if (error) *error = L"Translation provider adapter does not match its preset.";
+    // The profile may run this preset over any of the protocols the preset
+    // offers (its native one first). Anything else is a stale or hand-edited
+    // value and is rejected rather than silently mapped.
+    if (!FindProtocol(*preset, profile.adapterKind)) {
+        if (error) {
+            *error = L"The selected API protocol is not offered by this provider.";
+        }
         return false;
     }
     const auto capabilities = GetCapabilities(profile);
@@ -800,6 +1241,18 @@ bool IsSupportedProviderProfile(
             }
             return false;
         }
+    }
+    // Defense in depth for the character rule (IsStorableModelIdentifier above):
+    // every writer in the app refuses such an id at the door, and this keeps a
+    // profile assembled by some future caller out of the request path. The
+    // requiresModel guard is what lets an empty model through for the presets that
+    // have none by design (machine translation).
+    if (capabilities.requiresModel && !IsStorableModelIdentifier(profile.model)) {
+        if (error) {
+            *error = L"The model identifier contains characters that cannot appear "
+                L"in a request URL.";
+        }
+        return false;
     }
     if (capabilities.authModes.find(profile.authMode) == capabilities.authModes.end()) {
         if (error) *error = L"Translation provider authentication mode is unsupported.";
@@ -828,9 +1281,14 @@ bool IsSupportedProviderProfile(
             return false;
         }
     }
+    // A preset that publishes a catalog admits any model the catalog claims (the
+    // offered seeds and the policy catalog alike) plus anything the user marked as
+    // custom; only an id this preset never published needs that mark. Judging by
+    // the policy catalog rather than by the seeds is what lets an id stop being
+    // offered -- slimmed seed list, or fetched from the provider -- without
+    // invalidating the profile it is already stored in.
     if (!profile.customModel && !preset->models.empty() &&
-        std::find(preset->models.begin(), preset->models.end(), profile.model) ==
-            preset->models.end()) {
+        !IsModelPolicyKnown(*preset, profile.model)) {
         if (error) *error = L"The selected model is not supported by this provider preset.";
         return false;
     }
@@ -870,6 +1328,152 @@ bool IsSupportedProviderProfile(
     return true;
 }
 
+const ProviderProtocolOption* FindProtocolOption(
+    const TranslationProviderPreset& preset, TranslationAdapterKind adapter) {
+    return FindProtocol(preset, adapter);
+}
+
+std::set<TranslationAuthMode> ProviderAuthModes(
+    const TranslationProviderPreset& preset, TranslationAdapterKind adapter) {
+    const auto* option = FindProtocol(preset, adapter);
+    if (option && !option->authModes.empty()) return option->authModes;
+    return preset.capabilities.authModes;
+}
+
+std::wstring BuildProviderAuthHeader(
+    TranslationAuthMode mode, const std::wstring& key) {
+    if (!TranslationAuthUsesCredential(mode)) return {};
+    // Measured against the live endpoints: Gemini's native surface takes
+    // `x-goog-api-key`, its OpenAI-compatible surface (like everything else in the
+    // OpenAI family) wants a bearer token. A mode that carries a credential always
+    // produces a header -- whether the key itself is good is the provider's answer
+    // to give, and the callers check for an empty key before they get here.
+    return mode == TranslationAuthMode::ApiKey
+        ? L"X-Goog-Api-Key: " + key
+        : L"Authorization: Bearer " + key;
+}
+
+TranslationAdapterKind NormalizeProviderAdapter(
+    const TranslationProviderPreset& preset, TranslationAdapterKind stored) {
+    return FindProtocol(preset, stored) ? stored : preset.adapterKind;
+}
+
+std::wstring BaseUrlFromRequestEndpoint(
+    const std::wstring& endpoint, bool llmFamily) {
+    if (!llmFamily) return endpoint;
+    std::wstring value = TrimCopy(endpoint);
+    for (const wchar_t* suffix : kRequestSuffixes) {
+        if (EndsWithRequestSuffix(value, suffix)) {
+            value.resize(value.size() - wcslen(suffix));
+            break;
+        }
+    }
+    return NormalizeBaseUrlValue(std::move(value));
+}
+
+StoredEndpointMeaning InterpretStoredEndpoint(const std::wstring& value) {
+    StoredEndpointMeaning meaning;
+    const std::wstring trimmed = TrimCopy(value);
+    if (trimmed.empty()) return meaning;
+    // A query pins the API version, so the address is complete: the resolver keeps it
+    // verbatim and no protocol switch can be honored against it. Marked, so the page
+    // treats it like any other complete address instead of letting a protocol change
+    // pair a new body with this path.
+    if (trimmed.find(L'?') != std::wstring::npos) {
+        meaning.base = trimmed;
+        meaning.verbatim = true;
+        return meaning;
+    }
+    // Whether a known protocol path was stripped, asked directly: comparing the
+    // normalized base with the value cannot tell "nothing was stripped" from "only a
+    // trailing slash was added", and those two answers differ.
+    bool knownSuffix = false;
+    for (const wchar_t* suffix : kRequestSuffixes) {
+        if (EndsWithRequestSuffix(trimmed, suffix)) {
+            knownSuffix = true;
+            break;
+        }
+    }
+    // A recognized path is dropped, so composition rebuilds the same address and keeps
+    // following the protocol afterwards. Anything else is kept **exactly** as stored --
+    // the resolver sends it verbatim, and even a normalized trailing slash would change
+    // the request by one character.
+    meaning.base = knownSuffix
+        ? BaseUrlFromRequestEndpoint(trimmed, true)
+        : trimmed;
+    meaning.verbatim = !knownSuffix;
+    return meaning;
+}
+
+bool EndpointIsCompleteRequestUrl(const TranslationProviderProfile& profile) {
+    if (profile.baseUrlOverride.empty()) return false;
+    if (profile.completeEndpointOverride) return true;
+    // A query pins an API version; the path in front of it belongs to the protocol that
+    // published it, which is why the resolver keeps it verbatim and why a protocol switch
+    // cannot be honored here.
+    return profile.baseUrlOverride.find(L'?') != std::wstring::npos;
+}
+
+std::wstring ResolveProviderBaseUrl(
+    const TranslationProviderProfile& profile,
+    std::wstring* error) {
+    const auto* preset = FindTranslationProviderPreset(profile.presetKind);
+    if (!preset) {
+        if (error) *error = L"Unknown translation provider preset.";
+        return {};
+    }
+    const bool llm =
+        preset->capabilities.family == TranslationProviderFamily::Llm;
+    std::wstring base;
+    // Only a preset that offers a custom endpoint reads the override -- the rule
+    // the resolver has always had, kept here so a hand-edited file cannot make a
+    // built-in profile request somewhere else.
+    if (preset->capabilities.allowsCustomBaseUrl &&
+        !profile.baseUrlOverride.empty()) {
+        base = profile.baseUrlOverride;
+    } else {
+        const auto* option = FindProtocol(*preset, profile.adapterKind);
+        base = option ? option->baseUrl : preset->endpoint;
+    }
+    if (llm) {
+        base = BaseUrlFromRequestEndpoint(base, true);
+    } else {
+        base = TrimCopy(base);
+    }
+    if (base.empty()) {
+        if (error) {
+            *error = llm ? L"A base URL is required for this provider."
+                         : L"A custom provider endpoint is required.";
+        }
+        return {};
+    }
+    if (!ValidateProviderUrl(base, error)) return {};
+    return base;
+}
+
+std::wstring RequestModelId(const TranslationProviderProfile& profile) {
+    const auto* preset = FindTranslationProviderPreset(profile.presetKind);
+    // The `models/` spelling is Google's, and exactly two situations strip it:
+    //   - the request *is* the native Gemini surface, because the model is a path
+    //     segment there and the prefix is written by the composer itself (a stored
+    //     prefix would double it);
+    //   - the preset's *home* surface is Gemini, i.e. this is Google's own
+    //     OpenAI-compatible endpoint, whose bodies take the bare id (Google's native
+    //     listings are what taught the app the prefixed spelling in the first place).
+    // Deliberately NOT "the preset offers a Gemini protocol": every custom endpoint
+    // offers one, so that reading marked all of them and silently removed the
+    // namespace from a private gateway whose ids legitimately start with `models/`.
+    // A custom endpoint decides its own model names.
+    const bool googleModelNaming =
+        profile.adapterKind == TranslationAdapterKind::GeminiGenerateContent ||
+        (preset &&
+            preset->adapterKind == TranslationAdapterKind::GeminiGenerateContent);
+    if (googleModelNaming && profile.model.rfind(L"models/", 0) == 0) {
+        return profile.model.substr(7);
+    }
+    return profile.model;
+}
+
 std::wstring ResolveProviderEndpoint(
     const TranslationProviderProfile& profile,
     std::wstring* error) {
@@ -878,30 +1482,49 @@ std::wstring ResolveProviderEndpoint(
         if (error) *error = L"Unknown translation provider preset.";
         return {};
     }
-    std::wstring endpoint = preset->endpoint;
-    if (preset->capabilities.allowsCustomBaseUrl) {
-        endpoint = profile.baseUrlOverride;
-        if (endpoint.empty()) {
-            if (error) *error = L"A custom provider endpoint is required.";
+    if (preset->capabilities.family != TranslationProviderFamily::Llm) {
+        // Machine translation addresses a complete URL, exactly as before.
+        return ResolveProviderBaseUrl(profile, error);
+    }
+    // A stored value carrying a query string is not a base URL -- no measured
+    // provider puts one there -- it is a complete legacy request URL (Azure's
+    // `?api-version=3.0` is the shape). Re-composing it would append a path after
+    // the query, so it keeps its verbatim meaning instead. The same holds for a value
+    // the reader marked as complete: that is a file from before the base semantics,
+    // where the stored value *was* sent as it stands, and no amount of suffix
+    // recognition can reproduce an address like `https://gateway.example/invoke`.
+    if (preset->capabilities.allowsCustomBaseUrl &&
+        !profile.baseUrlOverride.empty() &&
+        (profile.completeEndpointOverride ||
+            profile.baseUrlOverride.find(L'?') != std::wstring::npos)) {
+        const std::wstring legacy = TrimCopy(profile.baseUrlOverride);
+        return ValidateProviderUrl(legacy, error) ? legacy : std::wstring();
+    }
+    const std::wstring base = ResolveProviderBaseUrl(profile, error);
+    if (base.empty()) return {};
+    if (!FindProtocol(*preset, profile.adapterKind)) {
+        if (error) {
+            *error = L"The selected API protocol is not offered by this provider.";
+        }
+        return {};
+    }
+    if (profile.adapterKind == TranslationAdapterKind::GeminiGenerateContent) {
+        // The model id is part of the path, and the native API reports it with a
+        // `models/` prefix in its own listings, so accept either spelling
+        // (RequestModelId is the one place that decides that).
+        const std::wstring model = RequestModelId(profile);
+        if (model.empty()) {
+            if (error) *error = L"A model is required for this API protocol.";
             return {};
         }
+        return base + L"models/" + model + L":generateContent";
     }
-    if (endpoint.find(L'#') != std::wstring::npos) {
-        if (error) *error = L"Provider endpoint must not contain a fragment.";
+    const wchar_t* suffix = RequestSuffixForAdapter(profile.adapterKind);
+    if (!suffix || !*suffix) {
+        if (error) *error = L"The selected API protocol is unsupported.";
         return {};
     }
-    std::wstring host;
-    std::wstring authorityError;
-    if (!ParseEndpointAuthority(endpoint, host, authorityError)) {
-        if (error) *error = authorityError;
-        return {};
-    }
-    const std::wstring scheme = Lower(endpoint.substr(0, endpoint.find(L"://")));
-    if (scheme == L"http" && !IsLoopbackHost(host)) {
-        if (error) *error = L"Plain HTTP is only allowed for a loopback provider.";
-        return {};
-    }
-    return endpoint;
+    return base + suffix;
 }
 
 bool IsReasoningModeSupported(

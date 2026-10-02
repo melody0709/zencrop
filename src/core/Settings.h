@@ -1,5 +1,7 @@
 #pragma once
 #include <windows.h>
+#include <cstdint>
+#include <map>
 #include <mutex>
 // Stage3 3-B: Settings repository must not include ocr/batch.
 #include "core/RasterBoundOptions.h"
@@ -226,7 +228,11 @@ inline constexpr bool TranslationAuthUsesCredential(
     return mode != TranslationAuthMode::None;
 }
 
-inline constexpr int kTranslationSettingsSchemaVersion = 7;
+// v8 changed what a stored custom endpoint *means*: a base URL the protocol path is
+// appended to, where before the stored value was the complete request URL. The reader
+// uses this number to tell a file written under the old meaning from a new one -- the
+// one thing it can know without guessing at the value's shape.
+inline constexpr int kTranslationSettingsSchemaVersion = 8;
 inline constexpr double kTranslationPreviewZoomMin = 0.25;
 inline constexpr double kTranslationPreviewZoomMax = 5.0;
 inline constexpr int kTranslationSourceFontSizeMin = 8;
@@ -250,6 +256,14 @@ struct TranslationProviderProfile {
     bool enabled = true;
     TranslationAuthMode authMode = TranslationAuthMode::BearerApiKey;
     std::wstring baseUrlOverride;
+    // Whether `baseUrlOverride` is already the complete request URL rather than a
+    // base the protocol path is appended to. Set by the reader for a profile written
+    // before v8, where the stored value *was* sent verbatim: without this bit such a
+    // profile would gain a path it never had (`.../invoke` ->
+    // `.../invoke/chat/completions`) and a working gateway would stop answering.
+    // The page clears it as soon as the field is edited, because an edit is a new
+    // statement about the endpoint.
+    bool completeEndpointOverride = false;
     std::wstring region;
     std::wstring model = L"deepseek-v4-flash";
     bool customModel = false;
@@ -258,6 +272,18 @@ struct TranslationProviderProfile {
     TranslationReasoningMode reasoningMode = TranslationReasoningMode::Off;
     std::optional<double> temperature;
     std::wstring advancedOptionsJson = L"{}";
+    // Display names a provider's model listing reported, keyed by model id.
+    // Display-only, and deliberately a side table rather than an element of
+    // `customModels`: the pool's membership, order, FIFO cap and request value are
+    // all id-only, and an older build that cannot read this field loses a name
+    // instead of losing the model. Every writer prunes it to the pool, so it can
+    // never drift into a second authority.
+    std::map<std::wstring, std::wstring> customModelLabels;
+    // When this profile's model list was last fetched from the provider, in Unix
+    // seconds; 0 means never. Advisory only -- it drives a hint that says whether
+    // the offered list is still just the seed list -- so a file that carries a
+    // nonsense value loses the hint, never the profile.
+    std::int64_t modelCatalogFetchedAt = 0;
 
     bool operator==(const TranslationProviderProfile&) const = default;
 };
@@ -281,7 +307,7 @@ inline constexpr BuiltInOpenAiCompatibleProviderDefault
     kBuiltInOpenAiCompatibleProviderDefaults[] = {
         {L"builtin.openai.default", L"OpenAI", L"openai", L"gpt-5.4-mini"},
         {L"builtin.gemini.default", L"Gemini", L"gemini",
-            L"gemini-2.5-flash-lite"},
+            L"gemini-3.8-flash"},
         {L"builtin.minimax.default", L"MiniMax", L"minimax", L"MiniMax-M2.7"},
         {L"builtin.grok.default", L"Grok (xAI)", L"grok",
             L"grok-4.20-0309-non-reasoning"},

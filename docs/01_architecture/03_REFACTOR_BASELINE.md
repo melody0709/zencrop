@@ -25,6 +25,8 @@ ZenCrop C++23 架构重构已全面完成（Stage P0 至 P6 守卫门禁 100% �
 | **undeclaredSourceDirs** | 0 | 0 | PASS | 未登记的源文件目录为 0 |
 | **guardWiringProblems** | 0 | 0 | PASS | `check_architecture.ps1` 守卫强制挂载在 `build.bat` 每次构建中 |
 
+> **本表是 v3.0.0 收尾时的测量快照，不是活基线。** 唯一活基线是 [`.plan/refactor/architecture-baseline.json`](../../.plan/refactor/architecture-baseline.json)（棘轮**只允许下调**；上调必须 `-AllowBaselineChange` 并在提交说明写明理由），每次构建由 `build.bat` 挂载的守卫读取。它的 `metrics` 与上表可能已经不同（例如 `gdiManualReleases` 在 3.1.6 记录中为 125，低于上表的 127），差异属"棘轮往下走"的正常结果；需要当前值时读 JSON，不要照抄本表。
+
 ---
 
 ## 历史初始基线（Stage 0-A / PR1 历史归档）

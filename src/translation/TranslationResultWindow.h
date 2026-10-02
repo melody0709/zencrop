@@ -182,6 +182,10 @@ private:
     std::vector<LanguageOption> ocrRoutes_;
     std::vector<LanguageOption> providerOptions_;
     std::vector<std::wstring> modelOptions_;
+    // Display names for `modelOptions_`, same indices; empty means "show the id".
+    // Display-only: `SelectedModel()` and every other contract read `modelOptions_`,
+    // so a name can never become a request value.
+    std::vector<std::wstring> modelLabels_;
     int sourceLanguageIndex_ = -1;
     int targetLanguageIndex_ = -1;
     int ocrRouteIndex_ = -1;
@@ -364,6 +368,9 @@ private:
     void ShowOcrRouteMenu();
     void ShowProviderMenu();
     void ShowModelMenu();
+    // What the model control paints for `index`: the provider's display name when
+    // it reported one, else the id. Display only -- never a request value.
+    std::wstring ModelDisplayText(size_t index) const;
     void UpdateModelToolTip(const std::wstring& model);
     void AddOcrRoute(const wchar_t* label, const wchar_t* value);
     void AddProviderOption(const wchar_t* label, const wchar_t* value);

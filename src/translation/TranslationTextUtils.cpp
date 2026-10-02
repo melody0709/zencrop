@@ -61,17 +61,83 @@ bool IsJsonContentType(std::wstring_view contentType) {
     return lower.rfind(L"application/json+", 0) == 0;
 }
 
+std::string ExtractJsonAnswer(std::string_view content) {
+    size_t searchFrom = 0;
+    while (true) {
+        const size_t start = content.find('{', searchFrom);
+        if (start == std::string_view::npos) return std::string(content);
+        int depth = 0;
+        bool inString = false;
+        bool escaped = false;
+        bool found = false;
+        for (size_t index = start; index < content.size(); ++index) {
+            const char character = content[index];
+            if (inString) {
+                if (escaped) {
+                    escaped = false;
+                } else if (character == '\\') {
+                    escaped = true;
+                } else if (character == '"') {
+                    inString = false;
+                }
+                continue;
+            }
+            if (character == '"') {
+                inString = true;
+                continue;
+            }
+            if (character == '{') {
+                ++depth;
+                continue;
+            }
+            if (character == '}') {
+                --depth;
+                if (depth != 0) continue;
+                const std::string candidate(
+                    content.substr(start, index - start + 1));
+                try {
+                    if (json::parse(candidate).is_object()) return candidate;
+                } catch (const json::exception&) {
+                    // A balanced run of braces that is not JSON -- prose such as
+                    // "{see the note above}" -- must not end the search: the object
+                    // the contract asked for may still follow, and returning this
+                    // one would fail the caller with a message about braces rather
+                    // than about the answer.
+                }
+                searchFrom = index + 1;
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            // Unbalanced from `start` on: nothing later can close either.
+            return std::string(content);
+        }
+    }
+}
+
 std::wstring ProviderErrorDetail(const HttpResponse& response) {
     if (response.body.empty() || !IsJsonContentType(response.contentType)) {
         return {};
     }
     try {
-        const json outer = json::parse(response.body);
-        if (!outer.is_object() || !outer.contains("error") ||
-            !outer["error"].is_object()) {
+        const json parsed = json::parse(response.body);
+        // Google's OpenAI-compatible surface wraps its error in a one-element
+        // array (`[{"error":{...}}]`) while every other measured vendor sends the
+        // bare object. Reading only the object shape turned Gemini's own
+        // explanation -- "model ... is not found", "Missing or invalid
+        // Authorization header." -- into a bare "(400)."/"(404).", which is
+        // exactly the case a user cannot act on (measured 2026-10-01 with
+        // anonymous probes of the public endpoint).
+        const json* outer = &parsed;
+        if (parsed.is_array() && parsed.size() == 1) {
+            outer = &parsed.front();
+        }
+        if (!outer->is_object() || !outer->contains("error") ||
+            !(*outer)["error"].is_object()) {
             return {};
         }
-        const std::string message = outer["error"].value("message", std::string{});
+        const std::string message = (*outer)["error"].value("message", std::string{});
         if (message.empty()) return {};
         std::wstring collapsed;
         bool pendingSpace = false;

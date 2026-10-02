@@ -93,15 +93,110 @@ void ApplyXiaomiMimoReasoningPolicy(LlmModelPolicy& policy) {
 //                  the returned content stopped being valid JSON.
 //   - OpenRouter   gateway-normalized `reasoning` (see OpenRouterReasoningCatalog).
 //
-// Presets deliberately NOT covered here: volcengine, minimax, alibaba-cloud,
-// moonshotai, ollama, gemini and the Responses adapters (openai/grok). Their
-// non-custom path is model-gated or has never been measured for an unlisted
-// model, so sending a dialect field there would be an unverified bet; each one
-// needs its own live evidence before it may be added to this list.
+// Presets whose *own catalog* path already sends a "do not think" field use the
+// same field for an unlisted (custom) model on the same endpoint: the field is a
+// property of the endpoint, not of the model id, which is the same argument that
+// added SiliconFlow/DeepSeek/MiMo/OpenRouter above.
+//
+// Two rules keep this from being an unverified bet:
+//
+//  1. `ProviderDefault` stays in every tier set and stays the default. Selecting
+//     it sends nothing, which is exactly today's behavior for a custom model, so
+//     this change cannot alter an existing profile's request. `Off` (and the
+//     vendor tiers) become *selectable*; a vendor that rejects the field answers
+//     with its own message, which the status line now surfaces.
+//  2. No new field family is invented for a vendor that documents one: minimax
+//     keeps `thinking`+`reasoning_history`, alibaba keeps `enable_thinking`,
+//     volcengine keeps `thinking`, moonshot keeps `thinking`+`reasoning_history`,
+//     Gemini keeps `generationConfig.thinkingConfig` -- all of them are already
+//     emitted for catalog models on those presets.
+//
+// The one genuinely new field is the OpenAI parameter name at the top level
+// (`reasoning_effort`), used where nothing vendor-specific exists to reuse: a
+// user-supplied endpoint (`custom-openai-compatible`) and an OpenAI-compatible
+// protocol selected on a preset whose native protocol speaks something else
+// (Gemini). It is the standard spelling on that surface, and rule 1 above is what
+// keeps it opt-in.
+void ApplyDisableOnlyDialect(LlmModelPolicy& policy, ReasoningWireFormat format) {
+    policy.reasoningWireFormat = format;
+    policy.reasoningModes = {
+        TranslationReasoningMode::ProviderDefault,
+        TranslationReasoningMode::Off,
+    };
+    policy.defaultReasoning = TranslationReasoningMode::ProviderDefault;
+}
+
+// OpenAI-shaped endpoints: the Responses protocol nests the tier under
+// `reasoning.effort`, the Chat Completions protocol sends `reasoning_effort` at
+// the top level. Which one applies follows the *adapter*, because the same vendor
+// can be reached over either surface -- and getting it wrong is a hard failure, not
+// a no-op: both measured surfaces validate unknown fields strictly (2026-10-02,
+// gemini-3.8-flash), the compat one answering 400 `Unknown name "generationConfig"`
+// for a native field and the native one 400 `Unknown name "reasoning_effort"`.
+//
+// One definition, used by the generic dialect below *and* by the per-model tables
+// (gpt-5.x, grok): a model-level branch that hardcodes its own surface's field
+// breaks every request as soon as the profile selects the other protocol.
+ReasoningWireFormat ReasoningWireFormatForAdapter(TranslationAdapterKind adapter) {
+    return (adapter == TranslationAdapterKind::OpenAIResponses ||
+            adapter == TranslationAdapterKind::XaiResponses)
+        ? ReasoningWireFormat::OpenAIResponses
+        : ReasoningWireFormat::OpenAiReasoningEffort;
+}
+
+void ApplyOpenAiEffortDialect(
+    LlmModelPolicy& policy, TranslationAdapterKind adapter) {
+    policy.reasoningWireFormat = ReasoningWireFormatForAdapter(adapter);
+    policy.reasoningModes = {
+        TranslationReasoningMode::ProviderDefault,
+        TranslationReasoningMode::Off,
+        TranslationReasoningMode::Minimal,
+        TranslationReasoningMode::Low,
+        TranslationReasoningMode::Medium,
+        TranslationReasoningMode::High,
+    };
+    policy.defaultReasoning = TranslationReasoningMode::ProviderDefault;
+}
+
+// The adapters whose engines build a body that is *not* OpenAI-shaped, and the
+// dialect each of those bodies needs. Returns false when the caller's OpenAI ladder
+// applies instead.
+//
+// This has to be asked before the OpenAI ladder is applied, not after: a preset that
+// can be reached over several surfaces (custom-openai-compatible offers Chat
+// Completions, Responses and Gemini; gemini offers its native surface and Chat
+// Completions) would otherwise have the OpenAI field written into a Gemini body --
+// and the measured failure mode of that is a 400 on every request, not a graceful
+// degradation. Keeping it total over the adapter is what stops a future protocol
+// entry from re-opening the same hole.
+bool ApplyNonOpenAiSurfaceDialect(
+    LlmModelPolicy& policy, TranslationAdapterKind adapter) {
+    switch (adapter) {
+    case TranslationAdapterKind::GeminiGenerateContent:
+        ApplyDisableOnlyDialect(policy, ReasoningWireFormat::GeminiThinkingBudget);
+        return true;
+    case TranslationAdapterKind::OllamaChat:
+        policy.reasoningWireFormat = ReasoningWireFormat::OllamaThink;
+        policy.reasoningModes = {
+            TranslationReasoningMode::ProviderDefault,
+            TranslationReasoningMode::Off,
+            TranslationReasoningMode::Minimal,
+            TranslationReasoningMode::Low,
+            TranslationReasoningMode::Medium,
+            TranslationReasoningMode::High,
+        };
+        policy.defaultReasoning = TranslationReasoningMode::ProviderDefault;
+        return true;
+    default:
+        return false;
+    }
+}
+
 void ApplyProviderReasoningDialect(
     LlmModelPolicy& policy,
     const std::wstring& presetKind,
-    const std::wstring& model) {
+    const std::wstring& model,
+    TranslationAdapterKind adapter) {
     if (presetKind == L"openrouter") {
         ApplyOpenRouterReasoningPolicy(policy, model);
         return;
@@ -127,6 +222,84 @@ void ApplyProviderReasoningDialect(
         policy.defaultReasoning = TranslationReasoningMode::Off;
         return;
     }
+    if (presetKind == L"gemini") {
+        // Native protocol: the preset's own catalog path disables thinking with
+        // `thinkingBudget: 0`. Over the OpenAI-compatible surface that field does
+        // not exist, so the dialect follows the adapter.
+        if (adapter == TranslationAdapterKind::OpenAIChatCompletions) {
+            ApplyOpenAiEffortDialect(policy, adapter);
+            // Gemini 3.x rejects the OpenAI ladder's `minimal` step on BOTH
+            // surfaces, measured 2026-10-02 against gemini-3.8-flash with a real
+            // key: `reasoning_effort: "minimal"` and `thinkingLevel: MINIMAL` both
+            // answer 400 INVALID_ARGUMENT "Thinking level MINIMAL is not supported
+            // for this model", while `none`, `low`, `medium` and `high` all answer
+            // 200. Offering a tier the endpoint refuses is worse than offering
+            // fewer: the request is rejected outright, so a stored `minimal` on an
+            // existing profile would fail every translation. `low` is the closest
+            // supported step, and the reader/engine clamp already moves a stored
+            // `minimal` onto the default tier.
+            policy.reasoningModes.erase(TranslationReasoningMode::Minimal);
+        } else {
+            ApplyDisableOnlyDialect(policy, ReasoningWireFormat::GeminiThinkingBudget);
+        }
+        return;
+    }
+    if (presetKind == L"custom-openai-compatible" ||
+        presetKind == L"openai-compatible") {
+        // A user-supplied endpoint can be running any of the protocols this preset
+        // offers, including Gemini's native one -- whose body has no
+        // `reasoning_effort`, so the OpenAI ladder must not be applied there.
+        if (ApplyNonOpenAiSurfaceDialect(policy, adapter)) return;
+        ApplyOpenAiEffortDialect(policy, adapter);
+        return;
+    }
+    if (presetKind == L"openai" || presetKind == L"grok") {
+        ApplyOpenAiEffortDialect(policy, adapter);
+        return;
+    }
+    if (presetKind == L"ollama") {
+        // Same ladder as the Ollama arm of the surface dispatch, so the preset and a
+        // custom endpoint pointed at Ollama cannot drift apart.
+        ApplyNonOpenAiSurfaceDialect(policy, TranslationAdapterKind::OllamaChat);
+        return;
+    }
+    if (presetKind == L"volcengine") {
+        ApplyDisableOnlyDialect(policy, ReasoningWireFormat::ThinkingDisabled);
+        return;
+    }
+    if (presetKind == L"minimax") {
+        ApplyDisableOnlyDialect(policy, ReasoningWireFormat::MiniMaxThinking);
+        return;
+    }
+    if (presetKind == L"alibaba-cloud") {
+        ApplyDisableOnlyDialect(policy, ReasoningWireFormat::AlibabaThinking);
+        return;
+    }
+    if (presetKind == L"moonshotai") {
+        ApplyDisableOnlyDialect(
+            policy, ReasoningWireFormat::ThinkingAndHistoryDisabled);
+        return;
+    }
+    if (presetKind == L"groq" || presetKind == L"deepinfra" ||
+        presetKind == L"mistral" || presetKind == L"togetherai" ||
+        presetKind == L"fireworks" || presetKind == L"cerebras" ||
+        presetKind == L"huggingface") {
+        // The dialect is kept -- which field belongs in this body is a property of the
+        // endpoint, and dropping it is what once put an OpenAI field into a Gemini body
+        // (a hard 400). Asked through the same total dispatcher the OpenAI-shaped
+        // presets use, so a protocol entry added later cannot reopen that hole here.
+        // The *tiers* are not kept: none of these seven has a measured request behind
+        // `reasoning_effort` for a model outside our catalog, and a selector offered
+        // without measurement is a capability claim this repo does not make.
+        // `ProviderDefault` was the state before any dialect was applied to an unknown
+        // model, so every request that worked still sends exactly what it sent.
+        // Restoring the ladder is one measured request/response per provider, recorded
+        // in the plan's register.
+        if (!ApplyNonOpenAiSurfaceDialect(policy, adapter)) {
+            policy.reasoningWireFormat = ReasoningWireFormatForAdapter(adapter);
+        }
+        return;
+    }
 }
 
 } // namespace
@@ -142,6 +315,17 @@ LlmModelPolicy ResolveLlmModelPolicy(
     const std::wstring& presetKind,
     const std::wstring& model,
     bool customModel) {
+    const auto* preset = FindTranslationProviderPreset(presetKind);
+    return ResolveLlmModelPolicy(presetKind, model, customModel,
+        preset ? preset->adapterKind
+               : TranslationAdapterKind::OpenAIChatCompletions);
+}
+
+LlmModelPolicy ResolveLlmModelPolicy(
+    const std::wstring& presetKind,
+    const std::wstring& model,
+    bool customModel,
+    TranslationAdapterKind adapter) {
     if (customModel) {
         // Unknown model: keep the model-level knobs conservative (output mode,
         // temperature, instruction channel, segment cap), but restore whatever
@@ -149,7 +333,7 @@ LlmModelPolicy ResolveLlmModelPolicy(
         // endpoint, not to the model, and dropping it makes the endpoint fall
         // back to its own default (thinking ON for the measured vendors).
         LlmModelPolicy policy = ConservativePolicy();
-        ApplyProviderReasoningDialect(policy, presetKind, model);
+        ApplyProviderReasoningDialect(policy, presetKind, model, adapter);
         return policy;
     }
 
@@ -184,7 +368,7 @@ LlmModelPolicy ResolveLlmModelPolicy(
                 TranslationReasoningMode::High,
                 TranslationReasoningMode::XHigh,
             };
-            policy.reasoningWireFormat = ReasoningWireFormat::OpenAIResponses;
+            policy.reasoningWireFormat = ReasoningWireFormatForAdapter(adapter);
         } else if (model == L"gpt-5.1" || model == L"gpt-5.1-codex" ||
                    model == L"gpt-5.1-codex-mini") {
             policy.reasoningModes = {
@@ -193,7 +377,7 @@ LlmModelPolicy ResolveLlmModelPolicy(
                 TranslationReasoningMode::Medium,
                 TranslationReasoningMode::High,
             };
-            policy.reasoningWireFormat = ReasoningWireFormat::OpenAIResponses;
+            policy.reasoningWireFormat = ReasoningWireFormatForAdapter(adapter);
         } else if (model == L"gpt-5" || model == L"gpt-5-mini" ||
                    model == L"gpt-5-nano" || model == L"gpt-5-codex") {
             policy.reasoningModes = {
@@ -203,7 +387,7 @@ LlmModelPolicy ResolveLlmModelPolicy(
                 TranslationReasoningMode::High,
             };
             policy.defaultReasoning = TranslationReasoningMode::Minimal;
-            policy.reasoningWireFormat = ReasoningWireFormat::OpenAIResponses;
+            policy.reasoningWireFormat = ReasoningWireFormatForAdapter(adapter);
         } else {
             policy.allowsTemperature = true;
         }
@@ -214,8 +398,31 @@ LlmModelPolicy ResolveLlmModelPolicy(
     if (presetKind == L"gemini") {
         policy.outputMode = LlmOutputMode::NativeJsonSchema;
         policy.tokenLimitKind = TokenLimitKind::MaxOutputTokens;
-        if (model == L"gemini-2.5-flash-lite" ||
+        if (adapter == TranslationAdapterKind::OpenAIChatCompletions) {
+            // This preset can be run over its OpenAI-compatible surface, whose body
+            // has no `generationConfig` at all. Both surfaces validate strictly --
+            // measured 2026-10-02 with a real key: the compat surface answers 400
+            // `Unknown name "generationConfig": Cannot find field.` and the native
+            // surface 400 `Unknown name "reasoning_effort"` -- so a dialect that
+            // belongs to the other surface is not a harmless no-op but a guaranteed
+            // failure on every request. That made every listed flash id (whose only
+            // tier is `off`, so the field is always emitted) unusable as soon as the
+            // profile was switched to this protocol.
+            ApplyOpenAiEffortDialect(policy, adapter);
+            // Same measured limit as the custom-model path above: Gemini 3.x
+            // rejects the ladder's `minimal` step.
+            policy.reasoningModes.erase(TranslationReasoningMode::Minimal);
+            policy.allowsTemperature = true;
+            policy.revision = 2;
+            return policy;
+        }
+        if (model == L"gemini-3.8-flash" ||
             model == L"gemini-2.5-flash") {
+            // Measured 2026-10-02 on the native surface with a real key: without a
+            // thinkingConfig the model bills thinking tokens (gemini-3.8-flash: 153
+            // for a one-segment probe, 274 at budget -1, 339 at thinkingLevel high),
+            // and `thinkingBudget: 0` answers with none -- so `off` here really does
+            // turn thinking off instead of merely being accepted.
             policy.reasoningWireFormat = ReasoningWireFormat::GeminiThinkingBudget;
         } else {
             policy.reasoningModes = {TranslationReasoningMode::ProviderDefault};
@@ -236,7 +443,7 @@ LlmModelPolicy ResolveLlmModelPolicy(
                 TranslationReasoningMode::High,
             };
             policy.defaultReasoning = TranslationReasoningMode::Low;
-            policy.reasoningWireFormat = ReasoningWireFormat::OpenAIResponses;
+            policy.reasoningWireFormat = ReasoningWireFormatForAdapter(adapter);
         }
         policy.revision = 2;
         return policy;
@@ -367,7 +574,14 @@ LlmModelPolicy ResolveLlmModelPolicy(
         return policy;
     }
 
-    return ConservativePolicy();
+    // Unlisted preset kind, or a preset without its own model table: the
+    // model-level knobs stay conservative, but the endpoint's thinking dialect is
+    // still described so `Off` is not silently unavailable (see
+    // ApplyProviderReasoningDialect). An unknown presetKind matches no branch
+    // there, so this stays exactly ConservativePolicy() for it.
+    policy = ConservativePolicy();
+    ApplyProviderReasoningDialect(policy, presetKind, model, adapter);
+    return policy;
 }
 
 const wchar_t* LlmOutputModeName(LlmOutputMode mode) {
