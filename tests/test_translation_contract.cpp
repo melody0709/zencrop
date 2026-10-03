@@ -11,7 +11,6 @@
 #include "translation/TranslationProviderCatalog.h"
 #include "translation/TranslationPromptComposer.h"
 #include "translation/TranslationEngineFactory.h"
-#include "translation/DeepSeekTranslationEngine.h"
 #include "translation/OpenAICompatibleTranslationEngine.h"
 #include "translation/TranslationUntranslatable.h"
 #include "translation/MachineTranslationEngine.h"
@@ -21,6 +20,7 @@
 #include "translation/TranslationComboUtils.h"
 #include "translation/TranslationCredentialRollback.h"
 #include "translation/TranslationTextUtils.h"
+#include "translation/TranslationDiagnostics.h"
 #include "translation/TranslationProviderSettingsPage.h"
 #include "translation/TranslationModelListing.h"
 #include "window/AlwaysOnTop.h"
@@ -923,9 +923,6 @@ bool RunCapturedProvider(
     std::shared_ptr<ITranslationEngine> engine;
     if (profile.adapterKind == TranslationAdapterKind::MachineTranslation) {
         engine = std::make_shared<MachineTranslationEngine>(
-            settings, transport, std::make_shared<FakeCredentialProvider>());
-    } else if (profile.adapterKind == TranslationAdapterKind::DeepSeekChat) {
-        engine = std::make_shared<DeepSeekTranslationEngine>(
             settings, transport, std::make_shared<FakeCredentialProvider>());
     } else {
         engine = std::make_shared<OpenAICompatibleTranslationEngine>(
@@ -3659,7 +3656,8 @@ int TestProviderPromptAndSchemaContracts() {
         !IsSupportedProviderProfile(customDeepSeek, &error)) return 177;
     auto credential = std::make_shared<FakeCredentialProvider>();
     auto deepseek = CreateTranslationEngine(settings, error, {}, credential);
-    if (!deepseek || dynamic_cast<DeepSeekTranslationEngine*>(deepseek.get()) == nullptr) return 131;
+    if (!deepseek || dynamic_cast<OpenAICompatibleTranslationEngine *>(deepseek.get()) == nullptr)
+        return 131;
 
     // The legacy DeepSeek credential target is valid only while the built-in
     // profile still points at DeepSeek. A repointed profile must use a scoped
@@ -5290,6 +5288,46 @@ int TestTranslationBudgetAndDiagnosticContracts() {
     };
     const wchar_t* const kDeepSeekFlash = L"deepseek-ai/DeepSeek-V4-Flash";
 
+    // Direct MT keeps its status classification while surfacing provider details.
+    {
+        const auto *preset = FindTranslationProviderPreset(L"deeplx-custom");
+        if (!preset)
+            return 629;
+        auto profile = CreateTranslationProviderProfile(*preset, L"provider.mt.error.contract");
+        profile.baseUrlOverride = L"https://deeplx.example/v1/translate";
+        for (const std::string &body : {std::string(R"({"error":{"message":"Quota reached"}})"),
+                                        std::string(R"({"error":{}})"), std::string("invalid JSON")}) {
+            HttpResponse response;
+            response.statusCode = 400;
+            response.contentType = L"application/json";
+            response.body = body;
+            CapturedProviderCall call;
+            if (!RunCapturedProvider(profile, response, call) || call.result.success ||
+                call.result.code != ErrorCode::InvalidRequest)
+                return 630;
+            const bool hasDetail = body.find("Quota reached") != std::string::npos;
+            if ((call.result.error.find(L"Quota reached") != std::wstring::npos) != hasDetail ||
+                call.result.error.find(L"(400)") == std::wstring::npos)
+                return 631;
+        }
+    }
+
+    // HTTP classification applies to every LLM adapter, not only DeepSeek.
+    {
+        const auto *preset = FindTranslationProviderPreset(L"openrouter");
+        if (!preset)
+            return 675;
+        const auto profile = WireProfile(L"openrouter", L"contract/openrouter-model");
+        for (const auto &[status, expected] : {std::pair{0, ErrorCode::Network}, std::pair{402, ErrorCode::Balance},
+                                               std::pair{403, ErrorCode::InvalidRequest}}) {
+            HttpResponse response;
+            response.statusCode = status;
+            CapturedProviderCall call;
+            if (!RunCapturedProvider(profile, response, call) || call.result.success || call.result.code != expected)
+                return 676;
+        }
+    }
+
     // 1a + 1c: tier selects the receive timeout; the connect timeout stays
     // short, and the two must be different values.
     {
@@ -5481,8 +5519,8 @@ int TestTranslationBudgetAndDiagnosticContracts() {
                 {"message", {{"role", "assistant"}, {"content", probeInner.dump()}}},
                 {"finish_reason", "stop"}}})},
         }));
-        auto engine = std::make_shared<DeepSeekTranslationEngine>(
-            settings, transport, std::make_shared<FakeCredentialProvider>());
+        auto engine = std::make_shared<OpenAICompatibleTranslationEngine>(settings, transport,
+                                                                          std::make_shared<FakeCredentialProvider>());
         std::mutex mutex;
         std::condition_variable condition;
         bool completed = false;
@@ -6047,6 +6085,37 @@ int TestUtf16TruncateContract() {
     std::wstring loneLow = L"ab\xDC00";
     translation::TruncateUtf16Safe(loneLow, 8);
     if (loneLow.size() != 3) return 8;
+    const std::wstring unicode = L"ASCII 中文 " + emoji + L"\xFEFF";
+    if (translation::Utf8ToWide(translation::WideToUtf8(unicode, true)) != unicode)
+        return 9;
+    const std::wstring embeddedNul(L"a\0b", 3);
+    if (translation::Utf8ToWide(translation::WideToUtf8(embeddedNul, true)) != embeddedNul)
+        return 10;
+    for (const std::string &invalid : {std::string("\xC0\xAF", 2), std::string("\xF0\x9F", 2)}) {
+        if (!translation::Utf8ToWide(invalid).empty())
+            return 11;
+    }
+    for (const wchar_t surrogate : {wchar_t(0xD800), wchar_t(0xDC00)}) {
+        const std::wstring invalid(1, surrogate);
+        if (!translation::WideToUtf8(invalid, true).empty() ||
+            translation::Utf8ToWide(translation::WideToUtf8(invalid)) != L"\xFFFD")
+            return 12;
+    }
+    // Diagnostics must drop a split pair rather than encode a replacement glyph.
+    translation::TranslationDiagnosticRecord record;
+    record.generation = 987654;
+    record.outcome = L"failed";
+    record.error = std::wstring(159, L'x') + emoji;
+    translation::AppendTranslationDiagnostic(record);
+    const std::wstring log = ReadFileToString(ZenCropAppDataFilePath(L"translation_diagnostics.log"));
+    const size_t lastRecord = log.rfind(L"generation=987654 ");
+    if (lastRecord == std::wstring::npos)
+        return 13;
+    const std::wstring line = log.substr(lastRecord);
+    if (line.find(L"error=" + std::wstring(159, L'x') + L"\n") == std::wstring::npos ||
+        line.find(L'\xFFFD') != std::wstring::npos || line.find(L" timestamp=") == std::wstring::npos ||
+        line.find(L" version=") == std::wstring::npos)
+        return 14;
     return 0;
 }
 
@@ -8213,6 +8282,18 @@ int TestTranslationAutomaticRetryContract() {
             finish();
             return 719;
         }
+        // A concurrent settings save followed by Pin reloads preferences while
+        // the old request is still in flight. Its diagnostic must keep the
+        // model selected when this translation began.
+        TranslationSettings latest = settings;
+        ApplyTranslationModelChoice(*FindActiveTranslationProvider(latest), L"Qwen/Qwen3.5-9B");
+        if (!SaveTranslationSettings(latest)) {
+            translator->ReleaseHeldAttempt();
+            finish();
+            return 724;
+        }
+        SendMessageW(native, WM_COMMAND, MAKEWPARAM(3119, BN_CLICKED),
+                     reinterpret_cast<LPARAM>(GetDlgItem(native, 3119)));
         translator->ReleaseHeldAttempt();
         PumpTranslationMessages(1000);
         if (ControlText(native, 3105) != L"Ready" ||
@@ -8220,8 +8301,52 @@ int TestTranslationAutomaticRetryContract() {
             finish();
             return 720;
         }
+        const std::wstring log = ReadFileToString(ZenCropAppDataFilePath(L"translation_diagnostics.log"));
+        const size_t lastRecord = log.rfind(L"generation=");
+        const std::wstring line = lastRecord == std::wstring::npos ? L"" : log.substr(lastRecord);
+        if (line.find(L"model=deepseek-ai/DeepSeek-V4-Flash ") == std::wstring::npos ||
+            line.find(L"Qwen/Qwen3.5-9B") != std::wstring::npos) {
+            finish();
+            return 725;
+        }
+        if (!SaveTranslationSettings(settings)) {
+            finish();
+            return 726;
+        }
     }
 
+    // A retry in the first batch must remain observable after a clean final batch.
+    for (const ErrorCode failure : {ErrorCode::ContentContract, ErrorCode::Timeout}) {
+        translator->failCount.store(0);
+        translator->failNext.store(false);
+        translator->SetFailureSequence({failure, ErrorCode::None, ErrorCode::None});
+        std::wstring source;
+        for (int index = 0; index < 1000; ++index)
+            source += L"Prose sentence. ";
+        if (!issue(source)) {
+            finish();
+            return 721;
+        }
+        HWND native = resultWindow();
+        if (!native || translator->RequestHistory().size() != 3 || ControlText(native, 3105) != L"Ready") {
+            finish();
+            return 722;
+        }
+        const std::wstring log = ReadFileToString(ZenCropAppDataFilePath(L"translation_diagnostics.log"));
+        const size_t lastRecord = log.rfind(L"generation=");
+        const std::wstring line = lastRecord == std::wstring::npos ? L"" : log.substr(lastRecord);
+        const std::wstring retries = failure == ErrorCode::ContentContract ? L"transportRetries=0 contentRetries=1"
+                                                                           : L"transportRetries=1 contentRetries=0";
+        if (line.find(L"batches=2 ") == std::wstring::npos || line.find(retries) == std::wstring::npos ||
+            line.find(L"outcome=ready ") == std::wstring::npos ||
+            line.find(L"provider=siliconflow ") == std::wstring::npos ||
+            line.find(L"model=deepseek-ai/DeepSeek-V4-Flash ") == std::wstring::npos ||
+            line.find(L"adapter=2 ") == std::wstring::npos || line.find(L"outputMode=") == std::wstring::npos ||
+            line.find(L"reasoning=1") == std::wstring::npos) {
+            finish();
+            return 723;
+        }
+    }
     translator->failCount.store(0);
     translator->failNext.store(false);
     finish();

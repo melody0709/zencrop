@@ -27,34 +27,9 @@ constexpr size_t kMaxResponseBytes = 8u * 1024u * 1024u;
 constexpr wchar_t kGoogleCommunityApiKey[] = L"AIzaSyATBXajvzQLTDHEQbcpq0Ihe0vWDHmO520";
 constexpr char kGoogleCommunityClient[] = "wt_lib";
 
+// These callers reject invalid UTF-16; the shared default replaces it.
 std::string WideToUtf8(const std::wstring& value) {
-    if (value.empty()) return {};
-    const int required = WideCharToMultiByte(
-        CP_UTF8, WC_ERR_INVALID_CHARS, value.data(), static_cast<int>(value.size()),
-        nullptr, 0, nullptr, nullptr);
-    if (required <= 0) return {};
-    std::string output(static_cast<size_t>(required), '\0');
-    if (WideCharToMultiByte(
-            CP_UTF8, WC_ERR_INVALID_CHARS, value.data(), static_cast<int>(value.size()),
-            output.data(), required, nullptr, nullptr) != required) {
-        return {};
-    }
-    return output;
-}
-
-std::wstring Utf8ToWide(const std::string& value) {
-    if (value.empty()) return {};
-    const int required = MultiByteToWideChar(
-        CP_UTF8, MB_ERR_INVALID_CHARS, value.data(), static_cast<int>(value.size()),
-        nullptr, 0);
-    if (required <= 0) return {};
-    std::wstring output(static_cast<size_t>(required), L'\0');
-    if (MultiByteToWideChar(
-            CP_UTF8, MB_ERR_INVALID_CHARS, value.data(), static_cast<int>(value.size()),
-            output.data(), required) != required) {
-        return {};
-    }
-    return output;
+    return translation::WideToUtf8(value, true);
 }
 
 std::wstring NewRequestId() {
@@ -305,10 +280,11 @@ TranslationResult ParseResponse(
         return Failure(TransportError(response.error), response.error, request.requestId);
     }
     if (response.statusCode < 200 || response.statusCode >= 300) {
-        return Failure(HttpError(response.statusCode),
-            L"Translation provider request failed (" +
-                std::to_wstring(response.statusCode) + L").",
-            request.requestId);
+        std::wstring message = L"Translation provider request failed (" + std::to_wstring(response.statusCode) + L").";
+        const std::wstring detail = ProviderErrorDetail(response);
+        if (!detail.empty())
+            message += L" " + detail;
+        return Failure(HttpError(response.statusCode), message, request.requestId);
     }
     if (!IsJsonContentType(response.contentType)) {
         return Failure(ErrorCode::SchemaMismatch,

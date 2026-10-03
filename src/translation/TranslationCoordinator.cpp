@@ -1290,6 +1290,20 @@ void TranslationCoordinator::BeginTranslation(uint64_t generation) {
     completedBatchRequestIds_.clear();
     completedTranslations_.clear();
     translationBatchCount_ = 0;
+    translationTransportRetries_ = 0;
+    translationContentRetries_ = 0;
+    translationDiagnosticMetadata_ = {};
+    if (const auto *profile = FindActiveTranslationProvider(settings_)) {
+        const auto capabilities = GetCapabilities(*profile);
+        translationDiagnosticMetadata_.provider = profile->presetKind;
+        translationDiagnosticMetadata_.model = profile->model;
+        translationDiagnosticMetadata_.adapter = static_cast<int>(profile->adapterKind);
+        translationDiagnosticMetadata_.outputMode =
+            capabilities.family == TranslationProviderFamily::DirectMt
+                ? L"direct_mt"
+                : LlmOutputModeName(EffectiveWireOutputMode(*profile, capabilities));
+        translationDiagnosticMetadata_.reasoning = static_cast<int>(EffectiveReasoningMode(*profile, capabilities));
+    }
     // Start the waiting-time feedback once per translation. The underlying tick
     // is deliberately not reset by a retry: the user should see total waiting
     // time, which is also how a retry becomes perceptible.
@@ -1354,10 +1368,10 @@ void TranslationCoordinator::RecordTranslationDiagnostic(
     const std::wstring& error, const std::wstring& batchId) {
     // A clean translation is not recorded: only retries and terminal failures
     // carry information worth persisting.
-    if (!failed && translationAttempt_ == 0 && translationContentAttempt_ == 0) {
+    if (!failed && translationTransportRetries_ == 0 && translationContentRetries_ == 0) {
         return;
     }
-    TranslationDiagnosticRecord record;
+    TranslationDiagnosticRecord record = translationDiagnosticMetadata_;
     record.generation = generation_;
     // Callers pass the id explicitly: the failure path clears
     // currentBatchRequestId_ before recording.
@@ -1366,8 +1380,8 @@ void TranslationCoordinator::RecordTranslationDiagnostic(
     record.untranslatableCount = static_cast<size_t>(std::count(
         untranslatableSegments_.begin(), untranslatableSegments_.end(), '\1'));
     record.batchCount = translationBatchCount_;
-    record.transportRetries = translationAttempt_;
-    record.contentRetries = translationContentAttempt_;
+    record.transportRetries = translationTransportRetries_;
+    record.contentRetries = translationContentRetries_;
     record.structured = structuredPlan_ != nullptr;
     record.elapsedMs = translationStartedTick_ == 0 ? 0 :
         GetTickCount64() - translationStartedTick_;
@@ -1600,8 +1614,10 @@ bool TranslationCoordinator::TryRetryFailedTranslation(
 
     if (contentRetryable) {
         ++translationContentAttempt_;
+        ++translationContentRetries_;
     } else {
         ++translationAttempt_;
+        ++translationTransportRetries_;
     }
     if (resultWindow_ && resultWindow_->IsValid()) {
         // Said before IssueTranslationBatch runs: that function never sets the

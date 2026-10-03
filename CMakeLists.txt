@@ -385,7 +385,6 @@ add_library(zencrop_translate STATIC
     src/translation/OpenAICompatibleTranslationEngine.h src/translation/OpenAICompatibleTranslationEngine.cpp
     src/translation/MachineTranslationEngine.h src/translation/MachineTranslationEngine.cpp
     src/translation/TranslationEngineFactory.h src/translation/TranslationEngineFactory.cpp
-    src/translation/DeepSeekTranslationEngine.h src/translation/DeepSeekTranslationEngine.cpp
     src/translation/TranslationSettingsPage.h src/translation/TranslationSettingsPage.cpp
     src/translation/TranslationProviderSettingsPage.h src/translation/TranslationProviderSettingsPage.cpp
     src/translation/TranslationPromptSettingsPage.h src/translation/TranslationPromptSettingsPage.cpp

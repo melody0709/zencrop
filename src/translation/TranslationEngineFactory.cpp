@@ -1,7 +1,6 @@
 #include "core/Settings.h"
 #include "TranslationEngineFactory.h"
 
-#include "DeepSeekTranslationEngine.h"
 #include "MachineTranslationEngine.h"
 #include "OpenAICompatibleTranslationEngine.h"
 #include "TranslationProviderCatalog.h"
@@ -28,8 +27,6 @@ std::shared_ptr<ITranslationEngine> CreateTranslationEngine(
     }
     switch (profile->adapterKind) {
     case TranslationAdapterKind::DeepSeekChat:
-        return std::make_shared<DeepSeekTranslationEngine>(
-            settings, std::move(transport), std::move(credentialProvider));
     case TranslationAdapterKind::OpenAIChatCompletions:
     case TranslationAdapterKind::OpenAIResponses:
     case TranslationAdapterKind::GeminiGenerateContent:

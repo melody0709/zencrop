@@ -1,4 +1,5 @@
 #include "TranslationCredentialStore.h"
+#include "TranslationTextUtils.h"
 
 #include <windows.h>
 #include <wincred.h>
@@ -10,31 +11,6 @@
 
 namespace translation {
 namespace {
-
-std::string WideToUtf8(const std::wstring& value) {
-    if (value.empty()) return {};
-    const int length = WideCharToMultiByte(
-        CP_UTF8, 0, value.data(), static_cast<int>(value.size()),
-        nullptr, 0, nullptr, nullptr);
-    if (length <= 0) return {};
-    std::string result(static_cast<size_t>(length), '\0');
-    WideCharToMultiByte(
-        CP_UTF8, 0, value.data(), static_cast<int>(value.size()),
-        result.data(), length, nullptr, nullptr);
-    return result;
-}
-
-std::wstring Utf8ToWide(const char* data, size_t size) {
-    if (!data || size == 0) return {};
-    const int length = MultiByteToWideChar(
-        CP_UTF8, MB_ERR_INVALID_CHARS, data, static_cast<int>(size), nullptr, 0);
-    if (length <= 0) return {};
-    std::wstring result(static_cast<size_t>(length), L'\0');
-    MultiByteToWideChar(
-        CP_UTF8, MB_ERR_INVALID_CHARS, data, static_cast<int>(size),
-        result.data(), length);
-    return result;
-}
 
 std::wstring Win32Error(const wchar_t* operation, DWORD error) {
     return std::wstring(operation ? operation : L"Credential Manager failed") +
@@ -167,7 +143,7 @@ bool TranslationCredentialStoreInternal::ReadKeyAtTarget(
                 reinterpret_cast<const char*>(credential->CredentialBlob),
                 blobSize);
         }
-        key = Utf8ToWide(utf8.data(), utf8.size());
+        key = Utf8ToWide(utf8);
     } catch (...) {
         SecureClear(utf8);
         SecureClear(key);

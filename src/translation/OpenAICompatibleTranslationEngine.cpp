@@ -35,30 +35,6 @@ constexpr size_t kMaxInputChars = 12000;
 constexpr size_t kMaxResponseBytes = 2097152;
 constexpr int kMaxOutputTokens = 16384;
 
-std::string WideToUtf8(const std::wstring& value) {
-    if (value.empty()) return {};
-    const int length = WideCharToMultiByte(
-        CP_UTF8, 0, value.data(), static_cast<int>(value.size()),
-        nullptr, 0, nullptr, nullptr);
-    if (length <= 0) return {};
-    std::string result(static_cast<size_t>(length), '\0');
-    WideCharToMultiByte(CP_UTF8, 0, value.data(), static_cast<int>(value.size()),
-        result.data(), length, nullptr, nullptr);
-    return result;
-}
-
-std::wstring Utf8ToWide(const std::string& value) {
-    if (value.empty()) return {};
-    const int length = MultiByteToWideChar(
-        CP_UTF8, MB_ERR_INVALID_CHARS, value.data(),
-        static_cast<int>(value.size()), nullptr, 0);
-    if (length <= 0) return {};
-    std::wstring result(static_cast<size_t>(length), L'\0');
-    MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.data(),
-        static_cast<int>(value.size()), result.data(), length);
-    return result;
-}
-
 void SecureClear(std::wstring& value) {
     if (!value.empty()) SecureZeroMemory(value.data(), value.size() * sizeof(wchar_t));
     value.clear();
@@ -392,11 +368,11 @@ json BuildRequestBody(
     int maxTokens,
     std::wstring& error) {
     const ProviderCapabilities capabilities = GetCapabilities(profile);
+    const LlmOutputMode outputMode = EffectiveWireOutputMode(profile, capabilities);
     const auto prompt = ComposeTranslationPrompt(
         settings, request, capabilities.outputMode);
     const std::wstring instructions = ComposePromptInstructions(prompt);
-    const bool plainTextSingle =
-        capabilities.outputMode == LlmOutputMode::PlainTextSingle;
+    const bool plainTextSingle = outputMode == LlmOutputMode::PlainTextSingle;
     std::wstring userPayload = prompt.taskPayloadJson;
     if (plainTextSingle && request.segments.size() == 1) {
         const bool chinesePrompt = request.sourceLanguage == L"zh-Hans" ||
@@ -425,7 +401,7 @@ json BuildRequestBody(
             {"store", false},
             {"max_output_tokens", maxTokens},
         };
-        if (capabilities.outputMode == LlmOutputMode::NativeJsonSchema) {
+        if (outputMode == LlmOutputMode::NativeJsonSchema) {
             body["text"] = {{"format", {
                 {"type", "json_schema"},
                 {"name", "zencrop_translation"},
@@ -441,7 +417,7 @@ json BuildRequestBody(
                 {"parts", {{{"text", WideToUtf8(userPayload)}}}}}}},
             {"generationConfig", {{"maxOutputTokens", maxTokens}}},
         };
-        if (capabilities.outputMode == LlmOutputMode::NativeJsonSchema) {
+        if (outputMode == LlmOutputMode::NativeJsonSchema) {
             body["generationConfig"]["responseMimeType"] = "application/json";
             body["generationConfig"]["responseJsonSchema"] =
                 TranslationResponseSchema(request);
@@ -464,7 +440,7 @@ json BuildRequestBody(
             body["messages"] = json::array({
                 {{"role", "user"}, {"content", WideToUtf8(userPayload)}},
             });
-        } else if (capabilities.outputMode == LlmOutputMode::NativeJsonSchema) {
+        } else if (outputMode == LlmOutputMode::NativeJsonSchema) {
             // chat-completions had no schema path at all, so the provider was
             // asked to produce JSON with nothing but prompt wording behind the
             // id contract. strict + the id enum is what makes the provider
@@ -477,7 +453,7 @@ json BuildRequestBody(
                     {"schema", TranslationResponseSchema(request)},
                 }},
             };
-        } else if (capabilities.outputMode == LlmOutputMode::JsonObject) {
+        } else if (outputMode == LlmOutputMode::JsonObject) {
             body["response_format"] = {{"type", "json_object"}};
         }
     }
@@ -526,14 +502,47 @@ TranslationResult ParseResponse(
             response.error);
     }
     if (response.statusCode < 200 || response.statusCode >= 300) {
-        const ErrorCode code = response.statusCode == 401
-            ? ErrorCode::Authentication
-            : (response.statusCode == 429 ? ErrorCode::RateLimited :
-                (response.statusCode == 408 || response.statusCode == 504
-                    ? ErrorCode::Timeout
-                    : (response.statusCode >= 500 ? ErrorCode::Server : ErrorCode::InvalidRequest)));
-        std::wstring message = L"Translation provider request failed (" +
-            std::to_wstring(response.statusCode) + L").";
+        const ErrorCode code =
+            response.statusCode == 0     ? ErrorCode::Network
+            : response.statusCode == 402 ? ErrorCode::Balance
+            : response.statusCode == 401
+                ? ErrorCode::Authentication
+                : (response.statusCode == 429
+                       ? ErrorCode::RateLimited
+                       : (response.statusCode == 408 || response.statusCode == 504
+                              ? ErrorCode::Timeout
+                              : (response.statusCode >= 500 ? ErrorCode::Server : ErrorCode::InvalidRequest)));
+        std::wstring message = L"Translation provider request failed (";
+        if (adapterKind == TranslationAdapterKind::DeepSeekChat) {
+            const wchar_t *description = L"request failed";
+            switch (response.statusCode) {
+            case 400:
+                description = L"rejected the request";
+                break;
+            case 401:
+                description = L"API key is invalid";
+                break;
+            case 402:
+                description = L"account balance is insufficient";
+                break;
+            case 422:
+                description = L"rejected the request parameters";
+                break;
+            case 429:
+                description = L"rate limit reached";
+                break;
+            case 500:
+                description = L"server error";
+                break;
+            case 503:
+                description = L"service is temporarily unavailable";
+                break;
+            default:
+                break;
+            }
+            message = std::wstring(L"DeepSeek ") + description + L" (";
+        }
+        message += std::to_wstring(response.statusCode) + L").";
         const std::wstring detail = ProviderErrorDetail(response);
         if (!detail.empty()) message += L" " + detail;
         return fail(code, message);
@@ -663,6 +672,10 @@ TranslationResult ParseResponse(
                     L"Translation provider completion is incomplete.");
             }
             const auto& message = choice["message"];
+            if (adapterKind == TranslationAdapterKind::DeepSeekChat &&
+                message.value("role", std::string{}) != "assistant") {
+                return fail(ErrorCode::SchemaMismatch, L"DeepSeek assistant message schema is invalid.");
+            }
             if (!message.contains("content") || !message["content"].is_string()) {
                 return fail(ErrorCode::SchemaMismatch,
                     L"Translation provider content schema is invalid.");
@@ -722,6 +735,10 @@ TranslationResult ParseResponse(
                 return fail(ErrorCode::ContentContract,
                     L"Translation segment ids are invalid.");
             }
+        }
+        if (adapterKind == TranslationAdapterKind::DeepSeekChat && payload.contains("detectedSourceLanguage") &&
+            !payload["detectedSourceLanguage"].is_string()) {
+            return fail(ErrorCode::SchemaMismatch, L"Detected source language schema is invalid.");
         }
         TranslationResult result;
         result.success = true;
@@ -938,7 +955,7 @@ OpenAICompatibleTranslationEngine::IssueTranslate(
     options.maxResponseBytes = kMaxResponseBytes;
     options.allowRedirects = false;
     const TranslationAdapterKind adapterKind = profile->adapterKind;
-    const LlmOutputMode outputMode = capabilities.outputMode;
+    const LlmOutputMode outputMode = EffectiveWireOutputMode(*profile, capabilities);
     auto operation = transport_->StartPost(
         endpoint, body, headers, options,
         [normalized, adapterKind, outputMode,

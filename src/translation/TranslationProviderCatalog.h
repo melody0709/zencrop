@@ -239,6 +239,11 @@ TranslationProviderProfile* FindActiveTranslationProvider(
 ProviderCapabilities GetCapabilities(
     const TranslationProviderProfile& profile);
 
+// Protocol constraints may strengthen a conservative model policy without
+// changing that policy or its prompt. Shared by wire construction and diagnostics.
+LlmOutputMode EffectiveWireOutputMode(const TranslationProviderProfile &profile,
+                                      const ProviderCapabilities &capabilities);
+
 // "Listed" means the profile's preset *offers* this exact model id: it is a
 // display seed. The flag `customModel` records "the active id is not one of the
 // offered seeds" (it is what the page renders and what lets an unlisted id pass

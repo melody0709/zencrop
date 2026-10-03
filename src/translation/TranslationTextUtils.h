@@ -13,6 +13,12 @@ struct HttpResponse;
 
 namespace translation {
 
+// Empty input or a conversion failure returns an empty string. Strict encoding
+// rejects lone UTF-16 surrogates; the default preserves callers that replace
+// them. Decoding always rejects invalid UTF-8. Embedded NULs are preserved.
+std::string WideToUtf8(std::wstring_view value, bool strict = false);
+std::wstring Utf8ToWide(std::string_view value);
+
 // True when a response declares a JSON body. Accepted, after lowercasing, cutting
 // the parameter list at the first `;` and trimming whitespace, all under
 // `application/`:

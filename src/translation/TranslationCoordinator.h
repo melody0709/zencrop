@@ -1,6 +1,7 @@
 #pragma once
 
 #include "TranslationEngine.h"
+#include "TranslationDiagnostics.h"
 #include "TranslationLaunchContext.h"
 #include "TranslationResultWindow.h"
 #include "core/Settings.h"
@@ -181,6 +182,12 @@ private:
     // accepted batch.
     int translationAttempt_ = 0;
     int translationContentAttempt_ = 0;
+    // Diagnostics accumulate across batches without changing their retry quotas.
+    int translationTransportRetries_ = 0;
+    int translationContentRetries_ = 0;
+    // Preference commands can reload settings while a request is in flight.
+    // Keep this round's diagnostic metadata independent of those refreshes.
+    TranslationDiagnosticRecord translationDiagnosticMetadata_;
     // Start of the current batch's total budget. Paired with
     // ResolveTranslationBudget()'s requestDeadlineMs through
     // RemainingTranslationBudgetMs(). The budget is per batch by design.

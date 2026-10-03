@@ -6,14 +6,30 @@
 
 #include <algorithm>
 #include <cwctype>
+#include <limits>
 
 namespace translation {
-namespace {
 
-using json = nlohmann::json;
+std::string WideToUtf8(std::wstring_view value, bool strict) {
+    if (value.empty() || value.size() > static_cast<size_t>((std::numeric_limits<int>::max)()))
+        return {};
+    const DWORD flags = strict ? WC_ERR_INVALID_CHARS : 0;
+    const int length =
+        WideCharToMultiByte(CP_UTF8, flags, value.data(), static_cast<int>(value.size()), nullptr, 0, nullptr, nullptr);
+    if (length <= 0)
+        return {};
+    std::string result(static_cast<size_t>(length), '\0');
+    if (WideCharToMultiByte(CP_UTF8, flags, value.data(), static_cast<int>(value.size()), result.data(), length,
+                            nullptr, nullptr) != length) {
+        SecureZeroMemory(result.data(), result.size());
+        return {};
+    }
+    return result;
+}
 
-std::wstring Wide(const std::string& value) {
-    if (value.empty()) return {};
+std::wstring Utf8ToWide(std::string_view value) {
+    if (value.empty() || value.size() > static_cast<size_t>((std::numeric_limits<int>::max)()))
+        return {};
     const int length = MultiByteToWideChar(
         CP_UTF8, MB_ERR_INVALID_CHARS, value.data(),
         static_cast<int>(value.size()), nullptr, 0);
@@ -22,10 +38,15 @@ std::wstring Wide(const std::string& value) {
     if (MultiByteToWideChar(
             CP_UTF8, MB_ERR_INVALID_CHARS, value.data(),
             static_cast<int>(value.size()), result.data(), length) != length) {
+        SecureZeroMemory(result.data(), result.size() * sizeof(wchar_t));
         return {};
     }
     return result;
 }
+
+namespace {
+
+using json = nlohmann::json;
 
 // Provider messages can be long prose; the result window shows one line and the
 // settings status label shows three, so a detail beyond this cannot be read
@@ -141,7 +162,7 @@ std::wstring ProviderErrorDetail(const HttpResponse& response) {
         if (message.empty()) return {};
         std::wstring collapsed;
         bool pendingSpace = false;
-        for (const wchar_t character : Wide(message)) {
+        for (const wchar_t character : Utf8ToWide(message)) {
             if (character == L' ' || character == L'\t' ||
                 character == L'\r' || character == L'\n') {
                 pendingSpace = !collapsed.empty();

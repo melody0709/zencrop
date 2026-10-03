@@ -1,5 +1,6 @@
 #include "core/Settings.h"
 #include "TranslationSettingsCodec.h"
+#include "TranslationTextUtils.h"
 #include "core/WideJsonUtils.h"
 #include "translation/TranslationProviderCatalog.h"
 #include "translation/TranslationTypes.h"
@@ -18,31 +19,11 @@
 namespace {
 
 using json = nlohmann::json;
+using translation::Utf8ToWide;
 
+// These callers reject invalid UTF-16; the shared default replaces it.
 std::string WideToUtf8(const std::wstring& value) {
-    if (value.empty()) return {};
-    const int length = WideCharToMultiByte(
-        CP_UTF8, WC_ERR_INVALID_CHARS, value.data(),
-        static_cast<int>(value.size()), nullptr, 0, nullptr, nullptr);
-    if (length <= 0) return {};
-    std::string result(static_cast<size_t>(length), '\0');
-    WideCharToMultiByte(
-        CP_UTF8, WC_ERR_INVALID_CHARS, value.data(),
-        static_cast<int>(value.size()), result.data(), length, nullptr, nullptr);
-    return result;
-}
-
-std::wstring Utf8ToWide(const std::string& value) {
-    if (value.empty()) return {};
-    const int length = MultiByteToWideChar(
-        CP_UTF8, MB_ERR_INVALID_CHARS, value.data(),
-        static_cast<int>(value.size()), nullptr, 0);
-    if (length <= 0) return {};
-    std::wstring result(static_cast<size_t>(length), L'\0');
-    MultiByteToWideChar(
-        CP_UTF8, MB_ERR_INVALID_CHARS, value.data(),
-        static_cast<int>(value.size()), result.data(), length);
-    return result;
+    return translation::WideToUtf8(value, true);
 }
 
 void SetError(std::wstring* error, const wchar_t* message) {

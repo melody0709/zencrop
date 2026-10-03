@@ -1,10 +1,13 @@
 #include "TranslationDiagnostics.h"
+#include "TranslationTextUtils.h"
 
 #include "core/AppDataPaths.h"
+#include "Version.generated.h"
 
 #include <windows.h>
 
 #include <algorithm>
+#include <format>
 
 namespace translation {
 namespace {
@@ -13,21 +16,11 @@ constexpr size_t kMaxDiagnosticFileBytes = 256 * 1024;
 constexpr size_t kMaxErrorChars = 160;
 constexpr wchar_t kDiagnosticFileName[] = L"translation_diagnostics.log";
 
-std::string WideToUtf8(const std::wstring& value) {
-    if (value.empty()) return {};
-    const int length = WideCharToMultiByte(CP_UTF8, 0, value.data(),
-        static_cast<int>(value.size()), nullptr, 0, nullptr, nullptr);
-    if (length <= 0) return {};
-    std::string result(static_cast<size_t>(length), '\0');
-    WideCharToMultiByte(CP_UTF8, 0, value.data(), static_cast<int>(value.size()),
-        result.data(), length, nullptr, nullptr);
-    return result;
-}
-
 // Free-form fields are truncated and stripped of line breaks: one record must
 // stay one line.
 std::wstring SingleLine(const std::wstring& value) {
     std::wstring result = value.substr(0, kMaxErrorChars);
+    TruncateUtf16Safe(result, kMaxErrorChars);
     result.erase(std::remove_if(result.begin(), result.end(),
         [](wchar_t character) { return character == L'\r' || character == L'\n'; }),
         result.end());
@@ -35,16 +28,21 @@ std::wstring SingleLine(const std::wstring& value) {
 }
 
 std::wstring BuildLine(const TranslationDiagnosticRecord& record) {
-    std::wstring line = L"generation=" + std::to_wstring(record.generation) +
-        L" batch=" + (record.batchId.empty() ? L"-" : SingleLine(record.batchId)) +
-        L" segments=" + std::to_wstring(record.segmentCount) +
-        L" untranslatable=" + std::to_wstring(record.untranslatableCount) +
-        L" batches=" + std::to_wstring(record.batchCount) +
-        L" transportRetries=" + std::to_wstring(record.transportRetries) +
-        L" contentRetries=" + std::to_wstring(record.contentRetries) +
-        L" structured=" + (record.structured ? L"1" : L"0") +
-        L" elapsedMs=" + std::to_wstring(record.elapsedMs) +
-        L" outcome=" + record.outcome;
+    SYSTEMTIME timestamp{};
+    GetSystemTime(&timestamp);
+    std::wstring line =
+        L"generation=" + std::to_wstring(record.generation) + L" batch=" +
+        (record.batchId.empty() ? L"-" : SingleLine(record.batchId)) + L" segments=" +
+        std::to_wstring(record.segmentCount) + L" untranslatable=" + std::to_wstring(record.untranslatableCount) +
+        L" batches=" + std::to_wstring(record.batchCount) + L" transportRetries=" +
+        std::to_wstring(record.transportRetries) + L" contentRetries=" + std::to_wstring(record.contentRetries) +
+        L" structured=" + (record.structured ? L"1" : L"0") + L" elapsedMs=" + std::to_wstring(record.elapsedMs) +
+        L" outcome=" + record.outcome +
+        std::format(L" timestamp={:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z", timestamp.wYear, timestamp.wMonth,
+                    timestamp.wDay, timestamp.wHour, timestamp.wMinute, timestamp.wSecond, timestamp.wMilliseconds) +
+        L" version=" ZENCROP_PRODUCT_VERSION_W + L" provider=" + SingleLine(record.provider) + L" model=" +
+        SingleLine(record.model) + L" adapter=" + std::to_wstring(record.adapter) + L" outputMode=" +
+        SingleLine(record.outputMode) + L" reasoning=" + std::to_wstring(record.reasoning);
     if (!record.errorCode.empty()) line += L" code=" + record.errorCode;
     if (!record.error.empty()) line += L" error=" + SingleLine(record.error);
     line += L"\r\n";

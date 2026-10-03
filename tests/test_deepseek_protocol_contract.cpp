@@ -4,7 +4,7 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 
-#include "translation/DeepSeekTranslationEngine.h"
+#include "translation/OpenAICompatibleTranslationEngine.h"
 #include "translation/TranslationProviderCatalog.h"
 #include <nlohmann/json.hpp>
 #include <wincred.h>
@@ -317,10 +317,8 @@ HttpResponse TranslationResponse(const char* id = "s1", const char* text = "你�
     return response;
 }
 
-TranslationResult RunTranslate(
-    DeepSeekTranslationEngine& engine,
-    const TranslationRequest& request,
-    std::shared_ptr<AsyncHttpRequest>* operationOut = nullptr) {
+TranslationResult RunTranslate(OpenAICompatibleTranslationEngine &engine, const TranslationRequest &request,
+                               std::shared_ptr<AsyncHttpRequest> *operationOut = nullptr) {
     std::mutex mutex;
     std::condition_variable condition;
     bool completed = false;
@@ -345,8 +343,7 @@ TranslationResult RunTranslate(
 int TestRequestShapeAndSuccess() {
     auto transport = std::make_shared<FakeTransport>();
     transport->postResponses.push_back(TranslationResponse());
-    DeepSeekTranslationEngine engine(
-        TestSettings(), transport, std::make_shared<FakeCredentialProvider>());
+    OpenAICompatibleTranslationEngine engine(TestSettings(), transport, std::make_shared<FakeCredentialProvider>());
     const auto result = RunTranslate(engine, TestRequest());
     if (!result.success || result.translations.size() != 1 ||
         result.translations[0].text != L"你好") return 1;
@@ -377,6 +374,42 @@ int TestRequestShapeAndSuccess() {
     if (body["response_format"].value("type", "") != "json_object") return 35;
     if (body.value("max_tokens", 0) != 16384) return 36;
     if (transport->records[0].body.find("image") != std::string::npos) return 37;
+    TranslationSettings customSettings = TestSettings();
+    customSettings.providerProfiles.front().model = L"deepseek-future-model";
+    customSettings.providerProfiles.front().customModel = true;
+    const auto &customProfile = customSettings.providerProfiles.front();
+    const auto customCapabilities = GetCapabilities(customProfile);
+    if (customCapabilities.outputMode != LlmOutputMode::PromptJson ||
+        EffectiveWireOutputMode(customProfile, customCapabilities) != LlmOutputMode::JsonObject)
+        return 40;
+    auto customTransport = std::make_shared<FakeTransport>();
+    customTransport->postResponses.push_back(TranslationResponse());
+    OpenAICompatibleTranslationEngine customEngine(customSettings, customTransport,
+                                                   std::make_shared<FakeCredentialProvider>());
+    if (!RunTranslate(customEngine, TestRequest()).success || customTransport->records.size() != 1)
+        return 38;
+    const json customBody = json::parse(customTransport->records[0].body);
+    if (customBody["response_format"].value("type", "") != "json_object" ||
+        customBody["thinking"].value("type", "") != "disabled")
+        return 39;
+    // The built-in DeepSeek preset rejects overrides before any network request.
+    for (const bool completeEndpoint : {false, true}) {
+        TranslationSettings overriddenSettings = TestSettings();
+        auto &overriddenProfile = overriddenSettings.providerProfiles.front();
+        overriddenProfile.baseUrlOverride =
+            completeEndpoint ? L"https://gateway.example/invoke" : L"https://gateway.example/v1/";
+        overriddenProfile.completeEndpointOverride = completeEndpoint;
+        auto overriddenTransport = std::make_shared<FakeTransport>();
+        overriddenTransport->postResponses.push_back(TranslationResponse());
+        OpenAICompatibleTranslationEngine overriddenEngine(overriddenSettings, overriddenTransport,
+                                                           std::make_shared<FakeCredentialProvider>());
+        const auto rejected = RunTranslate(overriddenEngine, TestRequest());
+        if (rejected.success || rejected.code != ErrorCode::Configuration ||
+            rejected.error.find(L"does not allow a custom endpoint") == std::wstring::npos)
+            return 42;
+        if (!overriddenTransport->records.empty())
+            return 43;
+    }
     return 0;
 }
 
@@ -393,8 +426,7 @@ int TestEmptyContentIsNotRetriedByEngine() {
     empty.body = outer.dump();
     transport->postResponses.push_back(std::move(empty));
     transport->postResponses.push_back(TranslationResponse());
-    DeepSeekTranslationEngine engine(
-        TestSettings(), transport, std::make_shared<FakeCredentialProvider>());
+    OpenAICompatibleTranslationEngine engine(TestSettings(), transport, std::make_shared<FakeCredentialProvider>());
     const auto result = RunTranslate(engine, TestRequest());
     if (result.success || result.code != ErrorCode::EmptyContent) return 1;
     if (transport->records.size() != 1) return 2;
@@ -404,8 +436,7 @@ int TestEmptyContentIsNotRetriedByEngine() {
 int TestLegitimateUnchangedContent() {
     auto transport = std::make_shared<FakeTransport>();
     transport->postResponses.push_back(TranslationResponse("s1", "Hello"));
-    DeepSeekTranslationEngine engine(
-        TestSettings(), transport, std::make_shared<FakeCredentialProvider>());
+    OpenAICompatibleTranslationEngine engine(TestSettings(), transport, std::make_shared<FakeCredentialProvider>());
     const auto result = RunTranslate(engine, TestRequest());
     return result.success && result.translations.size() == 1 &&
         result.translations[0].text == L"Hello" ? 0 : 1;
@@ -413,11 +444,10 @@ int TestLegitimateUnchangedContent() {
 
 int TestStrictSchema() {
     const std::vector<std::pair<std::string, ErrorCode>> cases = {
-        {"finish", ErrorCode::OutputTruncated},
-        {"finish-missing", ErrorCode::SchemaMismatch},
-        {"finish-type", ErrorCode::SchemaMismatch},
-        {"target", ErrorCode::ContentContract},
-        {"duplicate", ErrorCode::ContentContract},
+        {"finish", ErrorCode::OutputTruncated},      {"finish-missing", ErrorCode::SchemaMismatch},
+        {"finish-type", ErrorCode::SchemaMismatch},  {"target", ErrorCode::ContentContract},
+        {"duplicate", ErrorCode::ContentContract},   {"role", ErrorCode::SchemaMismatch},
+        {"role-missing", ErrorCode::SchemaMismatch}, {"detected-type", ErrorCode::SchemaMismatch},
     };
     for (const auto& test : cases) {
         auto transport = std::make_shared<FakeTransport>();
@@ -428,14 +458,19 @@ int TestStrictSchema() {
         if (test.first == "finish-missing") outer["choices"][0].erase("finish_reason");
         if (test.first == "finish-type") outer["choices"][0]["finish_reason"] = 1;
         if (test.first == "target") inner["targetLanguage"] = "en";
+        if (test.first == "role")
+            outer["choices"][0]["message"]["role"] = "user";
+        if (test.first == "role-missing")
+            outer["choices"][0]["message"].erase("role");
+        if (test.first == "detected-type")
+            inner["detectedSourceLanguage"] = 123;
         if (test.first == "duplicate") {
             inner["translations"].push_back(inner["translations"][0]);
         }
         outer["choices"][0]["message"]["content"] = inner.dump();
         response.body = outer.dump();
         transport->postResponses.push_back(std::move(response));
-        DeepSeekTranslationEngine engine(
-            TestSettings(), transport, std::make_shared<FakeCredentialProvider>());
+        OpenAICompatibleTranslationEngine engine(TestSettings(), transport, std::make_shared<FakeCredentialProvider>());
         const auto result = RunTranslate(engine, TestRequest());
         if (result.success || result.code != test.second) return 10;
     }
@@ -456,8 +491,7 @@ int TestSegmentOrderContract() {
     outer["choices"][0]["message"]["content"] = inner.dump();
     response.body = outer.dump();
     transport->postResponses.push_back(std::move(response));
-    DeepSeekTranslationEngine engine(
-        TestSettings(), transport, std::make_shared<FakeCredentialProvider>());
+    OpenAICompatibleTranslationEngine engine(TestSettings(), transport, std::make_shared<FakeCredentialProvider>());
     const auto result = RunTranslate(engine, request);
     if (!result.success || result.translations.size() != 2) return 1;
     if (result.translations[0].id != L"s1" || result.translations[0].text != L"\u4f60\u597d" ||
@@ -476,8 +510,7 @@ int TestDetectedLanguageNormalization() {
     outer["choices"][0]["message"]["content"] = inner.dump();
     response.body = outer.dump();
     transport->postResponses.push_back(std::move(response));
-    DeepSeekTranslationEngine engine(
-        TestSettings(), transport, std::make_shared<FakeCredentialProvider>());
+    OpenAICompatibleTranslationEngine engine(TestSettings(), transport, std::make_shared<FakeCredentialProvider>());
     const auto result = RunTranslate(engine, TestRequest());
     return result.success && result.detectedSourceLanguage == L"und" ? 0 : 1;
 }
@@ -494,8 +527,7 @@ int TestChoiceCardinality() {
         }
         response.body = outer.dump();
         transport->postResponses.push_back(std::move(response));
-        DeepSeekTranslationEngine engine(
-            TestSettings(), transport, std::make_shared<FakeCredentialProvider>());
+        OpenAICompatibleTranslationEngine engine(TestSettings(), transport, std::make_shared<FakeCredentialProvider>());
         const auto result = RunTranslate(engine, TestRequest());
         if (result.success || result.code != ErrorCode::SchemaMismatch) return 1;
     }
@@ -504,13 +536,10 @@ int TestChoiceCardinality() {
 
 int TestStatusAndMimeMapping() {
     const std::vector<std::pair<int, ErrorCode>> cases = {
-        {400, ErrorCode::InvalidRequest},
-        {401, ErrorCode::Authentication},
-        {402, ErrorCode::Balance},
-        {422, ErrorCode::InvalidRequest},
-        {429, ErrorCode::RateLimited},
-        {500, ErrorCode::Server},
-        {503, ErrorCode::Server},
+        {0, ErrorCode::Network},          {400, ErrorCode::InvalidRequest}, {401, ErrorCode::Authentication},
+        {402, ErrorCode::Balance},        {404, ErrorCode::InvalidRequest}, {408, ErrorCode::Timeout},
+        {422, ErrorCode::InvalidRequest}, {429, ErrorCode::RateLimited},    {500, ErrorCode::Server},
+        {503, ErrorCode::Server},         {504, ErrorCode::Timeout},
     };
     for (const auto& item : cases) {
         auto transport = std::make_shared<FakeTransport>();
@@ -518,10 +547,29 @@ int TestStatusAndMimeMapping() {
         response.statusCode = item.first;
         response.body.clear();
         transport->postResponses.push_back(std::move(response));
-        DeepSeekTranslationEngine engine(
-            TestSettings(), transport, std::make_shared<FakeCredentialProvider>());
+        OpenAICompatibleTranslationEngine engine(TestSettings(), transport, std::make_shared<FakeCredentialProvider>());
         const auto result = RunTranslate(engine, TestRequest());
         if (result.success || result.code != item.second) return 10;
+        // A provider without error.message still needs an actionable explanation.
+        const wchar_t *explanation = nullptr;
+        switch (item.first) {
+        case 401:
+            explanation = L"API key is invalid";
+            break;
+        case 402:
+            explanation = L"account balance is insufficient";
+            break;
+        case 429:
+            explanation = L"rate limit reached";
+            break;
+        case 503:
+            explanation = L"service is temporarily unavailable";
+            break;
+        default:
+            break;
+        }
+        if (explanation && result.error.find(explanation) == std::wstring::npos)
+            return 11;
     }
 
     for (const std::wstring& contentType : std::vector<std::wstring>{
@@ -530,8 +578,7 @@ int TestStatusAndMimeMapping() {
         HttpResponse response = TranslationResponse();
         response.contentType = contentType;
         transport->postResponses.push_back(std::move(response));
-        DeepSeekTranslationEngine engine(
-            TestSettings(), transport, std::make_shared<FakeCredentialProvider>());
+        OpenAICompatibleTranslationEngine engine(TestSettings(), transport, std::make_shared<FakeCredentialProvider>());
         const auto result = RunTranslate(engine, TestRequest());
         if (result.success || result.code != ErrorCode::SchemaMismatch) return 20;
     }
@@ -541,8 +588,7 @@ int TestStatusAndMimeMapping() {
         HttpResponse response = TranslationResponse();
         response.contentType = contentType;
         transport->postResponses.push_back(std::move(response));
-        DeepSeekTranslationEngine engine(
-            TestSettings(), transport, std::make_shared<FakeCredentialProvider>());
+        OpenAICompatibleTranslationEngine engine(TestSettings(), transport, std::make_shared<FakeCredentialProvider>());
         const auto result = RunTranslate(engine, TestRequest());
         if (!result.success) return 22;
     }
@@ -551,8 +597,7 @@ int TestStatusAndMimeMapping() {
         HttpResponse response = TranslationResponse();
         response.body = "not-json";
         transport->postResponses.push_back(std::move(response));
-        DeepSeekTranslationEngine engine(
-            TestSettings(), transport, std::make_shared<FakeCredentialProvider>());
+        OpenAICompatibleTranslationEngine engine(TestSettings(), transport, std::make_shared<FakeCredentialProvider>());
         const auto result = RunTranslate(engine, TestRequest());
         if (result.success || result.code != ErrorCode::InvalidJson) return 21;
     }
@@ -564,8 +609,7 @@ int TestTransportErrorWinsOverHttpSuccess() {
     HttpResponse response = TranslationResponse();
     response.error = L"HTTP body read failed.";
     transport->postResponses.push_back(std::move(response));
-    DeepSeekTranslationEngine engine(
-        TestSettings(), transport, std::make_shared<FakeCredentialProvider>());
+    OpenAICompatibleTranslationEngine engine(TestSettings(), transport, std::make_shared<FakeCredentialProvider>());
     const auto result = RunTranslate(engine, TestRequest());
     return !result.success && result.code == ErrorCode::Network ? 0 : 1;
 }
@@ -582,8 +626,7 @@ int TestConnectionProbesTheTranslationPath() {
     // No GET fixture on purpose: a listing request would answer 500
     // "fake response queue exhausted" and fail this test.
     transport->postResponses.push_back(TranslationResponse("test"));
-    DeepSeekTranslationEngine engine(
-        TestSettings(), transport, std::make_shared<FakeCredentialProvider>());
+    OpenAICompatibleTranslationEngine engine(TestSettings(), transport, std::make_shared<FakeCredentialProvider>());
     std::mutex mutex;
     std::condition_variable condition;
     bool completed = false;
@@ -626,8 +669,7 @@ int TestStaleReasoningModeIsClamped() {
         TranslationReasoningMode::ProviderDefault;
     auto transport = std::make_shared<FakeTransport>();
     transport->postResponses.push_back(TranslationResponse("s1"));
-    DeepSeekTranslationEngine engine(
-        settings, transport, std::make_shared<FakeCredentialProvider>());
+    OpenAICompatibleTranslationEngine engine(settings, transport, std::make_shared<FakeCredentialProvider>());
     const auto result = RunTranslate(engine, TestRequest());
     if (!result.success) return 2;
     if (transport->records.size() != 1) return 3;
@@ -645,8 +687,7 @@ int TestStaleReasoningModeIsClamped() {
     // must clamp (Translate's own clamp never runs on this path).
     auto probeTransport = std::make_shared<FakeTransport>();
     probeTransport->postResponses.push_back(TranslationResponse("test"));
-    DeepSeekTranslationEngine probeEngine(
-        settings, probeTransport, std::make_shared<FakeCredentialProvider>());
+    OpenAICompatibleTranslationEngine probeEngine(settings, probeTransport, std::make_shared<FakeCredentialProvider>());
     std::mutex mutex;
     std::condition_variable condition;
     bool completed = false;
@@ -714,8 +755,7 @@ int TestProviderErrorDetailIsSurfaced() {
         response.contentType = L"application/json";
         response.body = test.body;
         transport->postResponses.push_back(std::move(response));
-        DeepSeekTranslationEngine engine(
-            TestSettings(), transport, std::make_shared<FakeCredentialProvider>());
+        OpenAICompatibleTranslationEngine engine(TestSettings(), transport, std::make_shared<FakeCredentialProvider>());
         const auto result = RunTranslate(engine, TestRequest());
         if (result.success) return 1;
         if (result.error.find(test.expected) == std::wstring::npos) return 2;
@@ -736,8 +776,7 @@ int TestProviderErrorDetailIsSurfaced() {
         response.contentType = L"application/json";
         response.body = std::string(R"({"error":{"message":")") + message + R"("}})";
         transport->postResponses.push_back(std::move(response));
-        DeepSeekTranslationEngine engine(
-            TestSettings(), transport, std::make_shared<FakeCredentialProvider>());
+        OpenAICompatibleTranslationEngine engine(TestSettings(), transport, std::make_shared<FakeCredentialProvider>());
         const auto result = RunTranslate(engine, TestRequest());
         if (result.success || result.error.size() < 16) return 5;
         if (!assertValidUtf16(result.error)) return 6;
@@ -1111,8 +1150,7 @@ int TestCancelDuringConnectionProbe() {
     };
 
     auto transport = std::make_shared<BlockingProbeTransport>();
-    DeepSeekTranslationEngine engine(
-        TestSettings(), transport, std::make_shared<FakeCredentialProvider>());
+    OpenAICompatibleTranslationEngine engine(TestSettings(), transport, std::make_shared<FakeCredentialProvider>());
     std::mutex mutex;
     std::condition_variable condition;
     int callbacks = 0;
@@ -1223,8 +1261,7 @@ int TestCustomModelKeepsThinkingDialect() {
 
     auto transport = std::make_shared<FakeTransport>();
     transport->postResponses.push_back(TranslationResponse());
-    DeepSeekTranslationEngine engine(
-        settings, transport, std::make_shared<FakeCredentialProvider>());
+    OpenAICompatibleTranslationEngine engine(settings, transport, std::make_shared<FakeCredentialProvider>());
     const auto result = RunTranslate(engine, TestRequest());
     if (!result.success) return 4;
     const json body = json::parse(transport->records[0].body);

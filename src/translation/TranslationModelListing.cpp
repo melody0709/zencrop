@@ -12,21 +12,6 @@ namespace {
 
 using json = nlohmann::json;
 
-// Local on purpose: every translation TU carries its own converter (the engines do
-// the same), which keeps this module free of a new direct dependency on a core
-// header that is already at its includer ceiling.
-std::wstring Utf8ToWide(const std::string& value) {
-    if (value.empty()) return {};
-    const int length = MultiByteToWideChar(
-        CP_UTF8, MB_ERR_INVALID_CHARS, value.data(),
-        static_cast<int>(value.size()), nullptr, 0);
-    if (length <= 0) return {};
-    std::wstring result(static_cast<size_t>(length), L'\0');
-    MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.data(),
-        static_cast<int>(value.size()), result.data(), length);
-    return result;
-}
-
 // A listing is a catalog, not a translation response: the ceiling only exists so
 // a misbehaving gateway cannot make the settings page allocate without bound. The
 // largest real listing measured so far is OpenRouter's (458 entries); 2000 leaves

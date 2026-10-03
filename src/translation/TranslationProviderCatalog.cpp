@@ -1196,6 +1196,17 @@ ProviderCapabilities GetCapabilities(
     return capabilities;
 }
 
+LlmOutputMode EffectiveWireOutputMode(const TranslationProviderProfile &profile,
+                                      const ProviderCapabilities &capabilities) {
+    // DeepSeek retains JSON mode even for an unlisted model's prompt-JSON policy.
+    // A future native schema policy still takes precedence, as in the engine.
+    if (profile.adapterKind == TranslationAdapterKind::DeepSeekChat &&
+        capabilities.outputMode == LlmOutputMode::PromptJson) {
+        return LlmOutputMode::JsonObject;
+    }
+    return capabilities.outputMode;
+}
+
 bool RequiresSingleSegmentRequests(
     const TranslationProviderProfile& profile) {
     return GetCapabilities(profile).maxSegmentsPerRequest == 1;

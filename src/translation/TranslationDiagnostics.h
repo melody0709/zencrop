@@ -7,13 +7,19 @@
 namespace translation {
 
 // One summary record per translation that needed a retry or reached a terminal
-// failure. Counts, codes and timings only: never source text or translations.
+// failure. Metadata and a bounded error excerpt; never the request body or keys.
 struct TranslationDiagnosticRecord {
     uint64_t generation = 0;
     // Batch request id of the last attempt. The provider's own trace id (shown
     // in the error text) cannot be correlated locally, so this is what ties a
     // user report to one request.
     std::wstring batchId;
+    std::wstring provider;
+    std::wstring model;
+    // Values of TranslationAdapterKind / TranslationReasoningMode in Settings.h.
+    int adapter = -1;
+    int reasoning = -1;
+    std::wstring outputMode;
     size_t segmentCount = 0;
     size_t untranslatableCount = 0;
     size_t batchCount = 0;
