@@ -1,10 +1,10 @@
-# ZenCrop v3.1.6
+# ZenCrop v3.1.7
 
 [English](../README.md)
 
 ZenCrop 是对 [PowerToys Crop And Lock](https://github.com/microsoft/PowerToys/tree/main/src/modules/CropAndLock/) 的独立、**增强型**重构实现，并融合了丰富的截图标注、长截图、多引擎 OCR 和 OCR 工作台。
 
-## v3.1.7 更新重点（未发布）
+## v3.1.7 更新重点
 
 - **自定义端点从"完整请求 URL"改为 Base URL + 显式 API 协议**: 过去该字段要求填写完整请求地址、只有一句 cue banner 提示，于是按 Base URL 语义填写的值会被原样 POST，连接测试只回一个裸 `(404).`。现在 preset 声明自己支持哪些协议（原生排第一）：Gemini 额外提供 OpenAI 兼容面、OpenAI/Grok 额外提供 Chat Completions、自定义端点提供三种；请求地址由 Base URL + 协议拼装（`chat/completions` / `responses` / `api/chat` / `models/<id>:generateContent`），而且**方言按协议而非厂商名**选择——Gemini 切到 OpenAI 兼容面后不再收到原生的 `generationConfig.thinkingConfig`。
 - **已存档案保持它原来的请求地址**: 旧档案存的是**完整请求 URL**、并且是原样发出的，现在仍然如此——设置文件自己的 `schemaVersion`（现为 **8**）告诉读取器存量端点当时是哪种含义。确实存在一次**迁移**（存储字段可能被改写成基址），但只有当该基址按这个档案的协议拼回**逐字相同**的地址时才做；其余取值保留完整地址语义，并带一个持久化的标记。所以端点为 `https://gateway.example/invoke` 的档案仍然请求那个地址，不会多出它从来没有的 `/chat/completions`；存成 `.../v1/responses` 或路径大小写不同的同样如此。标记随档案持久化、跨首次保存不丢，并在你改动端点字段时清除（改动就是新的声明）。本版之后写入的值是基址；组合前先剥离已知请求后缀（只匹配整段路径、大小写不敏感），带 query 的值保持原样语义。机器翻译 preset（DeepLX、Azure 等）继续使用完整 URL 语义，且只有允许自定义端点的 preset 才会读取该字段。
@@ -24,7 +24,9 @@ ZenCrop 是对 [PowerToys Crop And Lock](https://github.com/microsoft/PowerToys/
 - **修复：切到"另一个协议面"后整条路不可用（外部审查发现，两处 Critical）**: ① 协议级认证没有贯通到校验与下拉——Gemini 档案切到 OpenAI 兼容协议后，读取路径按该协议要求把认证改成 Bearer，校验却按 preset 级的 `ApiKey` 拒绝，于是 Apply、Test connection、Fetch models 全部走不通，界面还显示着一个档案里并不存在的认证方式；② 方言不是适配器的全函数——"自定义端点 + Gemini 协议"仍会发 `reasoning_effort`，而该面严格拒绝未知字段（400）。两处都已修，并把"全 preset × 全协议"的不变式从"只断言 Gemini"改为通用判据（原来那条枚举了全部组合却放过了 ②）。同批修掉：清池不裁显示名侧表、抓取使能与请求用了两套 base URL 判据、认证头三份拷贝、模型 id 可含改变 URL 语义的字符、`ExtractJsonAnswer` 会被散文里的 `{...}` 截胡、选择器不显示当前生效模型、英文复数语法。
 - **修复：同一个 provider 出现两行，且其中一行删不掉（实机发现）**: Provider 下拉列的是**档案**，因此"先建档案、预设后补内置档案"的历史顺序会留下两条同名项——一条启用并带你的 key，另一条是禁用的内置项，而 Delete 对内建一律拒绝（实机报来的例子是两个 `Xiaomi MiMo`，当前选中的恰好是没配 key 的那条）。现在：内置档案只在"该预设**还没有任何连接**"时补建；与同预设其他档案并存的内置档案视为冗余、**可以删除**（独占时仍受保护）；下拉只在**同一预设出现两行**时给内置那行加 `(Built-in)`——为同厂商第二个账号 `Copy` 一份是合法用法，全程标注会让大多数行都带标签。删掉的内置档案若该 provider 之后再无连接，会在下次启动自动补回（自愈）。
 - **修复：不能出现在请求 URL 里的 id 在门口就被拒，读盘时自愈**: `?`、`#` 以及**任何**空白或控制字符（含 IME 与粘贴带来的全角空格、不换行空格）现在是同一条规则（"修复器"与"可存判定"是它的两侧）。池契约、厂商清单解析、选择器手动 `Add`、档案校验器一律拒收；模型字段在你键入时就说明，Apply 会对**每一个**档案做这道检查（此前禁用档案会把它带进文件并被静默改写、连备份都没有）。旧版本（只查长度）写下的文件仍可加载：id 被**修复**而不是拒收，且下一次写入前会把原始字节备份出来。同一字符集现在覆盖**整条** endpoint（不再只查主机名），基址路径里的多余空格会在构造请求之前被拦下。
-- **尚未发布**: 产品版本源未提升；上文提到的实机项（逐家真实清单抓取、458 条量级目录、高 DPI 几何、某账户是否接受 `reasoning_effort: "none"`、以及瘦表后存量档案升级时 `Custom model` 标记的观感）仍需在真实桌面上确认。可执行清单（判据、朴素清单会漏的点、证据要求）见 [`.plan/feat/provider-real-machine-acceptance.md`](../.plan/feat/provider-real-machine-acceptance.md)：**未执行 = 未签收**。
+- **修复：主设置窗口打开时任务栏无图标**: 主设置窗口创建时增加 `WS_EX_APPWINDOW` 扩展样式，统一使用全仓标准 `LoadIconW` 共享图标句柄注册窗口类，杜绝每次打开设置重复创建/覆盖非共享图标引起的 GDI 句柄泄露，使设置窗口在任务栏、Alt+Tab 与标题栏正常展示 ZenCrop 专属应用图标，并恢复标准任务栏单击最小化/还原交互。
+- **优化：翻译服务商管理面板空间紧凑化与底部死区消除**: 将专供机器翻译（如 Azure）使用的 `Region` 字段与模型行合并就地复用，LLM 厂商不再受 Region 预留与动态平移影响；彻底清理动态平移残余字段与空调用；保留测试状态完整的 26 DLU（3 行 160 字符诊断契约），将对话框模板高度由 `276 DLU` 缩减至与翻译页统一的 `256 DLU`（在 125% DPI 下减少约 48 像素高度），彻底消除此前由于平移留下的底部 ~43px 纯空白死区。
+- **版本源升级**: 产品版本源正式升至 `v3.1.7`（CMakeLists、资源、架构基线与全部相关文档）。已抓取清单的离线缓存保持不落盘策略；新输入的任意完整请求地址如需保持字面路径，可使用标准尾缀或带版本 query 形态；逐条真机复测清单见 [`.plan/feat/provider-real-machine-acceptance.md`](../.plan/feat/provider-real-machine-acceptance.md)。
 
 ## v3.1.6 更新重点
 

@@ -813,7 +813,7 @@ void ShowSettingsDialog(HWND parent) {
     int y = mi.rcWork.top + (workH - initialH) / 2;
 
     HWND hwnd = CreateWindowExW(
-        WS_EX_DLGMODALFRAME,
+        WS_EX_APPWINDOW,
         kSettingsWindowClassName,
         S::SettingsTitle(),
         WS_POPUPWINDOW | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_THICKFRAME | WS_CLIPCHILDREN,

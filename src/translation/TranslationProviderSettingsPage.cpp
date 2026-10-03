@@ -142,8 +142,6 @@ struct ProviderPageState {
     // half-list must not be read as "the rest is retired".
     bool fetchComplete = false;
     zencrop::ScopedHFONT hHintFont;
-    bool regionShifted = false;
-    int regionStepPx = 0;
     // The temperature field is free text. Track whether the current contents
     // parse so ValidateState can refuse Apply instead of quietly dropping what
     // the user typed, and so the field can explain itself while typing.
@@ -978,54 +976,6 @@ TranslationReasoningMode ReadReasoning(HWND page) {
         SendMessageW(combo, CB_GETITEMDATA, index, 0));
 }
 
-void AdjustProviderRegionShift(HWND page, ProviderPageState& state, bool acceptsRegion) {
-    const bool targetShifted = !acceptsRegion;
-    if (state.regionShifted == targetShifted) return;
-
-    if (state.regionStepPx <= 0) {
-        HWND hReg = GetDlgItem(page, IDC_PROVIDER_REGION);
-        HWND hReas = GetDlgItem(page, IDC_PROVIDER_REASONING);
-        if (hReg && hReas) {
-            RECT rcReg = {}, rcReas = {};
-            GetWindowRect(hReg, &rcReg);
-            GetWindowRect(hReas, &rcReas);
-            state.regionStepPx = rcReas.top - rcReg.top;
-        }
-        if (state.regionStepPx <= 0) state.regionStepPx = 22;
-    }
-
-    const int shift = targetShifted ? -state.regionStepPx : state.regionStepPx;
-
-    const int shiftControls[] = {
-        IDC_PROVIDER_REASONING_LABEL,
-        IDC_PROVIDER_REASONING,
-        IDC_PROVIDER_TEMPERATURE_LABEL,
-        IDC_PROVIDER_TEMPERATURE,
-        IDC_PROVIDER_KEY_LABEL,
-        IDC_PROVIDER_KEY,
-        IDC_PROVIDER_KEY_ACTION,
-        IDC_PROVIDER_KEY_CLEAR,
-        IDC_PROVIDER_KEY_STATUS,
-        IDC_PROVIDER_ADVANCED_LABEL,
-        IDC_PROVIDER_ADVANCED,
-        IDC_PROVIDER_DATA_ROUTE
-    };
-
-    for (int ctrlId : shiftControls) {
-        HWND hCtrl = GetDlgItem(page, ctrlId);
-        if (hCtrl) {
-            RECT rc = {};
-            GetWindowRect(hCtrl, &rc);
-            POINT pt = { rc.left, rc.top };
-            ScreenToClient(page, &pt);
-            SetWindowPos(hCtrl, nullptr, pt.x, pt.y + shift, 0, 0,
-                         SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
-        }
-    }
-
-    state.regionShifted = targetShifted;
-}
-
 void RenderProfile(HWND page, ProviderPageState& state) {
     auto* profile = CurrentProfile(page, state);
     if (!profile) return;
@@ -1075,7 +1025,6 @@ void RenderProfile(HWND page, ProviderPageState& state) {
     ShowWindow(GetDlgItem(page, IDC_PROVIDER_REGION),
         capabilities.acceptsRegion ? SW_SHOW : SW_HIDE);
     SetText(page, IDC_PROVIDER_REGION, profile->region);
-    AdjustProviderRegionShift(page, state, capabilities.acceptsRegion);
     if (const HWND model = GetDlgItem(page, IDC_PROVIDER_MODEL)) {
         SendMessageW(model, CB_RESETCONTENT, 0, 0);
         std::vector<std::wstring> allModels;
