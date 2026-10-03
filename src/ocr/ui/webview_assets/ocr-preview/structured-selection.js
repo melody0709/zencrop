@@ -377,7 +377,10 @@
     return blocks.get(root);
   }
 
-  function nextLeafChunkEnd(text, start) {
+  var leafSegmenter = typeof Intl === "object" && typeof Intl.Segmenter === "function"
+    ? new Intl.Segmenter("und", { granularity: "grapheme" }) : null;
+
+  function nextLeafChunkEnd(text, start, graphemes) {
     var end = Math.min(text.length, start + MAX_LEAF_CHARS);
     if (end >= text.length) return text.length;
     var minimum = Math.max(start + 1, end - 256);
@@ -388,20 +391,9 @@
         break;
       }
     }
-    var next = text.charCodeAt(end);
-    var previous = text.charCodeAt(end - 1);
-    if (previous >= 0xD800 && previous <= 0xDBFF &&
-        next >= 0xDC00 && next <= 0xDFFF) end -= 1;
-    while (end > start) {
-      next = text.charCodeAt(end);
-      if ((next >= 0x0300 && next <= 0x036F) ||
-          (next >= 0xFE00 && next <= 0xFE0F) || next === 0x200D) {
-        end -= 1;
-      } else {
-        break;
-      }
-    }
-    return end > start ? end : Math.min(text.length, start + MAX_LEAF_CHARS);
+    end = graphemes.containing(end).index;
+    if (end <= start) fail("leaf_grapheme_too_long");
+    return end;
   }
 
   function markTranslatableText(root, token) {
@@ -420,8 +412,10 @@
             current.classList.contains("diagram-block")) return;
       }
       var replacement = document.createDocumentFragment();
+      if (text.length > MAX_LEAF_CHARS && !leafSegmenter) fail("grapheme_segmentation_unavailable");
+      var graphemes = leafSegmenter ? leafSegmenter.segment(text) : null;
       for (var start = 0; start < text.length;) {
-        var end = nextLeafChunkEnd(text, start);
+        var end = nextLeafChunkEnd(text, start, graphemes);
         var chunk = text.slice(start, end);
         var leading = /^\s*/.exec(chunk)[0];
         var trailing = /\s*$/.exec(chunk.slice(leading.length))[0];

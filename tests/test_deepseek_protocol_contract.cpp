@@ -1,8 +1,4 @@
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#include <winsock2.h>
-#include <ws2tcpip.h>
+#include "LoopbackHttpServer.h"
 
 #include "translation/OpenAICompatibleTranslationEngine.h"
 #include "translation/TranslationProviderCatalog.h"
@@ -25,6 +21,9 @@ using nlohmann::json;
 using namespace translation;
 
 namespace {
+
+using translation_test::LoopbackHttpServer;
+using translation_test::SendAll;
 
 struct FakeCredentialProvider final : ITranslationCredentialProvider {
     bool ReadCredential(const std::wstring&, std::wstring& key, std::wstring& error) override {
@@ -104,139 +103,6 @@ struct FakeTransport final : IAsyncHttpTransport {
                 return std::move(response);
             }, std::move(callback));
     }
-};
-
-bool EnsureWinsock() {
-    static std::once_flag initialized;
-    static bool available = false;
-    std::call_once(initialized, [] {
-        WSADATA data = {};
-        available = WSAStartup(MAKEWORD(2, 2), &data) == 0;
-    });
-    return available;
-}
-
-bool SendAll(SOCKET socket, const std::string& bytes, const std::atomic<bool>& stopping) {
-    size_t offset = 0;
-    while (offset < bytes.size() && !stopping.load()) {
-        const int sent = send(socket, bytes.data() + offset,
-            static_cast<int>(bytes.size() - offset), 0);
-        if (sent <= 0) return false;
-        offset += static_cast<size_t>(sent);
-    }
-    return offset == bytes.size();
-}
-
-bool ReceiveRequestHeaders(SOCKET socket, const std::atomic<bool>& stopping) {
-    std::string request;
-    request.reserve(1024);
-    char buffer[1024] = {};
-    while (!stopping.load() && request.find("\r\n\r\n") == std::string::npos) {
-        const int received = recv(socket, buffer, static_cast<int>(sizeof(buffer)), 0);
-        if (received <= 0) return false;
-        request.append(buffer, static_cast<size_t>(received));
-        if (request.size() > 16384) return false;
-    }
-    return request.find("\r\n\r\n") != std::string::npos;
-}
-
-class LoopbackHttpServer final {
-public:
-    using Handler = std::function<void(SOCKET, const std::atomic<bool>&)>;
-
-    explicit LoopbackHttpServer(Handler handler) : handler_(std::move(handler)) {
-        if (!EnsureWinsock()) return;
-        listenSocket_ = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-        if (listenSocket_ == INVALID_SOCKET) return;
-        sockaddr_in address = {};
-        address.sin_family = AF_INET;
-        address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-        address.sin_port = 0;
-        if (bind(listenSocket_, reinterpret_cast<const sockaddr*>(&address), sizeof(address)) != 0 ||
-            listen(listenSocket_, 1) != 0) {
-            closesocket(listenSocket_);
-            listenSocket_ = INVALID_SOCKET;
-            return;
-        }
-        int length = sizeof(address);
-        if (getsockname(listenSocket_, reinterpret_cast<sockaddr*>(&address), &length) != 0) {
-            closesocket(listenSocket_);
-            listenSocket_ = INVALID_SOCKET;
-            return;
-        }
-        url_ = L"http://127.0.0.1:" + std::to_wstring(ntohs(address.sin_port)) + L"/translation";
-        worker_ = std::thread([this] { Run(); });
-    }
-
-    ~LoopbackHttpServer() {
-        Stop();
-    }
-
-    LoopbackHttpServer(const LoopbackHttpServer&) = delete;
-    LoopbackHttpServer& operator=(const LoopbackHttpServer&) = delete;
-
-    bool IsValid() const { return listenSocket_ != INVALID_SOCKET; }
-    const std::wstring& Url() const { return url_; }
-
-private:
-    void Stop() {
-        stopping_.store(true);
-        SOCKET listener = INVALID_SOCKET;
-        SOCKET client = INVALID_SOCKET;
-        {
-            std::lock_guard<std::mutex> lock(socketMutex_);
-            listener = listenSocket_;
-            listenSocket_ = INVALID_SOCKET;
-            client = clientSocket_;
-        }
-        if (client != INVALID_SOCKET) shutdown(client, SD_BOTH);
-        if (listener != INVALID_SOCKET) {
-            shutdown(listener, SD_BOTH);
-            closesocket(listener);
-        }
-        if (worker_.joinable()) worker_.join();
-    }
-
-    void Run() {
-        SOCKET listener = INVALID_SOCKET;
-        {
-            std::lock_guard<std::mutex> lock(socketMutex_);
-            listener = listenSocket_;
-        }
-        if (listener == INVALID_SOCKET) return;
-        SOCKET client = INVALID_SOCKET;
-        while (!stopping_.load()) {
-            fd_set readable = {};
-            FD_SET(listener, &readable);
-            timeval timeout = {};
-            timeout.tv_usec = 50000;
-            const int selected = select(0, &readable, nullptr, nullptr, &timeout);
-            if (selected <= 0) continue;
-            client = accept(listener, nullptr, nullptr);
-            if (client != INVALID_SOCKET) break;
-        }
-        if (client == INVALID_SOCKET) return;
-        {
-            std::lock_guard<std::mutex> lock(socketMutex_);
-            clientSocket_ = client;
-        }
-        if (!stopping_.load() && handler_ && ReceiveRequestHeaders(client, stopping_)) {
-            handler_(client, stopping_);
-        }
-        {
-            std::lock_guard<std::mutex> lock(socketMutex_);
-            if (clientSocket_ == client) clientSocket_ = INVALID_SOCKET;
-        }
-        closesocket(client);
-    }
-
-    Handler handler_;
-    std::atomic<bool> stopping_{false};
-    std::mutex socketMutex_;
-    SOCKET listenSocket_ = INVALID_SOCKET;
-    SOCKET clientSocket_ = INVALID_SOCKET;
-    std::thread worker_;
-    std::wstring url_;
 };
 
 struct AsyncResponseWaiter {
@@ -1115,6 +981,108 @@ int TestWinHttpCompletionRaces() {
     return 0;
 }
 
+int TestWinHttpCancellationAtReceiveStages() {
+    for (const int stage : {0, 1, 2}) {
+        std::mutex stageMutex;
+        std::condition_variable stageReady;
+        bool reached = false;
+        LoopbackHttpServer server([&](SOCKET client, const std::atomic<bool> &stopping) {
+            if (stage != 0) {
+                SendAll(client,
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 65536\r\n"
+                        "Connection: close\r\n\r\n",
+                        stopping);
+            }
+            if (stage == 2)
+                SendAll(client, "partial", stopping);
+            {
+                std::lock_guard lock(stageMutex);
+                reached = true;
+            }
+            stageReady.notify_one();
+            while (!stopping.load()) {
+                if (stage == 2 && !SendAll(client, ".", stopping))
+                    break;
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            }
+        });
+        if (!server.IsValid())
+            return 1;
+        WinHttpAsyncTransport transport;
+        AsyncResponseWaiter waiter;
+        auto options = LoopbackOptions(1000, 30000, 65536);
+        options.receiveTimeoutMs = 30000;
+        auto operation = transport.StartGet(server.Url(), {}, options,
+                                            [&](HttpResponse response) { waiter.Complete(std::move(response)); });
+        if (!operation)
+            return 2;
+        {
+            std::unique_lock lock(stageMutex);
+            if (!stageReady.wait_for(lock, std::chrono::seconds(2), [&] { return reached; })) {
+                operation->Cancel();
+                operation->Join();
+                return 3;
+            }
+        }
+        const auto started = std::chrono::steady_clock::now();
+        operation->Cancel();
+        operation->Join();
+        operation.reset();
+        const auto elapsed =
+            std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started).count();
+        const auto response = waiter.Response();
+        if (elapsed > 250 || waiter.CallbackCount() != 1 || response.error != L"Request cancelled." ||
+            !response.body.empty())
+            return 4;
+    }
+    return 0;
+}
+
+int TestWinHttpStartupCancellationAndEarlyFailure() {
+    WinHttpAsyncTransport transport;
+    for (int iteration = 0; iteration < 20; ++iteration) {
+        LoopbackHttpServer server([](SOCKET, const std::atomic<bool> &stopping) {
+            while (!stopping.load())
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        });
+        if (!server.IsValid())
+            return 1;
+        AsyncResponseWaiter waiter;
+        auto operation = transport.StartGet(server.Url(), {}, LoopbackOptions(1000, 30000),
+                                            [&](HttpResponse response) { waiter.Complete(std::move(response)); });
+        if (!operation)
+            return 1;
+        operation->Cancel();
+        // Fail the process if cleanup stalls; returning would make the wrapper's
+        // destructor Join hang and conceal the missing terminal callback.
+        if (!waiter.WaitFor(std::chrono::seconds(1)))
+            std::abort();
+        operation->Join();
+        operation.reset();
+        const auto response = waiter.Response();
+        if (waiter.CallbackCount() != 1 || !response.body.empty() || response.error != L"Request cancelled.")
+            return 2;
+    }
+
+    AsyncResponseWaiter invalidHeader;
+    LoopbackHttpServer server([](SOCKET, const std::atomic<bool> &) {});
+    if (!server.IsValid())
+        return 3;
+    auto failed = transport.StartGet(server.Url(), {L"Invalid Header"}, LoopbackOptions(1000, 30000),
+                                     [&](HttpResponse response) { invalidHeader.Complete(std::move(response)); });
+    if (!failed)
+        return 3;
+    if (!invalidHeader.WaitFor(std::chrono::seconds(1)))
+        std::abort();
+    failed->Join();
+    failed.reset();
+    const auto response = invalidHeader.Response();
+    return invalidHeader.CallbackCount() == 1 && response.body.empty() && response.statusCode == 0 &&
+                   response.error == L"WinHttpSendRequest failed (87)"
+               ? 0
+               : 4;
+}
+
 // The probe is a single in-flight request now. Cancelling the returned
 // operation must stop it and complete exactly once, and the probe must not
 // reach for a vendor listing even while it is running.
@@ -1299,6 +1267,8 @@ int main() {
         {"WinHTTP body limit and disconnect", TestWinHttpBodyLimitAndDisconnect},
         {"WinHTTP cancel and shutdown", TestWinHttpCancelAndShutdown},
         {"WinHTTP completion races", TestWinHttpCompletionRaces},
+        {"WinHTTP cancellation at receive stages", TestWinHttpCancellationAtReceiveStages},
+        {"WinHTTP startup cancellation and early failure", TestWinHttpStartupCancellationAndEarlyFailure},
         {"cancel during connection probe", TestCancelDuringConnectionProbe},
         {"custom model keeps thinking dialect", TestCustomModelKeepsThinkingDialect},
         {"Windows credential store", TestRealWindowsCredentialStore},

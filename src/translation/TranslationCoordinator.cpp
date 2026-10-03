@@ -26,6 +26,7 @@
 #include <mutex>
 #include <string>
 #include <vector>
+#include <icu.h>
 
 namespace translation {
 
@@ -39,6 +40,7 @@ namespace {
 // Screenshot translation v1 coordinator implementation.
 
 constexpr size_t kMaxSegmentChars = 4000;
+constexpr size_t kMaxBatchChars = 12000;
 constexpr size_t kPreferredBreakSearchChars = 512;
 constexpr DWORD kMinimumImageOcrWatchdogMs = 90000;
 constexpr DWORD kMinimumDocumentOcrWatchdogMs = 150000;
@@ -90,28 +92,26 @@ struct SourceSplitPlan {
     std::wstring trailingBreaks;
 };
 
-bool IsHighSurrogate(wchar_t value) {
-    return value >= 0xD800 && value <= 0xDBFF;
-}
+struct CharacterBreakApi {
+    // Optional system API: do not add a loader dependency that prevents startup
+    // on older Windows. Missing segmentation keeps the source whole below.
+    HMODULE module = LoadLibraryExW(L"icu.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+    decltype(&ubrk_open) open =
+        module ? reinterpret_cast<decltype(open)>(GetProcAddress(module, "ubrk_open")) : nullptr;
+    decltype(&ubrk_close) close =
+        module ? reinterpret_cast<decltype(close)>(GetProcAddress(module, "ubrk_close")) : nullptr;
+    decltype(&ubrk_isBoundary) isBoundary =
+        module ? reinterpret_cast<decltype(isBoundary)>(GetProcAddress(module, "ubrk_isBoundary")) : nullptr;
+    decltype(&ubrk_preceding) preceding =
+        module ? reinterpret_cast<decltype(preceding)>(GetProcAddress(module, "ubrk_preceding")) : nullptr;
+    decltype(&ubrk_following) following =
+        module ? reinterpret_cast<decltype(following)>(GetProcAddress(module, "ubrk_following")) : nullptr;
 
-bool IsLowSurrogate(wchar_t value) {
-    return value >= 0xDC00 && value <= 0xDFFF;
-}
-
-bool IsCombiningOrVariationSelector(wchar_t value) {
-    return (value >= 0x0300 && value <= 0x036F) ||
-        (value >= 0xFE00 && value <= 0xFE0F);
-}
-
-bool IsUnsafeBoundary(const std::wstring& text, size_t boundary) {
-    if (boundary == 0 || boundary >= text.size()) return false;
-    const wchar_t previous = text[boundary - 1];
-    const wchar_t next = text[boundary];
-    return (previous == L'\r' && next == L'\n') ||
-        IsHighSurrogate(previous) || IsLowSurrogate(next) ||
-        IsCombiningOrVariationSelector(next) ||
-        previous == 0x200D || next == 0x200D;
-}
+    ~CharacterBreakApi() {
+        if (module)
+            FreeLibrary(module);
+    }
+};
 
 bool IsPreferredBreakAfter(wchar_t value) {
     switch (value) {
@@ -136,7 +136,8 @@ bool IsPreferredBreakAfter(wchar_t value) {
     }
 }
 
-size_t FindSafeChunkEnd(const std::wstring& text, size_t start) {
+size_t FindSafeChunkEnd(const std::wstring &text, size_t start, const CharacterBreakApi &api,
+                        UBreakIterator *iterator) {
     const size_t hardEnd = (std::min)(start + kMaxSegmentChars, text.size());
     if (hardEnd >= text.size()) return text.size();
 
@@ -149,19 +150,45 @@ size_t FindSafeChunkEnd(const std::wstring& text, size_t start) {
             break;
         }
     }
-    while (candidate > start && IsUnsafeBoundary(text, candidate)) --candidate;
+    if (!api.isBoundary(iterator, static_cast<int32_t>(candidate))) {
+        const int32_t previous = api.preceding(iterator, static_cast<int32_t>(candidate));
+        candidate = previous == UBRK_DONE ? start : static_cast<size_t>(previous);
+    }
     if (candidate > start) return candidate;
 
     // A pathological grapheme sequence can be longer than the soft budget.
     // Prefer one whole sequence over emitting isolated UTF-16 code units.
-    candidate = hardEnd;
-    while (candidate < text.size() && IsUnsafeBoundary(text, candidate)) ++candidate;
-    return candidate;
+    const int32_t next = api.following(iterator, static_cast<int32_t>(hardEnd));
+    return next == UBRK_DONE ? text.size() : static_cast<size_t>(next);
 }
 
 void AppendSourceChunks(SourceSplitPlan& plan, const std::wstring& text) {
+    if (text.empty())
+        return;
+    if (text.size() <= kMaxSegmentChars) {
+        plan.chunks.push_back(text);
+        plan.breaksAfter.emplace_back();
+        return;
+    }
+    static const CharacterBreakApi api;
+    // ponytail: missing ICU keeps the whole line; the existing batch limit
+    // rejects oversized input visibly rather than guessing a character boundary.
+    if (text.size() > INT32_MAX || !api.open || !api.close || !api.isBoundary || !api.preceding || !api.following) {
+        plan.chunks.push_back(text);
+        plan.breaksAfter.emplace_back();
+        return;
+    }
+    const std::u16string utf16(text.begin(), text.end());
+    UErrorCode status = U_ZERO_ERROR;
+    std::unique_ptr<UBreakIterator, decltype(api.close)> iterator(
+        api.open(UBRK_CHARACTER, "root", utf16.data(), static_cast<int32_t>(utf16.size()), &status), api.close);
+    if (U_FAILURE(status) || !iterator) {
+        plan.chunks.push_back(text);
+        plan.breaksAfter.emplace_back();
+        return;
+    }
     for (size_t start = 0; start < text.size();) {
-        const size_t end = FindSafeChunkEnd(text, start);
+        const size_t end = FindSafeChunkEnd(text, start, api, iterator.get());
         if (end <= start) return;
         plan.chunks.push_back(text.substr(start, end - start));
         plan.breaksAfter.emplace_back();
@@ -1282,6 +1309,18 @@ void TranslationCoordinator::ShowError(const std::wstring& message) {
 
 void TranslationCoordinator::BeginTranslation(uint64_t generation) {
     if (shuttingDown_ || generation != generation_ || request_.segments.empty()) return;
+    // Safe splitting may keep a long combining/ZWJ sequence whole. Reject the
+    // entire input before any batch is sent, rather than retrying a local limit
+    // violation or translating only the prefix. The result window retains it.
+    for (size_t index = 0; index < request_.segments.size(); ++index) {
+        if (!IsUntranslatableIndex(index) && request_.segments[index].text.size() > kMaxBatchChars) {
+            active_ = false;
+            ShowError(StageText(L"文字片段超过请求上限，且无法安全分割。请编辑原文后重试。",
+                                L"A text segment exceeds the request limit and cannot be split safely. Edit the source "
+                                L"and try again."));
+            return;
+        }
+    }
     translationStartedTick_ = GetTickCount64();
     translatedBuffer_ = translationLeadingBreaks_;
     detectedSourceLanguage_ = L"und";
@@ -1430,12 +1469,13 @@ void TranslationCoordinator::BeginNextTranslationBatch(uint64_t generation) {
                 continue;
             }
             const std::wstring& text = request_.segments[rangeEnd].text;
-            if (batchSegments > 0 &&
-                (singleSegmentOnly || characters + text.size() > 12000)) break;
+            if (batchSegments > 0 && (singleSegmentOnly || characters + text.size() > kMaxBatchChars))
+                break;
             characters += text.size();
             ++batchSegments;
             ++rangeEnd;
-            if (characters >= 12000) break;
+            if (characters >= kMaxBatchChars)
+                break;
         }
         if (batchSegments == 0) {
             AppendUntranslatableRange(nextSegmentIndex_, rangeEnd);

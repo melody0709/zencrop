@@ -1,5 +1,39 @@
 # Changelog
 
+## V3.1.8 (2026-10-03)
+
+### 翻译引擎契约统一与去重 (Unified Translation Engine Contracts)
+
+- **DeepSeek 引擎特化副本归并**: 移除独立的 `DeepSeekTranslationEngine`（消除 650+ 行重复代码），将 DeepSeek 专属线协议处理、模型策略及思考方言（`thinking` 字段）全面归一并入 `OpenAICompatibleTranslationEngine` 共享引擎，杜绝冗余分支与维护分化；
+- **错误码与诊断分类归一**: 全 Provider 统一网络错误分类契约——网络超时、无法连接与断流（HTTP 0）统一定义并分类为 `Network`，HTTP 402 统一定义并分类为 `Balance`（余额不足），消除以往不同 Provider 之间的错误分类与重试判定歧义；
+- **批处理配额与轮次汇总稳定**: 保持批次重试配额（`retryQuota`），跨轮次记录汇总统计（round totals），保持翻译结果元数据稳定；
+- **目录与编解码器同步更新**: 统一提供者目录与设置编解码路径，保持向下兼容；
+- **设计与实施记录**: 详见 [`.plan/feat/translation-contract-resilience-and-optimization-plan.md`](../.plan/feat/translation-contract-resilience-and-optimization-plan.md)。
+
+### WinHTTP 原生异步生命周期与秒级响应式取消 (Native Async WinHTTP & Responsive Cancellation)
+
+- **背景与隐患**: 旧实现名义上为异步传输，但底层 `WinHttpOpen` 最后一个参数为 0（实际仍为同步 WinHTTP），Cancel 与看门狗超时通过 `CloseActiveHandles` 强制关闭工作线程正在使用的句柄，存在多线程并发关闭句柄与析构竞态；UI 消息循环在窗口关闭或取消时容易被不可控的网络阻塞拖慢；
+- **全面切换至原生异步 WinHTTP**: `AsyncHttpTransport` 采用 `WINHTTP_FLAG_ASYNC`，通过 `HttpStatusCallback` 与 `AwaitHttpCompletion` 由系统原生事件驱动工作线程唤醒；
+- **解耦取消与句柄关闭**: Cancel 与 deadline 只设置停止事件，工作线程独占网络 API 调用与句柄关闭，彻底消除并发取消线程强行关闭工作线程正在操作的同步 API 句柄的竞态风险；
+- **`HANDLE_CLOSING` 安全排空与 Context 保护**: 在 `WinHttpSendRequest` 发起之前提前注册 `WINHTTP_OPTION_CONTEXT_VALUE`，确保即使在发送前因取消或参数错误关闭请求时，`HANDLE_CLOSING` 回调也能正确获取 execution state 完成安全排空；读写缓冲与 execution state 生命周期保持原子独占，防止提前释放导致野指针；
+- **秒级响应与 UI 彻底解耦**: 取消翻译、关闭翻译结果窗口或关闭服务商设置页时，UI 不再等待不可控的网络退出，取消与关闭在 250ms 内即可完成响应并安全回收底层资源；
+- **设计与实施记录**: 详见 [`.plan/fix/translation-cancel-close-responsiveness-plan.md`](../.plan/fix/translation-cancel-close-responsiveness-plan.md)。
+
+### Unicode 字素感知分割与超长结构化叶节点安全切分 (Unicode Grapheme Segmentation & Structured Leaf Splitting)
+
+- **背景与隐患**: 旧版结构化提取（`structured-selection.js`）与原生分块（`TranslationCoordinator.cpp`）依赖手写字符区间表，无法完整识别复杂的 Unicode 序列；超长文本切分时容易劈开国旗（Regional Indicator 配对）、键帽序列（Keycap）、带 ZWJ 的复合 Emoji 以及非拉丁复杂组合符号（泰文、阿拉伯文、天城文等），或因病态长序列造成本地超限重试；
+- **浏览器提取端改用原生 `Intl.Segmenter`**: `structured-selection.js` 改用 `Intl.Segmenter("und", {granularity: "grapheme"})`，在软目标（1800 单元）和优选断句位置精准取字素边界，杜绝手写范围遗漏；极端无法安全切分的序列受控抛出 `leaf_grapheme_too_long`，平滑回退至纯文本翻译；
+- **原生协调器动态加载系统 `icu.dll`**: 原生分块利用 Windows 系统级 ICU 的 `UBRK_CHARACTER` 字符断句迭代器，断句候选位置按实际字素边界回退与确认；缺少系统 ICU 或极端错误时保留整行，绝不丢字、不损坏 UTF-16 编码；
+- **本地超限预算预检阻断**: 在发起首批请求前，协调器对所有翻译片段做 12000 字符整批预算预检；对于因极端病态连续组合符导致超限的片段，本地直接阻断并提示错误，杜绝无效网络调用与反复重试，完整保留原文；
+- **设计与实施记录**: 详见 [`.plan/fix/translation-oversized-structured-leaf-plan.md`](../.plan/fix/translation-oversized-structured-leaf-plan.md)。
+
+### 测试套件加固与模拟服务复用 (Test Suite Hardening & Loopback Server)
+
+- **公共夹具复用**: 抽取公共测试夹具 `tests/LoopbackHttpServer.h`，供协议测试与真实窗口测试共用，不引入外部第三方 HTTP 依赖；
+- **WebView 提取契约测试**: 新增真实 WebView 环境下的 DOM 结构化提取、长文本、转义膨胀、复杂字素及病态序列测试用例（覆盖国旗、键帽、泰文、阿拉伯文、天城文、希伯来文等）；
+- **原生异步取消与关闭响应性测试**: 新增原生异步 HTTP 传输各阶段（等待响应头、响应头后断流、持续慢速 body）及真实窗口取消/`WM_CLOSE` 探针测试，确保 250ms 内响应；
+- **版本源升级**: 产品版本源正式升至 `v3.1.8`（CMakeLists、资源、架构基线与全部相关文档）。
+
 ## V3.1.7 (2026-10-02)
 
 ### Provider 面板：Base URL + API 协议自动拼装、模型目录抓取与恢复默认 (Provider API Protocol and Model Catalog)

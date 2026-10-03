@@ -624,9 +624,53 @@ int wmain() {
               if(longPlan.sourceMarkdown!==longText.trim())return 171;
               if(longPlan.leaves.length<2)return 172;
               if(longPlan.leaves.some(function(leaf){return leaf.text.length>4000;}))return 173;
-              var escapedLong=convert("<p>"+"*".repeat(5000)+"</p>");
-              if(escapedLong.leaves.some(function(leaf){return leaf.text.length>4000;}))return 174;
-              var previewRoot=document.createElement("div");
+               var escapedLong=convert("<p>"+"*".repeat(5000)+"</p>");
+                if(escapedLong.sourceMarkdown!=="\\*".repeat(5000)||
+                   escapedLong.leaves.some(function(leaf){return leaf.text.length>4000;}))return 174;
+               for(var units of [1799,1800,1801,20000]){
+                 var plain="\u4e2d".repeat(units),plainPlan=convert("<p>"+plain+"</p>");
+                 if(plainPlan.sourceMarkdown!==plain||plainPlan.leaves.some(function(leaf){
+                   return leaf.text.length>4000;
+                 }))return 175;
+               }
+               var joined="a".repeat(1797)+"\ud83d\udc69\u200d\ud83d\udcbb"+"b".repeat(2200);
+               var joinedPlan=convert("<p>"+joined+"</p>");
+               if(joinedPlan.sourceMarkdown!==joined||joinedPlan.leaves.some(function(leaf){
+                 return leaf.text.endsWith("\u200d")||leaf.text.startsWith("\u200d")||
+                   /[\uD800-\uDBFF]$/.test(leaf.text)||/^[\uDC00-\uDFFF]/.test(leaf.text);
+               }))return 176;
+               var combining="a".repeat(1799)+"e\u0301"+"b".repeat(2200);
+               var combiningPlan=convert("<p>"+combining+"</p>");
+               if(combiningPlan.sourceMarkdown!==combining||combiningPlan.leaves.some(function(leaf){
+                 return /^[\u0300-\u036f\ufe00-\ufe0f]/.test(leaf.text);
+               }))return 177;
+            )JS" + std::wstring(LR"JS(
+               for(var sample of [
+                 [1798,"\ud83c\uddfa\ud83c\uddf8\ud83c\udde8\ud83c\uddf3"],
+                 [1798,"1\ufe0f\u20e3"],
+                 [1799,"\u0e01\u0e49"],
+                 [1799,"\u0628\u064e"],
+                 [1799,"\u0915\u093f"],
+                 [1799,"\u05d0\u05b0"],
+                 [1799,"e\u1ab0"],
+                 [1798,"\ud83d\udc4d\ud83c\udffd"]
+               ]){
+                 var text="a".repeat(sample[0])+sample[1]+"b".repeat(2200);
+                 var safePlan=convert("<p>"+text+"</p>");
+                 if(safePlan.sourceMarkdown!==text||safePlan.leaves.map(function(leaf){
+                   return leaf.text;
+                 }).join("")!==text)return 180;
+                 var protectedClusters=Array.from(new Intl.Segmenter("und",{
+                   granularity:"grapheme"
+                 }).segment(sample[1]),function(part){return part.segment;});
+                 if(protectedClusters.some(function(cluster){
+                   return !safePlan.leaves.some(function(leaf){return leaf.text.indexOf(cluster)>=0;});
+                 }))return 181;
+               }
+                var pathological="e"+"\u0301".repeat(20000);
+                try {convert("<p>"+pathological+"</p>");return 178;}
+                catch(error){if(String(error.message).indexOf("leaf_grapheme_too_long")<0)return 179;}
+                var previewRoot=document.createElement("div");
               previewRoot.innerHTML="<span class=\"katex\"><span class=\"katex-mathml\"><math><semantics><annotation encoding=\"application/x-tex\">q^2</annotation></semantics></math></span><span class=\"katex-html\">VISUAL</span></span>";
               document.body.appendChild(previewRoot);
               var visual=previewRoot.querySelector(".katex-html").firstChild;
@@ -644,7 +688,7 @@ int wmain() {
               } catch(error) {
                 return "E:"+String(error&&error.message||error);
               }
-            })())JS",
+            })())JS"),
             structuredSelectionResult) ||
         _wtoi(structuredSelectionResult.c_str()) != 1) {
         host.Destroy();

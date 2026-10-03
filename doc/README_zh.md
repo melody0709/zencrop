@@ -1,8 +1,16 @@
-# ZenCrop v3.1.7
+# ZenCrop v3.1.8
 
 [English](../README.md)
 
 ZenCrop 是对 [PowerToys Crop And Lock](https://github.com/microsoft/PowerToys/tree/main/src/modules/CropAndLock/) 的独立、**增强型**重构实现，并融合了丰富的截图标注、长截图、多引擎 OCR 和 OCR 工作台。
+
+## v3.1.8 更新重点
+
+- **翻译引擎契约统一与去重**: 移除独立的 `DeepSeekTranslationEngine` 特化副本（消除 650+ 行重复代码），将 DeepSeek 专属线协议处理、模型策略及思考方言（`thinking` 字段）全面归一并入通用的 `OpenAICompatibleTranslationEngine` 共享引擎，杜绝冗余分支与维护分化；全 Provider 统一 HTTP 错误诊断分类契约（网络超时/断流 HTTP 0 统一定义为 `Network`，HTTP 402 统一定义为 `Balance` 余额不足）；保持批次重试配额与跨轮次汇总统计稳定。
+- **WinHTTP 原生异步生命周期与秒级响应式取消**: 底层请求全面采用原生 `WINHTTP_FLAG_ASYNC`，通过 `HttpStatusCallback` 与 `AwaitHttpCompletion` 由系统事件驱动唤醒。取消翻译、关闭翻译结果窗口或关闭服务商设置页时，UI 不再等待不可控的网络退出；取消与超时只置事件标志，工作线程独占网络 API 与句柄关闭，彻底消除并发取消线程强行关闭工作线程正在操作的同步 API 句柄的竞态风险；在发送前注册 context 确保 `HANDLE_CLOSING` 安全排空，保证取消与关闭在 250ms 内即可完成响应并安全回收资源。
+- **Unicode 字素感知分割与超长结构化叶节点安全切分**: 修复结构化预览选择提取长文本时劈裂 Unicode 字符序列的隐患。浏览器提取侧改用原生 `Intl.Segmenter`（grapheme 粒度），精准识别国旗、键帽、复合 Emoji（ZWJ）、肤色及非拉丁复杂组合符号（泰文、阿拉伯文、天城文等），不可切分时受控回退纯文本；原生协调器动态加载系统 `icu.dll`（`UBRK_CHARACTER`），候选位置按字素边界检查回退，并在发请求前对全部片段进行 12000 字符整批预算预检，本地直接阻断超限病态序列，杜绝无效网络调用与重试，完整保留原文。
+- **测试套件加固与模拟服务复用**: 抽取公共 `LoopbackHttpServer` 测试夹具；新增真实 WebView 提取契约测试、原生异步传输多阶段及取消响应性测试。
+- **版本源升级**: 产品版本源正式升至 `v3.1.8`（CMakeLists、资源、架构基线与全部相关文档）。
 
 ## v3.1.7 更新重点
 

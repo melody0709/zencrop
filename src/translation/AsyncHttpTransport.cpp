@@ -5,6 +5,8 @@
 #include <process.h>
 
 #include <algorithm>
+#include <array>
+#include <condition_variable>
 #include <cwctype>
 #include <exception>
 #include <limits>
@@ -25,6 +27,21 @@ struct AsyncHttpExecutionState {
     HINTERNET session = nullptr;
     HINTERNET connect = nullptr;
     HINTERNET request = nullptr;
+    bool requestCallbacksRegistered = false;
+
+    // The HTTP worker alone issues APIs and closes handles. Native callbacks
+    // only signal completed I/O; cancellation wakes the worker without closing
+    // a handle underneath an API call.
+    HANDLE stopEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    HANDLE ioEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    std::mutex ioMutex;
+    std::condition_variable callbacksChanged;
+    std::atomic<unsigned> callbacksRunning{0};
+    bool requestClosed = false;
+    DWORD ioStatus = 0;
+    DWORD ioError = 0;
+    DWORD readBytes = 0;
+    std::array<char, 16384> readBuffer{};
 
     std::mutex callbackMutex;
     AsyncHttpRequest::Callback callback;
@@ -50,6 +67,10 @@ struct AsyncHttpExecutionState {
         if (connectToClose) WinHttpCloseHandle(connectToClose);
         if (sessionToClose) WinHttpCloseHandle(sessionToClose);
         if (completionEvent) CloseHandle(completionEvent);
+        if (stopEvent)
+            CloseHandle(stopEvent);
+        if (ioEvent)
+            CloseHandle(ioEvent);
     }
 };
 
@@ -100,6 +121,32 @@ bool IsLoopbackHost(std::wstring host) {
     return host == L"127.0.0.1" || host == L"localhost" || host == L"::1";
 }
 
+void CALLBACK HttpStatusCallback(HINTERNET, DWORD_PTR context, DWORD status, void *information,
+                                 DWORD informationLength) noexcept {
+    auto *state = reinterpret_cast<AsyncHttpExecutionState *>(context);
+    if (!state)
+        return;
+    state->callbacksRunning.fetch_add(1);
+    std::lock_guard lock(state->ioMutex);
+    if (status == WINHTTP_CALLBACK_STATUS_HANDLE_CLOSING) {
+        state->requestClosed = true;
+    } else if (status == WINHTTP_CALLBACK_STATUS_SENDREQUEST_COMPLETE ||
+               status == WINHTTP_CALLBACK_STATUS_HEADERS_AVAILABLE || status == WINHTTP_CALLBACK_STATUS_READ_COMPLETE ||
+               status == WINHTTP_CALLBACK_STATUS_REQUEST_ERROR) {
+        state->ioStatus = status;
+        state->ioError = 0;
+        state->readBytes = status == WINHTTP_CALLBACK_STATUS_READ_COMPLETE ? informationLength : 0;
+        if (status == WINHTTP_CALLBACK_STATUS_REQUEST_ERROR) {
+            state->ioError = information && informationLength >= sizeof(WINHTTP_ASYNC_RESULT)
+                                 ? static_cast<WINHTTP_ASYNC_RESULT *>(information)->dwError
+                                 : ERROR_WINHTTP_INTERNAL_ERROR;
+        }
+        SetEvent(state->ioEvent);
+    }
+    state->callbacksRunning.fetch_sub(1);
+    state->callbacksChanged.notify_all();
+}
+
 void CloseActiveHandles(const std::shared_ptr<AsyncHttpExecutionState>& state) {
     if (!state) return;
     HINTERNET request = nullptr;
@@ -114,7 +161,17 @@ void CloseActiveHandles(const std::shared_ptr<AsyncHttpExecutionState>& state) {
         state->connect = nullptr;
         state->session = nullptr;
     }
-    if (request) WinHttpCloseHandle(request);
+    if (request) {
+        WinHttpCloseHandle(request);
+        if (state->requestCallbacksRegistered) {
+            // HANDLE_CLOSING is the last native callback. Keep the context,
+            // POST body and read buffer alive until every callback has left.
+            std::unique_lock lock(state->ioMutex);
+            state->callbacksChanged.wait(lock,
+                                         [&] { return state->requestClosed && state->callbacksRunning.load() == 0; });
+            state->requestCallbacksRegistered = false;
+        }
+    }
     if (connect) WinHttpCloseHandle(connect);
     if (session) WinHttpCloseHandle(session);
 }
@@ -204,6 +261,32 @@ void Complete(const std::shared_ptr<AsyncHttpExecutionState>& state, HttpRespons
     }
 }
 
+bool AwaitHttpCompletion(const std::shared_ptr<AsyncHttpExecutionState> &state, DWORD expectedStatus,
+                         const wchar_t *api, std::wstring &error, DWORD *readBytes = nullptr) {
+    // The worker issues only one outstanding I/O operation per request. Consume
+    // its completion before starting the next; this slot is not a callback queue.
+    const HANDLE events[] = {state->stopEvent, state->ioEvent};
+    const DWORD wait = WaitForMultipleObjects(2, events, FALSE, INFINITE);
+    if (IsStopped(state)) {
+        error = StopError(state);
+        return false;
+    }
+    if (wait != WAIT_OBJECT_0 + 1) {
+        error = L"HTTP completion wait failed.";
+        return false;
+    }
+    std::lock_guard lock(state->ioMutex);
+    if (state->ioStatus == expectedStatus) {
+        if (readBytes)
+            *readBytes = state->readBytes;
+        return true;
+    }
+    error = state->ioError == ERROR_WINHTTP_TIMEOUT
+                ? L"Request timed out."
+                : std::wstring(api) + L" failed (" + std::to_wstring(state->ioError) + L")";
+    return false;
+}
+
 bool ReadBody(HINTERNET request, size_t limit,
               const std::shared_ptr<AsyncHttpExecutionState>& state,
               std::string& body, std::wstring& error) {
@@ -214,36 +297,26 @@ bool ReadBody(HINTERNET request, size_t limit,
             body.clear();
             return false;
         }
-        DWORD available = 0;
-        if (!WinHttpQueryDataAvailable(request, &available)) {
-            if (IsStopped(state)) error = StopError(state);
-            else if (GetLastError() == ERROR_WINHTTP_TIMEOUT) error = L"Request timed out.";
-            else error = L"WinHttpQueryDataAvailable failed (" +
-                std::to_wstring(GetLastError()) + L")";
+        if (!WinHttpReadData(request, state->readBuffer.data(), static_cast<DWORD>(state->readBuffer.size()),
+                             nullptr)) {
+            error = IsStopped(state) ? StopError(state)
+                                     : L"WinHttpReadData failed (" + std::to_wstring(GetLastError()) + L")";
             body.clear();
             return false;
         }
-        if (available == 0) return true;
-        if (body.size() > limit || static_cast<size_t>(available) > limit - body.size()) {
+        DWORD read = 0;
+        if (!AwaitHttpCompletion(state, WINHTTP_CALLBACK_STATUS_READ_COMPLETE, L"WinHttpReadData", error, &read)) {
+            body.clear();
+            return false;
+        }
+        if (read == 0)
+            return true;
+        if (body.size() > limit || static_cast<size_t>(read) > limit - body.size()) {
             error = L"HTTP response exceeded the configured byte limit.";
             body.clear();
             return false;
         }
-        const size_t offset = body.size();
-        body.resize(offset + available);
-        DWORD read = 0;
-        if (!WinHttpReadData(request, body.data() + offset, available, &read)) {
-            error = IsStopped(state) ? StopError(state) :
-                L"WinHttpReadData failed (" + std::to_wstring(GetLastError()) + L")";
-            body.clear();
-            return false;
-        }
-        if (read == 0) {
-            error = L"HTTP response ended unexpectedly.";
-            body.clear();
-            return false;
-        }
-        body.resize(offset + read);
+        body.append(state->readBuffer.data(), read);
     }
 }
 
@@ -252,11 +325,17 @@ void RunHttp(const std::shared_ptr<AsyncHttpExecutionState>& state,
              std::vector<std::wstring> headers, HttpRequestOptions options) {
     HttpResponse response;
     std::wstring allHeaders;
-    const auto finish = [&] {
+    const auto release = [&](AsyncHttpExecutionState *) {
+        CloseActiveHandles(state);
         SecureClear(body);
         SecureClearHeaders(headers);
         SecureClear(allHeaders);
-        CloseActiveHandles(state);
+        SecureZeroMemory(state->readBuffer.data(), state->readBuffer.size());
+    };
+    // Also runs on exceptions before HttpWorker's terminal callback boundary.
+    std::unique_ptr<AsyncHttpExecutionState, decltype(release)> cleanup(state.get(), release);
+    const auto finish = [&] {
+        cleanup.reset();
         Complete(state, std::move(response));
     };
     if (IsStopped(state)) {
@@ -285,8 +364,8 @@ void RunHttp(const std::shared_ptr<AsyncHttpExecutionState>& state,
 
     const DWORD accessType = IsLoopbackHost(host)
         ? WINHTTP_ACCESS_TYPE_NO_PROXY : WINHTTP_ACCESS_TYPE_DEFAULT_PROXY;
-    HINTERNET session = WinHttpOpen(L"ZenCrop/1.0", accessType,
-        WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+    HINTERNET session =
+        WinHttpOpen(L"ZenCrop/1.0", accessType, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, WINHTTP_FLAG_ASYNC);
     if (!session) {
         response.error = IsStopped(state) ? StopError(state) : L"WinHttpOpen failed.";
         finish();
@@ -339,6 +418,18 @@ void RunHttp(const std::shared_ptr<AsyncHttpExecutionState>& state,
         finish();
         return;
     }
+    DWORD_PTR context = reinterpret_cast<DWORD_PTR>(state.get());
+    // Closing can happen before SendRequest (cancel, option failure, exception).
+    // Install context now so HANDLE_CLOSING can still complete the drain.
+    if (!WinHttpSetOption(request, WINHTTP_OPTION_CONTEXT_VALUE, &context, sizeof(context)) ||
+        WinHttpSetStatusCallback(request, HttpStatusCallback,
+                                 WINHTTP_CALLBACK_FLAG_ALL_COMPLETIONS | WINHTTP_CALLBACK_FLAG_HANDLES,
+                                 0) == WINHTTP_INVALID_STATUS_CALLBACK) {
+        response.error = L"Failed to configure HTTP completion callbacks.";
+        finish();
+        return;
+    }
+    state->requestCallbacksRegistered = true;
     if (!options.allowRedirects) {
         DWORD policy = WINHTTP_OPTION_REDIRECT_POLICY_NEVER;
         if (!WinHttpSetOption(request, WINHTTP_OPTION_REDIRECT_POLICY, &policy, sizeof(policy))) {
@@ -355,25 +446,28 @@ void RunHttp(const std::shared_ptr<AsyncHttpExecutionState>& state,
         finish();
         return;
     }
-    if (!WinHttpSendRequest(request,
-        allHeaders.empty() ? WINHTTP_NO_ADDITIONAL_HEADERS : allHeaders.c_str(),
-        static_cast<DWORD>(allHeaders.size()),
-        post ? const_cast<char*>(body.data()) : WINHTTP_NO_REQUEST_DATA,
-        post ? static_cast<DWORD>(body.size()) : 0,
-        post ? static_cast<DWORD>(body.size()) : 0, 0)) {
+    if (!WinHttpSendRequest(
+            request, allHeaders.empty() ? WINHTTP_NO_ADDITIONAL_HEADERS : allHeaders.c_str(),
+            static_cast<DWORD>(allHeaders.size()), post ? const_cast<char *>(body.data()) : WINHTTP_NO_REQUEST_DATA,
+            post ? static_cast<DWORD>(body.size()) : 0, post ? static_cast<DWORD>(body.size()) : 0, context)) {
         response.error = IsStopped(state) ? StopError(state) :
             L"WinHttpSendRequest failed (" + std::to_wstring(GetLastError()) + L")";
         finish();
         return;
     }
-    if (IsStopped(state)) {
-        response.error = StopError(state);
+    if (!AwaitHttpCompletion(state, WINHTTP_CALLBACK_STATUS_SENDREQUEST_COMPLETE, L"WinHttpSendRequest",
+                             response.error)) {
         finish();
         return;
     }
     if (!WinHttpReceiveResponse(request, nullptr)) {
         response.error = IsStopped(state) ? StopError(state) :
             L"WinHttpReceiveResponse failed (" + std::to_wstring(GetLastError()) + L")";
+        finish();
+        return;
+    }
+    if (!AwaitHttpCompletion(state, WINHTTP_CALLBACK_STATUS_HEADERS_AVAILABLE, L"WinHttpReceiveResponse",
+                             response.error)) {
         finish();
         return;
     }
@@ -458,7 +552,7 @@ void AsyncHttpRequest::StartHttp(bool post, std::wstring url, std::string body,
         std::lock_guard<std::mutex> lock(state_->callbackMutex);
         state_->callback = std::move(callback);
     }
-    if (!state_->completionEvent) {
+    if (!state_->completionEvent || !state_->stopEvent || !state_->ioEvent) {
         Complete(state_, HttpResponse{0, {}, {}, {}, L"Failed to create HTTP completion event."});
         return;
     }
@@ -561,7 +655,7 @@ unsigned __stdcall AsyncHttpRequest::DeadlineWorker(void* opaque) {
     const DWORD wait = WaitForSingleObject(start->state->completionEvent, start->deadlineMs);
     if (wait == WAIT_TIMEOUT && !start->state->complete.load()) {
         start->state->deadlineExpired.store(true);
-        CloseActiveHandles(start->state);
+        SetEvent(start->state->stopEvent);
     }
     return 0;
 }
@@ -569,7 +663,8 @@ unsigned __stdcall AsyncHttpRequest::DeadlineWorker(void* opaque) {
 void AsyncHttpRequest::Cancel() {
     if (!state_) return;
     state_->cancelled.store(true);
-    CloseActiveHandles(state_);
+    if (state_->stopEvent)
+        SetEvent(state_->stopEvent);
     std::shared_ptr<AsyncHttpRequest> followUp;
     {
         std::lock_guard<std::mutex> lock(state_->followUpMutex);

@@ -1,12 +1,12 @@
-# 翻译取消与关闭窗口响应方案（v1）
+# 翻译取消与关闭窗口响应方案（v2）
 
-- **状态**：下一轮独立任务，已完成源码定位；尚未实施或实机签收。
+- **状态**：原生异步实现、自动化回归与产品构建完成；DNS／代理／TLS 及服务商页实机验收待完成。
 - **日期**：2026-10-03（用户所在时区）。
 - **优先级**：高，先于长结构化文本边界任务。
-- **起点**：v3.1.7 加本轮翻译引擎去重与诊断修正；本轮不修改 transport 生命周期。
+- **起点**：v3.1.7 加上一轮翻译引擎去重与诊断修正；本任务只调整既有 transport 的网络生命周期。
 - **目标**：取消翻译、关闭结果窗、关闭服务商页时，UI 不再等待不可预测的网络退出；保持安全回收、一次终态回调和应用退出时的完整清理。
 
-## 1. 已知事实与尚未证明的部分
+## 1. 实施前的事实与尚未证明的部分
 
 | 事实 | 当前入口 | 含义 |
 |:---|:---|:---|
@@ -66,3 +66,38 @@
 实施后运行既有 `test_deepseek_protocol_contract`、`test_translation_contract` 和一次产品增量构建；通过 `build.bat` 的架构与安装布局门禁。最终 diff check 后停止，不扩大到通用任务调度框架。实机 DNS/代理/TLS 证据不足时明确列出未签收项，不能拿 loopback PASS 替代。
 
 回滚只涉及本任务代码及对应测试，不迁移用户数据。独立提交，不与下一个 [长结构化文本边界方案](translation-oversized-structured-leaf-plan.md) 混合实施。
+
+## 6. 实施与自我审查（2026-10-03）
+
+### 6.1 已选实现
+
+`AsyncHttpTransport.cpp` 使用 `WINHTTP_FLAG_ASYNC`。发送、响应头与 body 读取由原生完成通知唤醒既有工作线程；Cancel 和 deadline 只设置停止事件。工作线程独占网络 API 与句柄关闭，消除取消线程关闭同步 API 正在使用的句柄这一竞争。
+
+请求关闭后等待 `HANDLE_CLOSING` 和已进入的原生回调排空，再关闭父句柄、擦除 POST body／headers／读缓冲。读缓冲属于共享 execution state，不能在取消时提前释放；读取字节数在回调互斥锁内复制。异常退出也经局部 RAII 清理。依据 [WinHttpReadData 的异步缓冲要求](https://learn.microsoft.com/en-us/windows/win32/api/winhttp/nf-winhttp-winhttpreaddata) 与前述 CloseHandle 契约。
+
+现有 Cancel／Join、follow-up operation、终态 claim 与 UI owner 顺序保留。`complete` 仍先于用户回调设置，owner 继续用 Join 确认回调退出；未采用 detach、超时后释放状态或第二套后台任务管理器。
+
+### 6.2 自动证据
+
+- 复用 LoopbackHttpServer；为协议与真实窗口测试共用，将原夹具移至 `tests/LoopbackHttpServer.h`。没有新增测试 executable 或 production 测试接口。
+- 等响应头、响应头后停 body、持续慢速 body：服务端收到请求后确认阶段，接收超时／deadline 为 30 秒；Cancel＋Join＋最后引用回收均在 250ms 内，一次终态回调，取消结果不带部分 body。
+- 三个阶段分别通过真实结果窗的取消命令与 `WM_CLOSE`，随后排队 UI 探针消息。六例均在 250ms 内处理，取消状态／窗口销毁正确，一次终态回调。39.07 秒的最终 `test_translation_contract` 运行中，GetTickCount64 探针记录均为 0ms，属于计时粒度内完成，不表示零耗时。
+- 最终 `test_deepseek_protocol_contract` PASS（4.76 秒），包括成功／取消／deadline 竞争、截断 body、响应上限、重定向与 follow-up 回收；`test_translation_contract` PASS（39.07 秒）。产品增量构建及安装布局 PASS（93 个 runtime 文件），架构守卫 PASS。
+
+**基线没有复现确定的冻结**：新增 transport 三阶段测试在原同步实现上也通过。本次交付证明安全的异步所有权和上述场景的响应上界，不宣称测得旧版到新版的性能提升。
+
+### 6.3 自我审查与未签收项
+
+已核对请求 context／读写缓冲寿命、最后原生回调排空、异常清理、一次终态、旧 generation 抑制及 Shutdown 的 heap-owned 消息排空顺序；核对连接测试与模型抓取的 Cancel＋Join 调用链，页面状态仍活到 Join 完成。未发现本轮新增且需阻断交付的代码问题。
+
+DNS、代理／PAC、连接与 TLS，以及真实服务商页关闭／立即重开，尚未做完整实机矩阵；保留 Join 意味着本任务没有承诺所有操作系统／网络环境中的绝对 250ms 上界。不得用 loopback 结果签收这些场景。当前实现与长文本修正分别记录，提交时仍须分开。
+
+## 7. 外部审查后的保护补充（2026-10-03）
+
+保留 `WINHTTP_OPTION_CONTEXT_VALUE`：请求可能在 `WinHttpSendRequest` 前因取消、选项失败或异常关闭。此时 SendRequest 的 dwContext 尚未安装，提前设值保证 `HANDLE_CLOSING` 回调能识别 execution state；对应理由已就近注释。本机直接 WinHTTP 对照确认，发送前关闭且未预设 context 时通知携带 0，预设后携带正确值；当前回调会忽略 0。
+
+`AwaitHttpCompletion` 注明每个 request 同时只允许一个未完成 I/O；当前完成槽不是并发回调队列。没有增加“关闭等待超时后释放状态”的路径，仍保留安全排空契约。
+
+新增既有协议目标中的启动阶段立即取消回归（20 次），以及非法请求头造成 SendRequest 同步失败的回归；全部经过真实 transport，验证一次终态、空部分 body、Join 与最后引用释放。超出 1 秒仍没有终态时测试直接失败终止进程，避免错误分支的析构 Join 无限等待隐藏问题。立即取消覆盖启动竞争，不声称能确定每次恰好落在“注册后、发送前”窗口；该具体顺序仍由源码所有权与 context 契约守住。
+
+最终 `test_deepseek_protocol_contract` PASS（4.78 秒），`test_translation_contract` PASS（43.79 秒），产品构建与架构／布局门禁 PASS。自查未发现需扩大网络生命周期修改的阻断问题；§6.3 的实机未签收项保持。

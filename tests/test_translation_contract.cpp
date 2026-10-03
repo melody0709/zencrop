@@ -1,3 +1,4 @@
+#include "LoopbackHttpServer.h"
 #include "translation/TranslationTypes.h"
 #include "screenshot/editor/ScreenshotActionCatalog.h"
 #include "core/AppDataPaths.h"
@@ -59,6 +60,8 @@
 namespace {
 translation::TranslationCoordinator* g_coordinator = nullptr;
 HWND g_translationTestMainWindow = nullptr;
+ULONGLONG g_translationProbeTick = 0;
+constexpr UINT kTranslationUiProbe = WM_APP + 999;
 
 class EmbeddedSink final : public translation::ITranslationEmbeddedSink {
 public:
@@ -970,6 +973,10 @@ bool RunCapturedProvider(
 
 LRESULT CALLBACK TranslationTestWindowProc(
     HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
+    if (message == kTranslationUiProbe) {
+        g_translationProbeTick = GetTickCount64();
+        return 0;
+    }
     if (message == WM_APP_SCREENSHOT_TRANSLATION_OCR_DONE && g_coordinator) {
         g_coordinator->HandleOcrDone(
             static_cast<uint64_t>(wParam), reinterpret_cast<OcrOutput*>(lParam));
@@ -1029,6 +1036,113 @@ std::wstring ControlText(HWND parent, int id) {
     if (length > 0) GetWindowTextW(control, text.data(), length + 1);
     text.resize(static_cast<size_t>(length));
     return text;
+}
+
+class LoopbackTranslationTransport final : public translation::IAsyncHttpTransport {
+public:
+    explicit LoopbackTranslationTransport(std::wstring url) : url_(std::move(url)) {}
+    std::atomic<int> callbacks{0};
+
+    std::shared_ptr<translation::AsyncHttpRequest> StartGet(const std::wstring &,
+                                                            const std::vector<std::wstring> &headers,
+                                                            const HttpRequestOptions &options,
+                                                            translation::AsyncHttpRequest::Callback callback) override {
+        return translation::AsyncHttpRequest::StartGet(url_, headers, options, std::move(callback));
+    }
+
+    std::shared_ptr<translation::AsyncHttpRequest> StartPost(
+        const std::wstring &, const std::string &body, const std::vector<std::wstring> &headers,
+        const HttpRequestOptions &options, translation::AsyncHttpRequest::Callback callback) override {
+        HttpRequestOptions longReceive = options;
+        longReceive.receiveTimeoutMs = 30000;
+        longReceive.deadlineMs = 30000;
+        return translation::AsyncHttpRequest::StartPost(url_, body, headers, longReceive,
+                                                        [this, callback = std::move(callback)](HttpResponse response) {
+                                                            ++callbacks;
+                                                            callback(std::move(response));
+                                                        });
+    }
+
+private:
+    std::wstring url_;
+};
+
+int TestNetworkCancelAndCloseUiResponsiveness() {
+    using namespace translation;
+    const TranslationSettings saved = LoadTranslationSettings();
+    TranslationSettings settings;
+    settings.enabled = true;
+    settings.sourceLanguage = L"en";
+    settings.targetLanguage = L"zh-Hans";
+    SaveTranslationSettings(settings);
+    S::SetLanguage(false);
+    HWND messageWindow = CreateTranslationTestMessageWindow();
+    if (!messageWindow)
+        return 1;
+    g_translationTestMainWindow = messageWindow;
+    int result = 0;
+    for (int stage = 0; stage < 3 && result == 0; ++stage) {
+        for (const bool close : {false, true}) {
+            std::atomic<bool> reached{false};
+            translation_test::LoopbackHttpServer server([&](SOCKET socket, const std::atomic<bool> &stopping) {
+                if (stage > 0 &&
+                    !translation_test::SendAll(
+                        socket, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 65536\r\n\r\n",
+                        stopping))
+                    return;
+                reached.store(true);
+                while (!stopping.load()) {
+                    if (stage == 2 && !translation_test::SendAll(socket, ".", stopping))
+                        break;
+                    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                }
+            });
+            auto transport = std::make_shared<LoopbackTranslationTransport>(server.Url());
+            TranslationCoordinator::Dependencies dependencies;
+            dependencies.translationEngine = std::make_shared<OpenAICompatibleTranslationEngine>(
+                settings, transport, std::make_shared<FakeCredentialProvider>());
+            TranslationCoordinator coordinator(dependencies);
+            g_coordinator = &coordinator;
+            TranslationLaunchContext context;
+            context.mode = TranslationSourceMode::SelectedText;
+            context.anchorRect = RECT{0, 0, 32, 16};
+            if (!server.IsValid() || !coordinator.StartText(nullptr, context, L"Held network request").started) {
+                result = 2;
+            } else {
+                const ULONGLONG arrivalDeadline = GetTickCount64() + 2000;
+                while (!reached.load() && GetTickCount64() < arrivalDeadline)
+                    PumpTranslationMessages(2);
+                HWND native = FindWindowW(L"ZenCrop.TranslationResultWindow", nullptr);
+                if (!reached.load() || !native) {
+                    result = 3;
+                } else {
+                    g_translationProbeTick = 0;
+                    const ULONGLONG start = GetTickCount64();
+                    const bool posted = close
+                                            ? PostMessageW(native, WM_CLOSE, 0, 0) != FALSE
+                                            : PostMessageW(native, WM_COMMAND, MAKEWPARAM(3115, BN_CLICKED),
+                                                           reinterpret_cast<LPARAM>(GetDlgItem(native, 3115))) != FALSE;
+                    if (!posted || !PostMessageW(messageWindow, kTranslationUiProbe, 0, 0))
+                        result = 4;
+                    while (!g_translationProbeTick && GetTickCount64() - start < 1000)
+                        PumpTranslationMessages(2);
+                    const ULONGLONG elapsed = g_translationProbeTick ? g_translationProbeTick - start : 1000;
+                    if (elapsed > 250 || transport->callbacks.load() != 1 ||
+                        (close ? IsWindow(native) != FALSE : ControlText(native, 3105) != L"Cancelled"))
+                        result = 5;
+                    std::cout << "network UI stage=" << stage << " close=" << close << " probe_ms=" << elapsed << "\n";
+                }
+            }
+            coordinator.Shutdown();
+            g_coordinator = nullptr;
+            if (result != 0)
+                break;
+        }
+    }
+    DestroyWindow(messageWindow);
+    g_translationTestMainWindow = nullptr;
+    SaveTranslationSettings(saved);
+    return result;
 }
 
 // Focus-aware hotkey suspension probe. HotkeyEdit routes HKN_SETFOCUS /
@@ -1405,15 +1519,37 @@ int TestCoordinatorMessageChain() {
     }
     translator->SetDetectedLanguageSequence({});
 
-    const auto assertUnicodeSafeSegmentation = [&](const std::wstring& text) {
+    const auto assertUnicodeSafeSegmentation = [&](const std::wstring &text, size_t clusterStart = 0,
+                                                   size_t clusterEnd = 0) {
         translator->ResetRequestHistory();
         SetWindowTextW(sourceEdit, text.c_str());
         SendMessageW(resultWindow, WM_COMMAND,
             MAKEWPARAM(3108, BN_CLICKED),
             reinterpret_cast<LPARAM>(GetDlgItem(resultWindow, 3108)));
         PumpTranslationMessages(500);
-        return ControlText(resultWindow, 3105) == L"Ready" &&
-            !HasUnsafeTranslationSegmentBoundary(translator->LastRequestSegments());
+        size_t sentUnits = 0;
+        for (const auto &batch : translator->RequestHistory()) {
+            if (HasUnsafeTranslationSegmentBoundary(batch))
+                return false;
+            for (const auto &segment : batch) {
+                if (segment.text.size() > 12000)
+                    return false;
+                sentUnits += segment.text.size();
+                if (sentUnits > clusterStart && sentUnits < clusterEnd)
+                    return false;
+            }
+        }
+        // Short emoji/math-like chunks can pass through locally and never enter
+        // RequestHistory. Check the combined result as well as sent boundaries.
+        std::wstring reassembled = ControlText(resultWindow, 3102);
+        for (size_t marker = reassembled.find(L"[fake] "); marker != std::wstring::npos;
+             marker = reassembled.find(L"[fake] "))
+            reassembled.erase(marker, 7);
+        const bool valid = ControlText(resultWindow, 3105) == L"Ready" && reassembled == text;
+        if (!valid)
+            std::cerr << "segmentation units=" << text.size() << " reconstructed=" << reassembled.size()
+                      << " batches=" << translator->RequestHistory().size() << "\n";
+        return valid;
     };
     const std::wstring surrogateBoundary = std::wstring(3999, L'a') +
         std::wstring{static_cast<wchar_t>(0xD83D), static_cast<wchar_t>(0xDE00)} + L"x";
@@ -1440,6 +1576,41 @@ int TestCoordinatorMessageChain() {
         DestroyWindow(messageWindow);
         cleanup();
         return 90;
+    }
+    for (const std::wstring &cluster :
+         {L"\U0001F1FA\U0001F1F8", L"\U0001F1FA\U0001F1F8\U0001F1E8\U0001F1F3", L"1\uFE0F\u20E3", L"\u0E01\u0E49",
+          L"\u0628\u064E", L"\u0915\u093F", L"\u05D0\u05B0", L"e\u1AB0", L"\U0001F44D\U0001F3FD"}) {
+        const size_t prefix = cluster.size() > 2 ? 3998 : 3999;
+        if (!assertUnicodeSafeSegmentation(std::wstring(prefix, L'a') + cluster + std::wstring(2200, L'b'), prefix,
+                                           prefix + cluster.size())) {
+            coordinator.Shutdown();
+            DestroyWindow(messageWindow);
+            cleanup();
+            return 569;
+        }
+    }
+    for (const size_t units : {3999u, 4000u, 4001u, 20000u}) {
+        if (!assertUnicodeSafeSegmentation(std::wstring(units, L'a'))) {
+            coordinator.Shutdown();
+            DestroyWindow(messageWindow);
+            cleanup();
+            return 565;
+        }
+    }
+
+    translator->ResetRequestHistory();
+    const std::wstring pathologicalSequence =
+        L"prefix\r\ne" + std::wstring(12000, static_cast<wchar_t>(0x0301)) + L"suffix";
+    SetWindowTextW(sourceEdit, pathologicalSequence.c_str());
+    SendMessageW(resultWindow, WM_COMMAND, MAKEWPARAM(3108, BN_CLICKED),
+                 reinterpret_cast<LPARAM>(GetDlgItem(resultWindow, 3108)));
+    PumpTranslationMessages(100);
+    if (!translator->RequestHistory().empty() || ControlText(resultWindow, 3101) != pathologicalSequence ||
+        ControlText(resultWindow, 3105).find(L"cannot be split safely") == std::wstring::npos) {
+        coordinator.Shutdown();
+        DestroyWindow(messageWindow);
+        cleanup();
+        return 560;
     }
 
     RECT retainedOcrRect = {};
@@ -1982,18 +2153,55 @@ int TestCoordinatorMessageChain() {
     bool structuredRequestTooLarge = false;
     for (const auto& requestSegments : structuredHistory) {
         largeRequestSegments += requestSegments.size();
+        size_t batchChars = 0;
         for (const auto& segment : requestSegments) {
+            batchChars += segment.text.size();
             structuredRequestTooLarge = structuredRequestTooLarge ||
                 segment.text.size() > 10000;
         }
+        structuredRequestTooLarge = structuredRequestTooLarge || batchChars > 12000;
     }
-    if (!largeStructuredStart.started || largeRequestSegments < 2 ||
-        structuredRequestTooLarge ||
-        ControlText(selectedTextWindow, 3105) != L"Ready") {
+    if (!largeStructuredStart.started || largeRequestSegments < 2 || structuredRequestTooLarge ||
+        ControlText(selectedTextWindow, 3105) != L"Ready" || ControlText(selectedTextWindow, 3101) != largeSource) {
         coordinator.Shutdown();
         DestroyWindow(messageWindow);
         cleanup();
         return 558;
+    }
+
+    auto rejectedPlan = makeStructuredSelection(L"44444444444444444444444444444444", 904);
+    nlohmann::json tooLong = nlohmann::json::parse(translation::WideToUtf8(rejectedPlan.structuredPlanJson));
+    tooLong["sourceMarkdown"] = std::string(4001, 'a');
+    tooLong["parts"] = {{{"segmentId", "t00001"}}};
+    tooLong["leaves"] = {{{"id", "t00001"}, {"blockId", "b1"}, {"text", std::string(4001, 'a')}}};
+    rejectedPlan.structuredPlanJson = Utf8ToWide(tooLong.dump());
+    const std::wstring fallbackSource(5000, L'a');
+    rejectedPlan.plainText = fallbackSource;
+    translator->ResetRequestHistory();
+    const auto fallbackStart = coordinator.StartSelection(nullptr, selectedTextContext, rejectedPlan);
+    PumpTranslationMessages(500);
+    std::wstring fallbackSent;
+    for (const auto &batch : translator->RequestHistory()) {
+        for (const auto &segment : batch)
+            fallbackSent += segment.text;
+    }
+    if (!fallbackStart.started || fallbackSent != fallbackSource ||
+        ControlText(selectedTextWindow, 3101) != fallbackSource || ControlText(selectedTextWindow, 3105) != L"Ready") {
+        coordinator.Shutdown();
+        DestroyWindow(messageWindow);
+        cleanup();
+        return 567;
+    }
+    rejectedPlan.plainText.clear();
+    translator->ResetRequestHistory();
+    const auto missingFallback = coordinator.StartSelection(nullptr, selectedTextContext, std::move(rejectedPlan));
+    PumpTranslationMessages(100);
+    if (!missingFallback.started || !translator->RequestHistory().empty() ||
+        ControlText(selectedTextWindow, 3105).find(L"no plain text is available") == std::wstring::npos) {
+        coordinator.Shutdown();
+        DestroyWindow(messageWindow);
+        cleanup();
+        return 568;
     }
     SaveTranslationSettings(selectedTextSettings);
 
@@ -7764,6 +7972,20 @@ int TestSelectionPlatformContracts() {
         return 549;
     }
 
+    for (const size_t units : {3999u, 4000u, 4001u}) {
+        const std::wstring text(units, L'a');
+        nlohmann::json boundary = nlohmann::json::parse(translation::WideToUtf8(planJson));
+        boundary["sourceMarkdown"] = std::string(units, 'a');
+        boundary["parts"] = {{{"segmentId", "t00001"}}};
+        boundary["leaves"][0]["text"] = std::string(units, 'a');
+        const bool accepted = selection::ParseStructuredSelectionPlan(
+            Utf8ToWide(boundary.dump()), token, 77, selection::SelectionContentKind::Html,
+            selection::SelectionFidelity::Semantic, plan, nullptr);
+        if (accepted != (units <= 4000) ||
+            (accepted && selection::ProjectStructuredSelection(plan, {{L"t00001", text}}) != text))
+            return 566;
+    }
+
     const std::wstring escapedPlanJson =
         L"{\"version\":1,\"token\":\"" + token +
         L"\",\"generation\":78,\"sourceMarkdown\":\"\\\\*Alpha\\\\* "
@@ -10563,6 +10785,11 @@ int main() {
     if (coordinatorResult != 0) {
         std::cerr << "coordinator contract failed: " << coordinatorResult << "\n";
         return coordinatorResult;
+    }
+    const int networkUiResult = TestNetworkCancelAndCloseUiResponsiveness();
+    if (networkUiResult != 0) {
+        std::cerr << "network cancel/close UI contract failed: " << networkUiResult << "\n";
+        return 900 + networkUiResult;
     }
     const int rollbackResult = TestCredentialRollbackContract();
     if (rollbackResult != 0) {

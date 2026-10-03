@@ -226,7 +226,7 @@ zencrop_add_simple_hermetic(test_translation_contract
              ${CMAKE_SOURCE_DIR}/third_party/webview2/include
              ${CMAKE_BINARY_DIR}/generated
     LIBS zencrop_build_flags zencrop_translate zencrop_ui zencrop_ocr zencrop_platform zencrop_core user32 shell32 shlwapi comctl32 advapi32 gdiplus dwmapi shcore uxtheme
-         ole32 oleaut32 bcrypt uiautomationcore
+         ole32 oleaut32 bcrypt uiautomationcore ws2_32
          ${CMAKE_SOURCE_DIR}/third_party/webview2/x64/WebView2Loader.dll.lib
 )
 

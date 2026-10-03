@@ -1,8 +1,16 @@
-# ZenCrop v3.1.7
+# ZenCrop v3.1.8
 
 [中文文档](doc/README_zh.md)
 
 An independent, **enhanced** reimplementation of [PowerToys Crop And Lock](https://github.com/microsoft/PowerToys/tree/main/src/modules/CropAndLock/), with rich screenshot annotation, long screenshot, multi-engine OCR, and OCR Dashboard.
+
+## What's new in v3.1.8
+
+- **Unified Translation Engine Contracts**: Consolidated `DeepSeekTranslationEngine` into the shared `OpenAICompatibleTranslationEngine` (eliminating 650+ lines of duplicate wire code) while fully preserving DeepSeek-specific wire protocol behavior and vendor thinking dialects; unified HTTP error classification across all providers (HTTP 0 mapped to `Network` and HTTP 402 mapped to `Balance` / insufficient quota); stabilized batch retry quotas and cross-round totals.
+- **Native Async WinHTTP and Sub-250ms Responsive Cancellation**: Replaced synchronous WinHTTP operations with native `WINHTTP_FLAG_ASYNC` driven by `HttpStatusCallback` and `AwaitHttpCompletion`. Cancelling a translation, closing the translation window, or closing provider settings no longer freezes UI message pumps or blocks on uncooperative network I/O. Decoupled cancellation events from handle closing to eliminate multi-threaded handle-racing defects, and registered `WINHTTP_OPTION_CONTEXT_VALUE` prior to sending to guarantee clean handle draining on `HANDLE_CLOSING`.
+- **Unicode Grapheme-Aware Segmentation and Oversized Structured Leaf Splitting**: Fixed text splitting boundaries across complex Unicode sequences in structured preview selections. Browser-side extraction now leverages native `Intl.Segmenter("und", {granularity: "grapheme"})` to reliably protect regional indicator pairs (flags), keycaps, emoji ZWJ sequences, and complex combining scripts (Thai, Arabic, Devanagari, Hebrew), safely falling back to plain-text translation if a pathological sequence cannot be split. Native coordinator dynamically loads system `icu.dll` (`UBRK_CHARACTER`) for boundary checking and enforces a 12,000-character whole-batch budget pre-check to reject local overflow upfront without wasted network retries.
+- **Test Suite Hardening**: Extracted shared `LoopbackHttpServer` fixture for protocol and GUI cancellation tests; added full end-to-end WebView DOM extraction, complex script boundary, and async cancellation probe tests.
+- **Version Source Bumped**: Product version source officially elevated to `v3.1.8` across `CMakeLists.txt`, resources, architecture baseline, and documentation.
 
 ## What's new in v3.1.7
 
