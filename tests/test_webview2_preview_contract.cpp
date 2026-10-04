@@ -108,6 +108,158 @@ static bool WaitForScriptInt(
     return false;
 }
 
+static bool RunEditorPlacementRegressions(OcrMarkdownPreviewHost& host, std::wstring& error) {
+    auto check = [&](const std::wstring& script, const wchar_t* label) {
+        std::wstring result;
+        if (ExecuteScriptSync(host, script, result) && _wtoi(result.c_str()) == 1) return true;
+        error = std::wstring(label) + L"; result=" + result;
+        return false;
+    };
+    host.SetBounds({ 0, 0, 640, 110 });
+    if (!WaitForScriptInt(host, L"window.innerHeight <= 130 ? 1 : 0", 1)) {
+        error = L"Editor placement viewport did not resize";
+        return false;
+    }
+    // Start with no toolbar, then use the browser's coordinate hit test for the
+    // drag endpoint. Assigning the entire final Range would hide a layout shift.
+    if (!check(LR"JS((function(){
+      var root=document.querySelector('.ocr-preview-document-editor');
+      var body=root&&root.querySelector('.ocr-preview-rich-editor-body');
+      if(!body)return 10;
+      body.focus();
+      body.style.fontSize='18px';body.style.lineHeight='27px';
+      body.innerHTML='<p>第一行文字<br>前文，整个人的身体素质开始下降，后文。</p>';
+      body.scrollTop=0;
+      var text=body.firstElementChild.childNodes[2];
+      var phrase='整个人的身体素质开始下降';
+      var start=text.nodeValue.indexOf(phrase);
+      var range=document.createRange();range.setStart(text,start);range.collapse(true);
+      var selection=getSelection();selection.removeAllRanges();selection.addRange(range);
+      body.dispatchEvent(new MouseEvent('mouseup',{bubbles:true}));
+      if(root.querySelector('.ocr-preview-selection-toolbar'))return 11;
+      var target=range.cloneRange();target.setEnd(text,start+phrase.length);
+      var rect=target.getBoundingClientRect(), top=body.getBoundingClientRect().top;
+      body.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,button:0}));
+      range.setEnd(text,start+1);selection.removeAllRanges();selection.addRange(range);
+      document.dispatchEvent(new Event('selectionchange'));
+      // A descendant losing focus is not the window losing focus.
+      text.parentElement.dispatchEvent(new FocusEvent('blur'));
+      document.dispatchEvent(new Event('selectionchange'));
+      if(body.getBoundingClientRect().top!==top)return 12;
+      if(root.querySelector('.ocr-preview-selection-toolbar'))return 13;
+      var hit=document.caretRangeFromPoint(rect.right-1,(rect.top+rect.bottom)/2);
+      if(!hit||hit.startContainer!==text)return 14;
+      selection.extend(hit.startContainer,hit.startOffset);
+      document.dispatchEvent(new Event('selectionchange'));
+      if(body.getBoundingClientRect().top!==top||selection.toString()!==phrase)return 15;
+      document.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,button:0}));
+      return selection.toString()===phrase&&root.querySelector('.ocr-preview-selection-toolbar')?1:16;
+    })())JS", L"First drag changed the browser's text hit target")) return false;
+
+    // Tables have another toolbar entrance through focusin. It must obey the
+    // same gesture freeze even when a cell passes focus back to the body.
+    if (!check(LR"JS((function(){
+      var body=document.querySelector('.ocr-preview-document-editor .ocr-preview-rich-editor-body');
+      var selection=getSelection(),range=document.createRange();
+      range.selectNodeContents(body.firstElementChild);range.collapse(true);
+      selection.removeAllRanges();selection.addRange(range);
+      body.dispatchEvent(new MouseEvent('mouseup',{bubbles:true}));
+      body.innerHTML='<table><thead><tr><th>Head</th></tr></thead><tbody><tr><td>Cell</td></tr></tbody></table>';
+      body.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertFromPaste'}));
+      var cell=body.querySelector('td'),top=body.getBoundingClientRect().top;
+      cell.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,button:0}));
+      cell.focus();body.focus();
+      range.selectNodeContents(cell);selection.removeAllRanges();selection.addRange(range);
+      document.dispatchEvent(new Event('selectionchange'));
+      if(body.getBoundingClientRect().top!==top||document.querySelector('.ocr-preview-table-toolbar'))return 10;
+      document.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,button:0}));
+      return document.querySelector('.ocr-preview-table-toolbar')?1:11;
+    })())JS", L"Table focus bypassed the selection gesture freeze")) return false;
+
+    // Off-screen selections retain a dock's footprint, so scrolling cannot turn
+    // it into an overlay or change the visible body's position. Returning to the
+    // selection must make the same toolbar usable again.
+    if (!check(LR"JS((function(){
+      var body=document.querySelector('.ocr-preview-document-editor .ocr-preview-rich-editor-body');
+      body.innerHTML='<p>First line<br>Second line<br>'+('Later line<br>').repeat(30)+'</p>';
+      var range=document.createRange();range.selectNodeContents(body.firstElementChild.childNodes[2]);
+      getSelection().removeAllRanges();getSelection().addRange(range);
+      body.scrollTop=0;body.dispatchEvent(new MouseEvent('mouseup',{bubbles:true}));
+      window.placementBar=document.querySelector('.ocr-preview-selection-toolbar');
+      if(!placementBar||!placementBar.classList.contains('is-docked'))return 10;
+      window.placementBodyTop=body.getBoundingClientRect().top;
+      body.scrollTop=140;
+      return 1;
+    })())JS", L"Off-screen dock setup failed")) return false;
+    if (!WaitForScriptInt(host, LR"JS((function(){
+      var body=document.querySelector('.ocr-preview-document-editor .ocr-preview-rich-editor-body');
+      return placementBar.classList.contains('is-docked')&&placementBar.style.visibility==='hidden'&&
+        body.getBoundingClientRect().top===placementBodyTop&&body.scrollTop===140?1:0;
+    })())JS", 1)) {
+        error = L"Scrolling released or exposed an off-screen docked toolbar";
+        return false;
+    }
+    // Put the first line in view even when the Source viewport is very short.
+    if (!check(LR"JS((function(){
+      var body=document.querySelector('.ocr-preview-document-editor .ocr-preview-rich-editor-body');
+      var range=document.createRange();range.selectNodeContents(body.firstElementChild.firstChild);
+      getSelection().removeAllRanges();getSelection().addRange(range);body.scrollTop=0;
+      body.dispatchEvent(new Event('scroll'));return 1;
+    })())JS", L"Returning to the selection failed")) return false;
+    if (!WaitForScriptInt(host, L"placementBar.style.visibility===''?1:0", 1)) {
+        error = L"Docked toolbar did not return with the visible selection";
+        return false;
+    }
+
+    host.SetBounds({ 0, 0, 300, 260 });
+    if (!WaitForScriptInt(host, L"window.innerWidth <= 310 && window.innerHeight > 150 ? 1 : 0", 1)) {
+        error = L"Narrow editor viewport did not resize";
+        return false;
+    }
+    if (!check(LR"JS((function(){
+      var body=document.querySelector('.ocr-preview-document-editor .ocr-preview-rich-editor-body');
+      body.innerHTML='<p>'+'前'.repeat(28)+'整个人的身体素质开始下降'.repeat(2)+'后'.repeat(20)+'</p>';
+      body.scrollTop=0;
+      var text=body.firstElementChild.firstChild,range=document.createRange();
+      range.setStart(text,28);range.setEnd(text,52);
+      getSelection().removeAllRanges();getSelection().addRange(range);
+      body.dispatchEvent(new MouseEvent('mouseup',{bubbles:true}));
+      return document.querySelector('.ocr-preview-selection-toolbar')?1:10;
+    })())JS", L"Resize anchor setup failed")) return false;
+    host.SetBounds({ 0, 0, 640, 260 });
+    if (!WaitForScriptInt(host, LR"JS((function(){
+      var bar=document.querySelector('.ocr-preview-selection-toolbar');
+      if(!bar||window.innerWidth<=310||bar.style.visibility==='hidden')return 0;
+      var anchor=getSelection().getRangeAt(0).getBoundingClientRect(),rect=bar.getBoundingClientRect();
+      return rect.bottom<=anchor.top||rect.top>=anchor.bottom||rect.right<=anchor.left||
+        rect.left>=anchor.right?1:0;
+    })())JS", 1)) {
+        error = L"Resized toolbar overlapped the reflowed selection";
+        return false;
+    }
+    if (!check(L"(window.placementWidth=window.innerWidth,1)", L"Zoom viewport setup failed")) return false;
+    for (double zoom : { 1.25, 1.0 }) {
+        host.SetZoomFactor(zoom);
+        if (!WaitForScriptInt(host, L"(function(){if(Math.abs(window.innerWidth*" +
+                std::to_wstring(zoom) + L"-placementWidth)>2)return 0;" + LR"JS(
+          var bar=document.querySelector('.ocr-preview-selection-toolbar');
+          if(!bar||bar.style.visibility==='hidden')return 0;
+          var anchor=getSelection().getRangeAt(0).getBoundingClientRect(),rect=bar.getBoundingClientRect();
+          return rect.top>=0&&rect.bottom<=window.innerHeight&&
+            (rect.bottom<=anchor.top||rect.top>=anchor.bottom||rect.right<=anchor.left||
+            rect.left>=anchor.right)?1:0;
+        })())JS", 1)) {
+            error = L"Zoomed toolbar overlapped the current selection";
+            return false;
+        }
+    }
+    host.SetBounds({ 0, 0, 640, 480 });
+    return check(LR"JS((function(){
+      var body=document.querySelector('.ocr-preview-document-editor .ocr-preview-rich-editor-body');
+      body.style.fontSize='';body.style.lineHeight='';return 1;
+    })())JS", L"Editor placement cleanup failed");
+}
+
 static bool WriteTestBmp(
     const std::wstring& path,
     int width,
@@ -222,7 +374,13 @@ static bool RunWebAssetGuardFixtures(std::wstring& error, bool& skipped) {
     skipped = false;
     namespace fs = std::filesystem;
     const fs::path source = fs::path(GetExeDirForTest()) / L"webview_assets";
-    const fs::path base = fs::path(GetExeDirForTest()) / L"web_asset_guard_fixtures";
+    // Per-process root. These fixtures wipe and rebuild their tree on entry, so
+    // a shared name let a second instance delete the tree the first one was still
+    // verifying -- which surfaced as either "rejected a complete trusted fixture"
+    // or a case-variant rename failure, depending on the interleaving. A gate
+    // that can be reddened by an unrelated concurrent run is not a gate.
+    const fs::path base = fs::path(GetExeDirForTest()) /
+        (L"web_asset_guard_fixtures_" + std::to_wstring(GetCurrentProcessId()));
     std::error_code ec;
     fs::remove_all(base, ec);
     if (!fs::is_directory(source, ec)) {
@@ -1237,6 +1395,347 @@ int wmain() {
         DestroyWindow(hwnd);
         CoUninitialize();
         std::wcerr << L"Compact Preview table did not fit and wrap natural-language cells\n";
+        return 1;
+    }
+
+    // The floating selection toolbar used to take its preferred side as a hard
+    // instruction and only clamp the result, so any surface too short to host it
+    // beside the selection -- the selection-translation Source card is the
+    // shortest real one, and its first line sits at padding-top -- pinned the
+    // toolbar to the top margin, right on top of the text it belonged to.
+    // Placement must arbitrate a free side, and this belongs to the default gate
+    // because the defect is reachable from the always-on translation window.
+    host.RenderMarkdown(4, L"First line of the source text\n\nSecond paragraph", true);
+    host.StartDocumentEditing();
+    if (!WaitForScriptInt(
+            host,
+            LR"JS((function(){return document.querySelector('.ocr-preview-document-editor .ocr-preview-rich-editor-body')?1:0;})())JS",
+            1)) {
+        host.Destroy();
+        DestroyWindow(hwnd);
+        CoUninitialize();
+        std::wcerr << L"Document rich editor did not open for the selection toolbar placement contract.\n";
+        return 1;
+    }
+    {
+        std::wstring result;
+        ExecuteScriptSync(
+            host,
+            LR"JS((function(){
+              var root=document.querySelector('.ocr-preview-document-editor');
+              var body=document.querySelector('.ocr-preview-document-editor .ocr-preview-rich-editor-body');
+              if(!root||!body||!body.firstElementChild)return 10;
+              body.focus();
+              var range=document.createRange();
+              range.selectNodeContents(body.firstElementChild);
+              getSelection().removeAllRanges();
+              getSelection().addRange(range);
+              body.dispatchEvent(new MouseEvent('mouseup',{bubbles:true}));
+              var bar=root.querySelector('.ocr-preview-selection-toolbar');
+              if(!bar)return 11;
+              var anchorRect=range.getBoundingClientRect();
+              var barRect=bar.getBoundingClientRect();
+              if(barRect.width<=0||barRect.height<=0)return 12;
+              var separated=barRect.bottom<=anchorRect.top||barRect.top>=anchorRect.bottom||
+                barRect.right<=anchorRect.left||barRect.left>=anchorRect.right;
+              if(!separated)return 13;
+              if(barRect.top<0||barRect.bottom>window.innerHeight)return 14;
+              return 1;
+            })())JS",
+            result);
+        if (_wtoi(result.c_str()) != 1) {
+            host.Destroy();
+            DestroyWindow(hwnd);
+            CoUninitialize();
+            std::wcerr << L"Selection toolbar covered its own anchor instead of arbitrating a free side; result=" +
+                result + L"\n";
+            return 1;
+        }
+    }
+
+    // A Chinese IME commits the slash as composition text: compositionstart, then
+    // an input event flagged isComposing, then compositionend. The input path
+    // bails out on that flag, so if the commit path does not re-evaluate the
+    // slash context the "/" lands in the document and the menu never opens.
+    // Simulate the real Chromium ordering and require the menu to appear.
+    if (!WaitForScriptInt(
+            host,
+            LR"JS((function(){
+              var root=document.querySelector('.ocr-preview-document-editor');
+              var body=document.querySelector('.ocr-preview-document-editor .ocr-preview-rich-editor-body');
+              if(!root||!body)return 0;
+              var paragraph=document.createElement('p');
+              // slashContext() only fires for a caret inside a text node, and an
+              // empty <p> has none, so give it a real one to compose into.
+              var textNode=document.createTextNode('');
+              paragraph.appendChild(textNode);
+              body.appendChild(paragraph);
+              body.focus();
+              var selection=getSelection();
+              var range=document.createRange();
+              range.setStart(textNode,0);
+              range.collapse(true);
+              selection.removeAllRanges();
+              selection.addRange(range);
+              body.dispatchEvent(new CompositionEvent('compositionstart',{data:'',bubbles:true}));
+              // Chromium commits composition text by mutating the text node.
+              textNode.nodeValue='/';
+              var committed=document.createRange();
+              committed.setStart(textNode,1);
+              committed.collapse(true);
+              selection.removeAllRanges();
+              selection.addRange(committed);
+              paragraph.dispatchEvent(new InputEvent('input',{inputType:'insertCompositionText',
+                data:'/',isComposing:true,bubbles:true,cancelable:true}));
+              body.dispatchEvent(new CompositionEvent('compositionend',{data:'/',bubbles:true}));
+              return 1;
+            })())JS",
+            1)) {
+        host.Destroy();
+        DestroyWindow(hwnd);
+        CoUninitialize();
+        std::wcerr << L"Could not drive the IME slash composition sequence.\n";
+        return 1;
+    }
+    if (!WaitForScriptInt(
+            host,
+            LR"JS((function(){
+              var menu=document.querySelector('.ocr-preview-slash-menu');
+              if(!menu)return 0;
+              return menu.textContent.indexOf('Heading 1')>=0?1:0;
+            })())JS",
+            1, 3000)) {
+        host.Destroy();
+        DestroyWindow(hwnd);
+        CoUninitialize();
+        std::wcerr << L"Slash menu did not open for a slash committed by the IME.\n";
+        return 1;
+    }
+
+    // Dragging a selection fires selectionchange per pointer move, and the anchor
+    // rect of a growing selection sweeps across the placement boundary. The
+    // toolbar must stay where it first appeared for the whole gesture and settle
+    // exactly once on release, instead of jumping between overlay and docked row.
+    {
+        std::wstring result;
+        ExecuteScriptSync(
+            host,
+            LR"JS((function(){
+              var root=document.querySelector('.ocr-preview-document-editor');
+              var body=document.querySelector('.ocr-preview-document-editor .ocr-preview-rich-editor-body');
+              if(!root||!body||body.children.length<2)return 10;
+              function selectNode(node){
+                body.focus();
+                var range=document.createRange();
+                range.selectNodeContents(node);
+                var selection=getSelection();
+                selection.removeAllRanges();
+                selection.addRange(range);
+                body.dispatchEvent(new MouseEvent('mouseup',{bubbles:true}));
+              }
+              function place(){
+                var bar=root.querySelector('.ocr-preview-selection-toolbar');
+                if(!bar)return null;
+                return bar.classList.contains('is-docked')?'docked':bar.style.top;
+              }
+              var first=body.children[0];
+              var second=body.children[1];
+              // A slash menu from an earlier check suppresses the selection
+              // toolbar, so park the caret in a slash-free block and let the
+              // editor close it before the drag starts.
+              selectNode(second);
+              if(document.querySelector('.ocr-preview-slash-menu'))return 14;
+              selectNode(first);
+              body.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,button:0}));
+              selectNode(first);
+              var initial=place();
+              if(initial===null)return 11;
+              var moved=false;
+              for(var i=0;i<12;i++){
+                selectNode(i%2?second:first);
+                if(place()!==initial)moved=true;
+              }
+              if(moved)return 12;
+              document.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,button:0}));
+              if(place()===null)return 13;
+              return 1;
+            })())JS",
+            result);
+        if (_wtoi(result.c_str()) != 1) {
+            host.Destroy();
+            DestroyWindow(hwnd);
+            CoUninitialize();
+            std::wcerr << L"Selection toolbar moved while the pointer was still down; result=" <<
+                result + L"\n";
+            return 1;
+        }
+    }
+
+    // The docking hysteresis has to be judged against the geometry the surface
+    // would have when undocked, because the docked row is in the flow and pushes
+    // the body down by its own height. Measuring the shifted rect instead makes
+    // the release test self-fulfilling: the row leaves, the text rises, the next
+    // update docks again, and the release places the toolbar back over the line
+    // it was hiding. Drive a genuinely short viewport and require the second
+    // line to stay docked and non-overlapping across repeated updates.
+    host.SetBounds({ 0, 0, 640, 110 });
+    PumpFor(200);
+    {
+        // Returns 0 when the surface never appeared at all, 1 when the short
+        // viewport and the blocks are in place. Asserted because a silently
+        // absent toolbar would make the whole dock contract pass without running.
+        if (!WaitForScriptInt(
+                host,
+                LR"JS((function(){
+                  var root=document.querySelector('.ocr-preview-document-editor');
+                  var body=document.querySelector('.ocr-preview-document-editor .ocr-preview-rich-editor-body');
+                  if(!root||!body)return 0;
+                  if(window.innerHeight>130)return 0;
+                  if(body.querySelectorAll('p').length<2)return 0;
+                  body.focus();
+                  var blocks=body.querySelectorAll('p');
+                  var range=document.createRange();
+                  range.selectNodeContents(blocks[1]);
+                  var selection=getSelection();
+                  selection.removeAllRanges();
+                  selection.addRange(range);
+                  body.dispatchEvent(new MouseEvent('mouseup',{bubbles:true}));
+                  return root.querySelector('.ocr-preview-selection-toolbar')?1:0;
+                })())JS",
+                1, 5000)) {
+            host.SetBounds({ 0, 0, 640, 480 });
+            PumpFor(200);
+            host.Destroy();
+            DestroyWindow(hwnd);
+            CoUninitialize();
+            std::wcerr << L"Short-viewport dock setup did not produce a selection toolbar.\n";
+            return 1;
+        }
+        // The state settles asynchronously: the browser delivers one more
+        // selectionchange after the script returns, and that is where the docked
+        // row pushes the body down by its own height. Poll across several frames
+        // instead of asserting inside a single synchronous pass.
+        //
+        // The contract is "the placement settles and never covers the selection",
+        // not "the implementation must choose dock": floating beside the second
+        // line would be a legitimate and better answer if a future metric change
+        // makes room for it. Pinning the mode would turn a spacing change into a
+        // false red, which is how the earlier first-line-only sample managed to
+        // hide the oscillation in the first place.
+        int first = 0;
+        // -1 is "nothing wrong yet". It must not be 0, because state 0 is itself
+        // a failure: recording the offending state into a 0-initialised value
+        // made "the toolbar disappeared" read as a clean run.
+        int offendingState = -1;
+        std::wstring result;
+        for (int pass = 0; pass < 6; ++pass) {
+            PumpFor(60);
+            ExecuteScriptSync(
+                host,
+                LR"JS((function(){
+                  var root=document.querySelector('.ocr-preview-document-editor');
+                  var body=document.querySelector('.ocr-preview-document-editor .ocr-preview-rich-editor-body');
+                  if(!root||!body)return 0;
+                  // Each pass must actually re-run placement, otherwise nothing
+                  // is being observed: updateContextUi only runs on selection
+                  // change, mouseup, keyup, scroll or resize.
+                  body.dispatchEvent(new MouseEvent('mouseup',{bubbles:true}));
+                  var bar=root.querySelector('.ocr-preview-selection-toolbar');
+                  if(!bar)return 0;
+                  if(bar.classList.contains('is-docked'))return 1;
+                  var blocks=body.querySelectorAll('p');
+                  if(blocks.length<2)return 0;
+                  var a=blocks[1].getBoundingClientRect();
+                  var b=bar.getBoundingClientRect();
+                  var separated=b.bottom<=a.top||b.top>=a.bottom||b.right<=a.left||b.left>=a.right;
+                  return separated?2:3;
+                })())JS",
+                result);
+            const int state = _wtoi(result.c_str());
+            if (pass == 0) first = state;
+            // 0 is "the surface is gone", not a legal alternative: it must fail
+            // on its own instead of being folded into the pass/fail bookkeeping.
+            // 3 is the regression (floating and overlapping). Any other change
+            // from the settled state is a flip.
+            if (state == 0 || state == 3 || (pass > 0 && state != first)) offendingState = state;
+        }
+        host.SetBounds({ 0, 0, 640, 480 });
+        PumpFor(200);
+        if (offendingState >= 0) {
+            host.Destroy();
+            DestroyWindow(hwnd);
+            CoUninitialize();
+            std::wcerr << L"Selection toolbar never settled on the second line of a short viewport; "
+                L"state=0 (no toolbar) / 1 (docked) / 2 (floating, clear) / 3 (floating, overlapping), first=" <<
+                first << L" offender=" << offendingState << L"\n";
+            return 1;
+        }
+    }
+
+    // A reused selection toolbar must still recompute its pressed state, or the
+    // B highlight from a bold selection stays lit over the next plain selection.
+    {
+        std::wstring result;
+        ExecuteScriptSync(
+            host,
+            LR"JS((function(){
+              var root=document.querySelector('.ocr-preview-document-editor');
+              var body=document.querySelector('.ocr-preview-document-editor .ocr-preview-rich-editor-body');
+              if(!root||!body)return 10;
+              body.focus();
+              var paragraph=document.createElement('p');
+              var strong=document.createElement('strong');
+              strong.textContent='Bold run';
+              paragraph.appendChild(strong);
+              paragraph.appendChild(document.createTextNode(' plain run'));
+              body.appendChild(paragraph);
+              function select(node){
+                var range=document.createRange();
+                range.selectNodeContents(node);
+                var selection=getSelection();
+                selection.removeAllRanges();
+                selection.addRange(range);
+                body.dispatchEvent(new MouseEvent('mouseup',{bubbles:true}));
+              }
+              function boldLit(){
+                var bar=root.querySelector('.ocr-preview-selection-toolbar');
+                if(!bar)return -1;
+                var node=null;
+                bar.querySelectorAll('button').forEach(function(b){
+                  if(b.textContent==='B')node=b;
+                });
+                if(!node)return -2;
+                return node.classList.contains('is-active')&&node.getAttribute('aria-pressed')==='true'?1:0;
+              }
+              select(strong);
+              if(boldLit()!==1)return 11;
+              var before=root.querySelector('.ocr-preview-selection-toolbar');
+              select(paragraph.lastChild);
+              var after=root.querySelector('.ocr-preview-selection-toolbar');
+              if(!after)return 12;
+              if(boldLit()!==0)return 13;
+              // The toolbar must have been reused, not rebuilt, for this to be a
+              // real refresh of a live surface.
+              if(before&&after&&before!==after)return 14;
+              return 1;
+            })())JS",
+            result);
+        if (_wtoi(result.c_str()) != 1) {
+            host.Destroy();
+            DestroyWindow(hwnd);
+            CoUninitialize();
+            std::wcerr << L"Reused selection toolbar kept a stale pressed state; result=" <<
+                result << L"\n";
+            return 1;
+        }
+    }
+
+    std::wstring placementError;
+    if (!RunEditorPlacementRegressions(host, placementError)) {
+        host.Destroy();
+        DestroyWindow(hwnd);
+        CoUninitialize();
+        std::wcerr << placementError << L"\n";
         return 1;
     }
 

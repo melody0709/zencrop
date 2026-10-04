@@ -29,6 +29,8 @@
     var snapshotTimer = 0;
     var undoStack = [];
     var redoStack = [];
+    var contextUiFrame = 0;
+    var selecting = false;
     var listeners = [];
     var actionConfig = null;
     var activeTable = null;
@@ -872,7 +874,7 @@
     }
 
     function showTableToolbar() {
-      if (!activeTable || !activeCell || !body.contains(activeTable)) return;
+      if (selecting || !activeTable || !activeCell || !body.contains(activeTable)) return;
       var size = tableAsset.dimensions(activeTable);
       ui.showTableToolbar(activeTable.getBoundingClientRect(), {
         canDeleteRow: tableAsset.rowIndexOf(activeTable, activeCell) > 0 && size.rows > 1,
@@ -988,6 +990,7 @@
 
     var ui = uiAsset.create({
       host: options.bodyHost,
+      bodyNode: body,
       commands: commandDefinitions,
       executeCommand: executeCommand,
       insertTable: insertTable,
@@ -1007,7 +1010,7 @@
     }
 
     function updateContextUi() {
-      if (destroyed || composing || !body.isConnected) return;
+      if (destroyed || composing || selecting || !body.isConnected) return;
       if (ui.slashOpen()) {
         var slash = slashContext();
         if (slash) ui.showSlash(slash);
@@ -1042,6 +1045,23 @@
       if (context) ui.showSlash(context);
       else ui.closeSlash();
     }
+
+    // The selection toolbar is positioned in viewport coordinates, so it has to
+    // follow the text when the body scrolls. Scrolling fires no selectionchange,
+    // which used to leave the toolbar stranded over unrelated lines (most
+    // visible in the short selection-translation Source surface). Coalesce the
+    // bursts into one update per frame.
+    function scheduleContextUi() {
+      if (destroyed || contextUiFrame) return;
+      contextUiFrame = window.requestAnimationFrame(function () {
+        contextUiFrame = 0;
+        updateContextUi();
+      });
+    }
+    // Capture nested and ancestor scrolling too: block editors scroll with the
+    // preview, and wide tables have their own horizontal scroll container.
+    listen(document, "scroll", scheduleContextUi, true);
+    listen(window, "resize", scheduleContextUi);
 
     function setActions(config) {
       actionConfig = config || null;
@@ -1095,7 +1115,12 @@
       recordSnapshot();
       clearSnapshotTimer();
       composing = true;
-      ui.closeSlash();
+      // The slash menu survives an IME session on purpose. Chromium keeps the
+      // composing text out of the committed text node, so the query the menu was
+      // built from and the caret it is anchored to are both still valid; closing
+      // it here only made it flash once per keystroke and reset the highlighted
+      // row. The commit path re-evaluates the query. The selection toolbar does
+      // go stale, so that one is closed.
       ui.closeSelectionToolbar();
       notifyState();
     });
@@ -1109,6 +1134,11 @@
       window.setTimeout(function () {
         if (destroyed || composing) return;
         if (!tryCurrentBlockInputRule()) recordSnapshot();
+        // The input path skips composing events, so an IME-committed slash would
+        // otherwise never reach updateSlash and the menu would stay closed. Run
+        // it after the block rule, which may have replaced the block outright,
+        // and let it also close a menu whose query the commit invalidated.
+        updateSlash();
         updateContextUi();
       }, 0);
     });
@@ -1150,20 +1180,48 @@
       }
     });
     listen(body, "pointerdown", function (event) {
+      if (event.button !== 0) return;
+      // Freeze even the first appearance: inserting a docked row while the
+      // pointer is down moves the text and changes the next browser hit test.
+      selecting = true;
       var cell = tableAsset.cellFrom(event.target);
-      if (!cell || !body.contains(cell) || event.button !== 0) return;
+      if (!cell || !body.contains(cell)) return;
       activeTable = tableAsset.tableFrom(cell);
       activeCell = cell;
       tableAnchorCell = cell;
       tableDragging = true;
       setTableSelection(activeTable, [cell], cell);
-    });
+    }, true);
     listen(body, "pointerover", function (event) {
       if (!tableDragging || !activeTable || !tableAnchorCell) return;
       var cell = tableAsset.cellFrom(event.target);
       if (!cell || tableAsset.tableFrom(cell) !== activeTable) return;
       setTableSelection(activeTable, tableAsset.rangeCells(activeTable, tableAnchorCell, cell), cell);
     });
+    // Settle the floating surfaces once the gesture ends. This capture-phase
+    // pointerup runs before the body mouseup handler, so the release places the
+    // toolbar itself and the selectionchange that follows confirms the same
+    // placement instead of moving it a second time. A drag released outside the
+    // window never delivers pointerup, and window blur is what actually covers
+    // that for a mouse; pointercancel and lostpointercapture cover touch and pen,
+    // which have implicit capture and can end a gesture without either.
+    function endSelectionGesture() {
+      if (!selecting) return false;
+      selecting = false;
+      return true;
+    }
+    listen(document, "pointerup", function () {
+      if (endSelectionGesture()) updateContextUi();
+    }, true);
+    function cancelSelectionGesture() {
+      tableDragging = false;
+      if (endSelectionGesture()) scheduleContextUi();
+    }
+    listen(document, "pointercancel", cancelSelectionGesture, true);
+    // Element blur must not end a drag: table cells can transfer focus back to
+    // the editable body while the pointer is still down.
+    listen(window, "blur", cancelSelectionGesture);
+    listen(body, "lostpointercapture", cancelSelectionGesture, true);
     listen(document, "pointerup", function () { tableDragging = false; }, true);
     listen(document, "selectionchange", function () {
       if (document.activeElement === body || body.contains(document.activeElement)) rememberSelection();
@@ -1202,6 +1260,10 @@
       cleanup: function () {
         if (destroyed) return;
         destroyed = true;
+        if (contextUiFrame) {
+          window.cancelAnimationFrame(contextUiFrame);
+          contextUiFrame = 0;
+        }
         clearSnapshotTimer();
         ui.destroy();
         while (listeners.length) listeners.pop()();

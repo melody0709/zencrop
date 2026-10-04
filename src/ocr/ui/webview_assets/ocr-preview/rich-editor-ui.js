@@ -19,7 +19,9 @@
     var pickerColumns = 3;
     var pickerDragging = false;
     var selectionToolbar = null;
+    var selectionToolbarKey = null;
     var tableToolbar = null;
+    var tableToolbarState = null;
     var linkPopover = null;
     var linkInput = null;
     var actions = null;
@@ -48,24 +50,143 @@
       return node;
     }
 
-    function clampFloating(node, rect, below) {
-      if (!node || !rect) return;
+    // Floating surfaces (slash menu, link popover, selection and table
+    // toolbars) are laid out in viewport coordinates against an anchor rect.
+    // A hard-coded direction plus a plain clamp could pin a surface on top of
+    // its own anchor: the selection-translation Source card is only ~97 CSS px
+    // tall with its first text line at padding-top, so "always open upward"
+    // degenerated to y = margin and covered the text it belonged to. Arbitration
+    // now tries the preferred side first and falls back to the other one; when
+    // neither side fits, the caller is told so it can dock instead of covering.
+    var kFloatingMargin = 8;
+    var kFloatingGap = 6;
+    // Re-deciding the mode on every anchor change made a surface that sits
+    // within one line of the boundary jump between the overlay and the docked
+    // row while the user dragged a selection across a line break. Staying
+    // docked is always allowed; leaving it needs real room, not the two or three
+    // pixels by which a short surface grazes the threshold.
+    var kDockReleaseMargin = 12;
+
+    function clearFloatingPlacement(node) {
+      if (!node) return;
+      node.classList.remove("opens-up");
+      node.classList.remove("is-docked");
+    }
+
+    // Returns true only when the surface was placed clear of the anchor rect.
+    // A false result means every side overlapped or left the viewport, so the
+    // clamped fallback below is a last resort rather than a valid placement.
+    function clampFloating(node, rect, preferBelow, extra) {
+      if (!node || !rect) return false;
+      var docked = node.classList.contains("is-docked");
+      var body = options.bodyNode;
+      var scrollTop = body ? body.scrollTop : 0;
       node.style.left = "0px";
       node.style.top = "0px";
-      node.classList.remove("opens-up");
-      var margin = 8;
-      var gap = 6;
+      clearFloatingPlacement(node);
       var bounds = node.getBoundingClientRect();
-      var roomBelow = window.innerHeight - rect.bottom - margin;
-      var roomAbove = rect.top - margin;
-      var opensUp = below === false || (below !== true && roomBelow < bounds.height && roomAbove > roomBelow);
-      var top = opensUp ? rect.top - bounds.height - gap : rect.bottom + gap;
+      var margin = kFloatingMargin;
+      var gap = kFloatingGap;
+      var topAbove = rect.top - gap - bounds.height;
+      var topBelow = rect.bottom + gap;
+      var minTop = margin + (extra || 0);
+      var maxTop = window.innerHeight - bounds.height - margin - (extra || 0);
+      var order = preferBelow === true ? [topBelow, topAbove] : [topAbove, topBelow];
+      var chosen = null;
+      for (var i = 0; i < order.length; i++) {
+        if (order[i] >= minTop && order[i] <= maxTop) { chosen = order[i]; break; }
+      }
+      var cleared = chosen !== null;
+      // Measuring the overlay temporarily removes its docked styling. A failed
+      // release must restore that row before returning, including scroll clamping
+      // caused by the temporary change in the body's height.
+      if (!cleared && docked) {
+        node.classList.add("is-docked");
+        node.style.left = "";
+        node.style.top = "";
+        if (body) body.scrollTop = scrollTop;
+        return false;
+      }
+      if (chosen === null) chosen = order[0];
+      var opensUp = cleared ? chosen === topAbove : order[0] === topAbove;
       var left = rect.left + (rect.width - bounds.width) / 2;
       left = Math.max(margin, Math.min(left, Math.max(margin, window.innerWidth - bounds.width - margin)));
-      top = Math.max(margin, Math.min(top, Math.max(margin, window.innerHeight - bounds.height - margin)));
       node.classList.toggle("opens-up", opensUp);
       node.style.left = Math.round(left) + "px";
-      node.style.top = Math.round(top) + "px";
+      node.style.top = Math.round(Math.max(margin, Math.min(chosen,
+        Math.max(margin, window.innerHeight - bounds.height - margin)))) + "px";
+      return cleared;
+    }
+
+    // The anchor rect as it would be measured with no docked row in the flow.
+    function undockedView(rect, flowHeight) {
+      if (!rect || !flowHeight) return rect;
+      return {
+        top: rect.top - flowHeight,
+        bottom: rect.bottom - flowHeight,
+        left: rect.left,
+        width: rect.width,
+        height: rect.height
+      };
+    }
+
+    // How far the docked row pushed the body down, measured rather than assumed.
+    // offsetHeight is not the same number: a flex gap or a margin on the host
+    // adds to the displacement without being part of the row's own box. Reading
+    // the displacement off the body keeps the next decision correct even if a
+    // future style introduces either.
+    //
+    // This equals the insertion displacement only while the row is the body's
+    // immediately preceding sibling and the host contributes no vertical padding
+    // of its own; both hold in the document editor today. Padding above the body
+    // would be counted as displacement and over-compensate by that much, and a
+    // permanent sibling before the body would be counted twice.
+    function dockShift() {
+      var body = options.bodyNode;
+      if (!body || !body.parentNode) return 0;
+      var shift = body.getBoundingClientRect().top - host.getBoundingClientRect().top;
+      return shift > 0 ? Math.round(shift) : 0;
+    }
+
+    // A surface that cannot fit beside its anchor joins the editor as a docked
+    // row above the text instead of overlapping a line. Only the document editor
+    // carries the docked-row CSS contract; a block editor keeps the clamped
+    // placement so its own layout cannot change under the user.
+    function placeFloating(node, rect, preferBelow) {
+      if (!node || !rect) return;
+      var body = options.bodyNode || null;
+      var viewport = body ? body.getBoundingClientRect() :
+        { top: 0, bottom: window.innerHeight, left: 0, right: window.innerWidth };
+      var visible = rect.bottom > Math.max(0, viewport.top) &&
+        rect.top < Math.min(window.innerHeight, viewport.bottom) &&
+        rect.left + rect.width > Math.max(0, viewport.left) &&
+        rect.left < Math.min(window.innerWidth, viewport.right);
+      // Keep a docked row's footprint while its selection is off screen; removing
+      // it would move the scrolled text. A floating toolbar must not linger over
+      // unrelated visible lines either. Visibility preserves both nodes and flow.
+      node.style.visibility = visible ? "" : "hidden";
+      if (!visible) return;
+      // The docked row is a flex item in front of the body, so while it exists
+      // every anchor rect inside the body sits one row-height lower than it would
+      // otherwise. Judging the undocked surface against that shifted rect makes
+      // the release test self-fulfilling: the row leaves, the text rises, the
+      // next update docks again, and the release itself positions the toolbar
+      // over the line it was hiding. Decide against the geometry the anchor has
+      // when the row is not there, which is also the geometry a release has to
+      // place into.
+      if (node.classList.contains("is-docked")) {
+        clampFloating(node, undockedView(rect, dockShift()), preferBelow, kDockReleaseMargin);
+        return;
+      }
+      if (clampFloating(node, rect, preferBelow)) return;
+      var documentEditor = body && body.closest ?
+        body.closest(".ocr-preview-document-editor") : null;
+      if (!documentEditor || body.parentNode !== host) return;
+      clearFloatingPlacement(node);
+      node.classList.add("is-docked");
+      node.style.left = "";
+      node.style.top = "";
+      host.insertBefore(node, body);
     }
 
     function normalizeWords(value) {
@@ -323,52 +444,98 @@
       return false;
     }
 
-    function commandToolbar(className, ariaLabel, commandList, context, rect) {
+    function commandKey(commandList) {
+      return (commandList || []).map(function (command) { return command.id; }).join("|");
+    }
+
+    function commandToolbar(className, ariaLabel, commandList, context, rect, preferBelow) {
       var toolbar = document.createElement("div");
       toolbar.className = className;
       toolbar.setAttribute("role", "toolbar");
       toolbar.setAttribute("aria-label", ariaLabel);
+      var bound = [];
       commandList.forEach(function (command) {
         var item = button(command.shortLabel || command.label, command.title || command.label, function () {
           options.executeCommand(command.id, context);
         });
-        var active = command.isActive && command.isActive();
-        item.classList.toggle("is-active", !!active);
-        item.setAttribute("aria-pressed", active ? "true" : "false");
+        bound.push({ node: item, command: command });
         toolbar.appendChild(item);
       });
+      toolbar.__commands = bound;
       host.appendChild(toolbar);
-      clampFloating(toolbar, rect, false);
+      refreshCommandState(toolbar);
+      placeFloating(toolbar, rect, preferBelow === true);
       return toolbar;
+    }
+
+    // A reused toolbar keeps its buttons, so the pressed state has to be
+    // recomputed: selecting bold text and then plain text must drop the B
+    // highlight, which a rebuild used to do for free.
+    function refreshCommandState(toolbar) {
+      var bound = (toolbar && toolbar.__commands) || [];
+      bound.forEach(function (entry) {
+        var active = !!(entry.command.isActive && entry.command.isActive());
+        entry.node.classList.toggle("is-active", active);
+        entry.node.setAttribute("aria-pressed", active ? "true" : "false");
+      });
     }
 
     function closeSelectionToolbar() {
       if (selectionToolbar && selectionToolbar.parentNode) selectionToolbar.parentNode.removeChild(selectionToolbar);
       selectionToolbar = null;
+      selectionToolbarKey = null;
     }
 
     function showSelectionToolbar(rect) {
-      closeSelectionToolbar();
       closeSlash();
       closeTableToolbar();
+      // A range without a client rect (detached or fully clipped) has no side to
+      // clear, so there is nothing to anchor a surface to.
+      if (!rect || (!rect.width && !rect.height)) { closeSelectionToolbar(); return; }
       var selected = commands.filter(function (command) {
         return (command.contexts || []).indexOf("selection") !== -1 &&
           (!command.isEnabled || command.isEnabled());
       });
+      // Scroll and resize refreshes re-enter here with an unchanged command
+      // set. Re-placing the live surface keeps the buttons under the pointer
+      // instead of rebuilding them in the middle of a gesture.
+      var key = commandKey(selected);
+      if (selectionToolbar && selectionToolbarKey === key) {
+        refreshCommandState(selectionToolbar);
+        placeFloating(selectionToolbar, rect, false);
+        return;
+      }
+      closeSelectionToolbar();
+      selectionToolbarKey = key;
       selectionToolbar = commandToolbar(
         "ocr-preview-context-toolbar ocr-preview-selection-toolbar",
-        "Text formatting", selected, "selection", rect);
+        "Text formatting", selected, "selection", rect, false);
     }
 
     function closeTableToolbar() {
       if (tableToolbar && tableToolbar.parentNode) tableToolbar.parentNode.removeChild(tableToolbar);
       tableToolbar = null;
+      tableToolbarState = null;
+    }
+
+    function tableStateKey(state) {
+      return [state.canDeleteRow ? "1" : "0", state.canDeleteColumn ? "1" : "0",
+        state.alignment || ""].join("|");
     }
 
     function showTableToolbar(rect, state) {
-      closeTableToolbar();
       closeSlash();
       closeSelectionToolbar();
+      var key = tableStateKey(state);
+      // Rebuilding the ten buttons on every update discarded the placement state
+      // and replaced the node under the pointer, so a scroll or a drag-select
+      // could swallow a hover or a click. Reuse the live toolbar while the table
+      // state is unchanged and only re-place it.
+      if (tableToolbar && tableToolbarState === key) {
+        placeFloating(tableToolbar, rect, false);
+        return;
+      }
+      closeTableToolbar();
       var toolbar = document.createElement("div");
       toolbar.className = "ocr-preview-context-toolbar ocr-preview-table-toolbar";
       toolbar.setAttribute("role", "toolbar");
@@ -397,7 +564,8 @@
       });
       host.appendChild(toolbar);
       tableToolbar = toolbar;
-      clampFloating(toolbar, rect, false);
+      tableToolbarState = key;
+      placeFloating(toolbar, rect, false);
     }
 
     function closeLink(restoreSelection) {
@@ -517,12 +685,6 @@
       return false;
     }
 
-    listen(window, "resize", function () {
-      if (slash && options.slashContext) {
-        var context = options.slashContext();
-        if (context) clampFloating(slash, context.rect, true);
-      }
-    });
     listen(document, "pointerup", function () {
       if (!pickerDragging) return;
       pickerDragging = false;

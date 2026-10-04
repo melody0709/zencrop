@@ -490,15 +490,33 @@ zencrop_add_runtime_test(test_webview2_preview_contract
         ${CMAKE_SOURCE_DIR}/third_party/webview2/x64/WebView2Loader.dll.lib
     DEFINES ZENCROP_PREVIEW_HOST_TESTS
 )
-add_dependencies(test_webview2_preview_contract zencrop_web_assets_manifest)
-add_custom_command(TARGET test_webview2_preview_contract POST_BUILD
+# The test loads a copy of the WebView2 assets that sits next to its own binary,
+# and that copy has to be refreshed whenever an asset changes -- not merely when
+# this target relinks. A POST_BUILD command on the test target did exactly that,
+# and the assets are not a compile or link input of the test, so a JS-only edit
+# rebuilt the manifest and left the installed copy untouched: the gate kept
+# loading the previous copy. That produced false reds, and far worse false
+# greens, where breaking an asset on purpose to prove the contract bites proved
+# nothing because the gate was still running the good copy. A stamp target that
+# depends on the asset files makes the refresh a build-phase certainty.
+set(_zencrop_test_web_assets_stamp
+    "${CMAKE_CURRENT_BINARY_DIR}/webview_assets_fixture.stamp")
+add_custom_command(
+    OUTPUT "${_zencrop_test_web_assets_stamp}"
     COMMAND ${CMAKE_COMMAND} -E rm -rf
         "$<TARGET_FILE_DIR:test_webview2_preview_contract>/webview_assets"
     COMMAND ${CMAKE_COMMAND} -E copy_directory
-        "${CMAKE_SOURCE_DIR}/src/ocr/ui/webview_assets"
+        "${ZENCROP_WEB_ASSETS_SOURCE_DIR}"
         "$<TARGET_FILE_DIR:test_webview2_preview_contract>/webview_assets"
+    COMMAND ${CMAKE_COMMAND} -E touch "${_zencrop_test_web_assets_stamp}"
+    DEPENDS ${ZENCROP_WEB_ASSET_FILES}
     COMMENT "Refreshing test WebView2 asset fixture"
     VERBATIM)
+add_custom_target(zencrop_test_web_assets_fixture
+    DEPENDS "${_zencrop_test_web_assets_stamp}")
+add_dependencies(zencrop_test_web_assets_fixture zencrop_web_assets_manifest)
+add_dependencies(test_webview2_preview_contract zencrop_web_assets_manifest)
+add_dependencies(test_webview2_preview_contract zencrop_test_web_assets_fixture)
 set_tests_properties(test_webview2_preview_contract PROPERTIES
     ENVIRONMENT "ZENCROP_RUN_RUNTIME_TESTS=1")
 

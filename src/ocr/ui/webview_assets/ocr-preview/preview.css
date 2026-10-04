@@ -731,6 +731,31 @@ img {
   padding: 14px 16px;
 }
 
+/* A surface too short to host a floating toolbar beside the selection -- the
+   selection-translation Source card is the shortest real one -- docks the
+   toolbar as a row above the text instead of letting it cover a line. Static
+   positioning takes it out of the overlay layer entirely, so no vertical
+   viewport can produce an overlap. z-index still applies to flex items, hence
+   the explicit low value. The row is measured by how far it displaces the body
+   rather than by its own box, so the separation could be a margin; it is kept as
+   padding so the row cannot collapse onto the text above it. The 16px sides line
+   the buttons up with the text below, which the docked row replaces. */
+.ocr-preview-document-editor .ocr-preview-context-toolbar.is-docked {
+  position: static;
+  z-index: 1;
+  flex: 0 0 auto;
+  align-self: stretch;
+  max-width: none;
+  margin: 0;
+  padding: 11px 16px 3px;
+  border-radius: 7px;
+}
+
+.ocr-preview-document-editor .ocr-preview-context-toolbar.is-docked .ocr-preview-editor-button {
+  min-height: 24px;
+  padding: 0 6px;
+}
+
 .ocr-preview-document-editor .ocr-preview-editor-status {
   display: none;
 }

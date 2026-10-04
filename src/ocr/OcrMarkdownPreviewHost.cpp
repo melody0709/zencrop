@@ -1845,7 +1845,10 @@ bool OcrMarkdownPreviewHost::RunStaticContractForTests(std::wstring& error) {
         0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE,
         0x42, 0x60, 0x82
     };
-    HANDLE file = CreateFileW(fakeImage.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+    // Shared access on purpose: the contents are a constant written and closed
+    // immediately, and an exclusive open only made a second overlapping run fail.
+    HANDLE file = CreateFileW(fakeImage.c_str(), GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, CREATE_ALWAYS,
         FILE_ATTRIBUTE_NORMAL, nullptr);
     if (file == INVALID_HANDLE_VALUE) {
         error = L"failed to create preview image fixture";
