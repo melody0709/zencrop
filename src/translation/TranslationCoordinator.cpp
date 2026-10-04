@@ -496,7 +496,8 @@ TranslationStartResult TranslationCoordinator::OpenTextEntry(
 
     CleanupInvalid();
     const bool reuseWindow = sourceMode_ == TranslationSourceMode::SelectedText &&
-        resultWindow_ && resultWindow_->IsValid();
+        resultWindow_ && resultWindow_->CanReuse();
+    const bool reopenWindow = reuseWindow && resultWindow_->IsClosed();
     TranslationLaunchContext selectedContext = context;
     selectedContext.mode = TranslationSourceMode::SelectedText;
     if (reuseWindow && resultWindow_->IsBusy()) {
@@ -523,6 +524,9 @@ TranslationStartResult TranslationCoordinator::OpenTextEntry(
             resultWindow_.reset();
             return {false, TranslationStartError::WindowCreationFailed};
         }
+    }
+    if (!reuseWindow || reopenWindow) {
+        if (reopenWindow) resultWindow_->PrepareForReuse(selectedContext.anchorRect);
         sourceMode_ = TranslationSourceMode::SelectedText;
         owner_ = owner;
         sourceRect_ = selectedContext.anchorRect;
@@ -590,10 +594,10 @@ TranslationStartResult TranslationCoordinator::StartSelection(
 
     CleanupInvalid();
     const bool reuseWindow = sourceMode_ == TranslationSourceMode::SelectedText &&
-        resultWindow_ && resultWindow_->IsValid();
+        resultWindow_ && resultWindow_->CanReuse();
     POINT retainedWindowPosition = {};
     bool retainedWindowPositionValid = false;
-    if (reuseWindow) {
+    if (reuseWindow && !resultWindow_->IsClosed()) {
         RECT currentWindowRect = {};
         if (GetWindowRect(resultWindow_->WindowHandle(), &currentWindowRect)) {
             retainedWindowPosition = {

@@ -390,6 +390,7 @@ add_library(zencrop_translate STATIC
     src/translation/TranslationPromptSettingsPage.h src/translation/TranslationPromptSettingsPage.cpp
     src/translation/TranslationResultWindow.h src/translation/TranslationResultWindow.cpp
     src/translation/TranslationResultWindow.ManualEntry.cpp
+    src/translation/TranslationResultWindow.Lifecycle.cpp
     src/translation/TranslationResultWindow.StructuredSelection.cpp
     src/translation/TranslationCoordinator.h src/translation/TranslationCoordinator.cpp
     src/translation/TranslationCoordinator.StructuredSelection.cpp

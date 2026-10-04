@@ -218,6 +218,7 @@ zencrop_add_simple_hermetic(test_wide_string_utils_contract
 )
 
 zencrop_add_simple_hermetic(test_translation_contract
+    SOURCES ${CMAKE_SOURCE_DIR}/tests/TranslationWindowLifecycleContract.cpp
     INCLUDES ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/src/core
              ${CMAKE_SOURCE_DIR}/src/ocr ${CMAKE_SOURCE_DIR}/src/ocr/engine
              ${CMAKE_SOURCE_DIR}/src/ocr/ui ${CMAKE_SOURCE_DIR}/src/ocr/ui/dashboard

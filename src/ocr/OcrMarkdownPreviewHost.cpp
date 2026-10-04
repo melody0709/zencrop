@@ -521,6 +521,9 @@ struct OcrMarkdownPreviewHost::Impl {
     bool ready = false;
     bool failed = false;
     bool visible = false;
+    bool suspendRequested = false;
+    bool suspendInFlight = false;
+    uint64_t suspendSequence = 0;
     bool verticalScrollbarBoundaryHovered = false;
     double pendingZoomFactor = 1.0;
     int pendingTextFontSize = 14;
@@ -652,6 +655,9 @@ struct OcrMarkdownPreviewHost::Impl {
 
     void Destroy() {
         if (state) state->owner = nullptr;
+        suspendRequested = false;
+        suspendInFlight = false;
+        ++suspendSequence;
         ready = false;
         creating = false;
         pendingMarkdown.clear();
@@ -828,6 +834,7 @@ struct OcrMarkdownPreviewHost::Impl {
     }
 
     void Show(bool show) {
+        if (show && (!visible || suspendRequested || suspendInFlight)) Resume();
         if (!show) {
             SetVerticalScrollbarBoundaryHover(false);
             if (callbacks.onPreviewSelectionState) {
@@ -842,6 +849,45 @@ struct OcrMarkdownPreviewHost::Impl {
         if (show && verticalScrollbarBoundaryHovered) {
             PostVerticalScrollbarBoundaryHover();
         }
+    }
+
+    void Suspend() {
+        suspendRequested = true;
+        Show(false);
+        TrySuspend();
+    }
+
+    void TrySuspend() {
+        if (!suspendRequested || suspendInFlight || !ready || !webview || visible) return;
+        ComPtr<ICoreWebView2_3> webview3;
+        if (FAILED(webview.As(&webview3)) || !webview3) return;
+        const uint64_t sequence = ++suspendSequence;
+        suspendInFlight = true;
+        const auto callbackState = state;
+        const HRESULT hr = webview3->TrySuspend(
+            Callback<ICoreWebView2TrySuspendCompletedHandler>(
+                [callbackState, sequence](HRESULT result, BOOL successful) -> HRESULT {
+                    if (!callbackState || !callbackState->owner) return S_OK;
+                    auto* owner = callbackState->owner;
+                    if (owner->suspendSequence != sequence) return S_OK;
+                    owner->suspendInFlight = false;
+                    OutputDebugStringW((L"[OCR Preview] TrySuspend " + FormatHResult(result) +
+                        (successful ? L" succeeded\n" : L" declined\n")).c_str());
+                    // Resume can race the asynchronous suspend request. Reassert
+                    // the latest intent after completion, including when visible.
+                    if (!owner->suspendRequested) owner->Resume();
+                    return S_OK;
+                }).Get());
+        if (FAILED(hr)) {
+            suspendInFlight = false;
+            OutputDebugStringW((L"[OCR Preview] TrySuspend failed: " + FormatHResult(hr) + L"\n").c_str());
+        }
+    }
+
+    void Resume() {
+        suspendRequested = false;
+        ComPtr<ICoreWebView2_3> webview3;
+        if (webview && SUCCEEDED(webview.As(&webview3)) && webview3) webview3->Resume();
     }
 
     void PostVerticalScrollbarBoundaryHover() {
@@ -877,7 +923,7 @@ struct OcrMarkdownPreviewHost::Impl {
     }
 
     void PostPendingRender() {
-        if (!ready || !webview) return;
+        if (!ready || !webview || suspendRequested) return;
         std::wstring json = BuildRenderMessage(
             pendingRecordId,
             pendingMarkdown,
@@ -975,7 +1021,7 @@ struct OcrMarkdownPreviewHost::Impl {
     }
 
     void PostPendingTransientRender() {
-        if (!ready || !webview || !hasPendingTransientRender || pendingRenderToken.empty()) return;
+        if (!ready || !webview || suspendRequested || !hasPendingTransientRender || pendingRenderToken.empty()) return;
         std::wstring markdown = pendingTransientMarkdown.size() > kMaxPreviewMarkdownChars
             ? pendingTransientMarkdown.substr(0, kMaxPreviewMarkdownChars)
             : pendingTransientMarkdown;
@@ -1342,6 +1388,7 @@ struct OcrMarkdownPreviewHost::Impl {
                 PostPendingTransientRender();
             }
             PostPendingStructuredSelection();
+            TrySuspend();
         } else if (type == L"renderError") {
             std::wstring record = ExtractJsonField(json, L"recordId");
             std::wstring renderToken = UnescapeJsonString(ExtractJsonField(json, L"renderToken"));
@@ -1670,6 +1717,21 @@ void OcrMarkdownPreviewHost::SetTextFontSize(int fontSize) {
 
 void OcrMarkdownPreviewHost::Show(bool visible) {
     m_impl->Show(visible);
+}
+
+void OcrMarkdownPreviewHost::Suspend() {
+    m_impl->Suspend();
+}
+
+void OcrMarkdownPreviewHost::Resume() {
+    m_impl->Resume();
+}
+
+bool OcrMarkdownPreviewHost::IsSuspended() const {
+    ComPtr<ICoreWebView2_3> webview3;
+    BOOL suspended = FALSE;
+    return m_impl->webview && SUCCEEDED(m_impl->webview.As(&webview3)) && webview3 &&
+        SUCCEEDED(webview3->get_IsSuspended(&suspended)) && suspended;
 }
 
 void OcrMarkdownPreviewHost::SetVerticalScrollbarBoundaryHover(bool hovered) {

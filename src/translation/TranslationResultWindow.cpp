@@ -622,6 +622,7 @@ TranslationResultWindow::TranslationResultWindow(
     : layoutDpi_(kTranslationDesignDpi), sourceMode_(context.mode),
       sourceRect_(context.anchorRect), callback_(std::move(callback)) {
     RegisterClass();
+    createdChinese_ = S::IsChinese();
     const TranslationSettings initialSettings = LoadTranslationSettings();
     sourcePreviewZoomFactor_ = (std::clamp)(initialSettings.sourcePreviewZoomFactor,
         kTranslationPreviewZoomMin, kTranslationPreviewZoomMax);
@@ -699,6 +700,7 @@ TranslationResultWindow::TranslationResultWindow(
                 };
             sourcePreviewCallbacks.onPreviewEditorState = [this](
                 const OcrMarkdownPreviewHost::PreviewEditorState& state) {
+                if (hiddenRetained_) return;
                 sourcePreviewEditorActive_ = state.active;
                 sourcePreviewEditorContentUnits_ = state.contentUtf16Units;
                 sourcePreviewEditorHasText_ = state.hasNonWhitespace;
@@ -708,6 +710,7 @@ TranslationResultWindow::TranslationResultWindow(
                 if (!state.active) CompleteTextEntryAfterEditorClose();
             };
             sourcePreviewCallbacks.onReady = [this]() {
+                if (hiddenRetained_) return;
                 sourcePreviewFailed_ = false;
                 if (sourcePreview_) {
                     sourcePreview_->SetBounds(sourceContentRect_);
@@ -718,7 +721,7 @@ TranslationResultWindow::TranslationResultWindow(
             };
             sourcePreviewCallbacks.onContentMetrics = [this](
                 const OcrMarkdownPreviewHost::PreviewContentMetrics& metrics) {
-                if (!showSourceText_) return;
+                if (hiddenRetained_ || !showSourceText_) return;
                 sourcePreviewMetricsValid_ = true;
                 sourcePreviewContentHeight_ = metrics.scrollHeight;
                 if (!sourcePreviewRenderReady_) {
@@ -763,7 +766,7 @@ TranslationResultWindow::TranslationResultWindow(
                 if (!sourceMarkdownText_.empty()) ResizeToAutomaticWindowSize();
             };
             sourcePreviewCallbacks.onPreviewDocumentEdit = [this](bool sourceRequired) {
-                if (busy_) return;
+                if (busy_ || hiddenRetained_) return;
                 if (manualEntryMode_ && SourceText().empty()) {
                     sourcePreview_->StartDocumentEditing(false);
                 } else if (sourceRequired) {
@@ -775,7 +778,7 @@ TranslationResultWindow::TranslationResultWindow(
             sourcePreviewCallbacks.onPreviewDocumentSave = [this](
                 const std::wstring& content,
                 const std::wstring& renderToken) {
-                if (!sourcePreview_) return;
+                if (!sourcePreview_ || hiddenRetained_) return;
                 if (busy_) {
                     switchToSourceAfterDocumentSave_ = false;
                     sourcePreview_->PostPreviewDocumentSaveResult(renderToken, false, L"busy");
@@ -867,6 +870,7 @@ TranslationResultWindow::TranslationResultWindow(
                 ResizeToAutomaticWindowSize();
             };
         previewCallbacks.onReady = [this]() {
+            if (hiddenRetained_) return;
             translationPreviewFailed_ = false;
             if (translationPreview_) {
                 translationPreview_->SetBounds(translationContentRect_);
@@ -876,6 +880,7 @@ TranslationResultWindow::TranslationResultWindow(
         };
         previewCallbacks.onContentMetrics = [this](
             const OcrMarkdownPreviewHost::PreviewContentMetrics& metrics) {
+            if (hiddenRetained_) return;
             translationPreviewMetricsValid_ = true;
             translationPreviewContentHeight_ = metrics.scrollHeight;
             if (!translationPreviewRenderReady_) {
@@ -1571,9 +1576,42 @@ void TranslationResultWindow::ShowModelMenu() {
     LayoutControls();
 }
 
+bool TranslationResultWindow::CanReuse() const {
+    if (!IsValid() || createdChinese_ != S::IsChinese())
+        return false;
+    if (!hiddenRetained_)
+        return true;
+    const auto settings = LoadTranslationSettings();
+    size_t option = 0;
+    for (const auto &profile : settings.providerProfiles) {
+        if (!profile.enabled)
+            continue;
+        if (option >= providerOptions_.size() || providerOptions_[option].value != profile.id ||
+            providerOptions_[option].label != profile.displayName)
+            return false;
+        ++option;
+    }
+    if (option != providerOptions_.size())
+        return false;
+    const auto healthy = [](const auto &host) { return host && (host->IsReady() || host->IsCreating()); };
+    return healthy(sourcePreview_) && healthy(translationPreview_);
+}
+
+
 void TranslationResultWindow::Show(
     HWND owner, const POINT* retainedPosition) {
     if (!window_) return;
+    ResumeRetainedWindow();
+    if (reopenLayoutPending_) {
+        reopenLayoutPending_ = false;
+        const UINT targetDpi = MonitorDpi(MonitorFromRect(&sourceRect_, MONITOR_DEFAULTTONEAREST));
+        if (targetDpi != LayoutDpi()) {
+            SetLayoutDpi(targetDpi);
+            RefreshFontForLayoutDpi();
+        }
+        // Clear stale dimensions before placing the newly anchored session.
+        ResizeToAutomaticWindowSize();
+    }
     if (owner && IsWindow(owner)) SetWindowLongPtrW(window_, GWLP_HWNDPARENT,
         reinterpret_cast<LONG_PTR>(owner));
     autoPositionNearSource_ = retainedPosition == nullptr;
@@ -1586,13 +1624,21 @@ void TranslationResultWindow::Show(
         PositionNearSourceRect();
     }
     ShowWindow(window_, SW_SHOWNORMAL);
+    presentationActive_ = true;
+    UpdatePreviewPresentation();
     SetForegroundWindow(window_);
 }
 
 void TranslationResultWindow::Activate() {
     if (!window_ || !IsWindow(window_)) return;
+    if (hiddenRetained_) {
+        Show(nullptr);
+        return;
+    }
     if (IsIconic(window_)) ShowWindow(window_, SW_RESTORE);
     else ShowWindow(window_, SW_SHOWNORMAL);
+    presentationActive_ = true;
+    UpdatePreviewPresentation();
     SetForegroundWindow(window_);
     if (manualEntryMode_) {
         if (sourcePreview_ && sourcePreview_->HasActiveEditor()) {
@@ -1604,6 +1650,7 @@ void TranslationResultWindow::Activate() {
 }
 
 void TranslationResultWindow::PrepareForReuse(const RECT& sourceRect) {
+    ResumeRetainedWindow();
     StopAutomaticResizeAnimation(false);
     CancelPendingStructuredSelection(L"superseded");
     sourceRect_ = sourceRect;
@@ -2313,7 +2360,7 @@ void TranslationResultWindow::UpdateSourcePreviewVisibility() {
         (!sourceMarkdownText_.empty() || manualEntryMode_);
     SetControlVisible(sourceEdit_, !previewReady && showSourceText_);
     if (sourcePreview_) {
-        sourcePreview_->Show(previewReady);
+        sourcePreview_->Show(presentationActive_ && !hiddenRetained_ && !IsIconic(window_) && previewReady);
         sourcePreview_->SetBounds(sourceContentRect_);
     }
     UpdateSourceModeButton();
@@ -2351,7 +2398,7 @@ void TranslationResultWindow::UpdateTranslationPreviewVisibility() {
         translationPreviewRenderReady_ && !translationMarkdownText_.empty();
     SetControlVisible(translationEdit_, !previewReady);
     if (translationPreview_) {
-        translationPreview_->Show(previewReady);
+        translationPreview_->Show(presentationActive_ && !hiddenRetained_ && !IsIconic(window_) && previewReady);
         translationPreview_->SetBounds(translationContentRect_);
     }
 }
@@ -2611,8 +2658,7 @@ void TranslationResultWindow::HandleEscape() {
         InvokeCommandSafely(Command::Cancel);
         return;
     }
-    NotifyClose();
-    if (window_ && IsWindow(window_)) DestroyWindow(window_);
+    CloseFromUser();
 }
 
 void TranslationResultWindow::HandleChildKey(HWND child, WPARAM key) {
@@ -3608,6 +3654,7 @@ LRESULT TranslationResultWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wPara
         std::unique_ptr<AsyncErrorPayload> payload(
             reinterpret_cast<AsyncErrorPayload*>(lParam));
         if (payload) {
+            if (hiddenRetained_) return 0;
             if (payload->workflowGeneration != 0 &&
                 payload->workflowGeneration != workflowGeneration_.load(
                     std::memory_order_acquire)) {
@@ -3830,6 +3877,10 @@ LRESULT TranslationResultWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wPara
         }
         return 0;
     case WM_TIMER:
+        if (wParam == kIdleEvictionTimer) {
+            EvictRetainedWindow();
+            return 0;
+        }
         if (wParam == kResizeAnimationTimer) {
             UpdateAutomaticResizeAnimation();
             return 0;
@@ -3957,8 +4008,7 @@ LRESULT TranslationResultWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wPara
             return 0;
         }
         if (LOWORD(wParam) == kClose && HIWORD(wParam) == BN_CLICKED) {
-            NotifyClose();
-            DestroyWindow(hwnd);
+            CloseFromUser();
             return 0;
         }
         if (LOWORD(wParam) == kSourceEdit && HIWORD(wParam) == EN_CHANGE) {
@@ -3991,10 +4041,12 @@ LRESULT TranslationResultWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wPara
         }
         break;
     case WM_CLOSE:
-        NotifyClose();
-        DestroyWindow(hwnd);
+        CloseFromUser();
         return 0;
     case WM_DESTROY:
+        presentationActive_ = false;
+        KillTimer(hwnd, kIdleEvictionTimer);
+        DestroyPreviews();
         KillTimer(hwnd, kResizeAnimationTimer);
         KillTimer(hwnd, kStructuredSelectionTimer);
         pendingStructuredSelectionCallback_ = {};
@@ -4002,13 +4054,13 @@ LRESULT TranslationResultWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wPara
         pendingStructuredSelectionToken_.clear();
         pendingStructuredSelectionGeneration_ = 0;
         resizeAnimationActive_ = false;
-        NotifyClose();
         // Do not leave a stale entry or a border window behind if the user
         // closes the result window while it is pinned.
         if (AlwaysOnTopManager::Instance().IsPinned(hwnd)) {
             AlwaysOnTopManager::Instance().UnpinWindow(hwnd);
         }
         alwaysOnTop_ = false;
+        NotifyClose();
         return 0;
     case WM_NCDESTROY:
         window_ = nullptr;

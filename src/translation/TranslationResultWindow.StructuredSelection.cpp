@@ -15,6 +15,7 @@ constexpr UINT kPreviewSelectionTimeoutMs = 2500;
 
 void TranslationResultWindow::UpdatePreviewSelectionState(
     PreviewSelectionHost host, bool hasSelection, uint64_t generation) {
+    if (hiddenRetained_ && hasSelection) return;
     if (host == PreviewSelectionHost::Source) {
         sourcePreviewSelectionGeneration_ = hasSelection ? generation : 0;
         sourcePreviewSelectionTick_ = hasSelection ? GetTickCount64() : 0;

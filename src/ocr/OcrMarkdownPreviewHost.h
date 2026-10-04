@@ -85,6 +85,10 @@ public:
     void SetZoomFactor(double zoomFactor);
     void SetTextFontSize(int fontSize);
     void Show(bool visible);
+    // UI-thread only. Suspension is best effort and deferred until page readiness.
+    void Suspend();
+    void Resume();
+    bool IsSuspended() const;
     void SetVerticalScrollbarBoundaryHover(bool hovered);
     void SetLocalAssetRoot(const std::wstring& root);
     void RenderMarkdown(int recordId, const std::wstring& markdown, bool compactLayout = false);

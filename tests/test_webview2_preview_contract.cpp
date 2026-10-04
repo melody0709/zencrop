@@ -437,10 +437,15 @@ static bool RunWebAssetGuardFixtures(std::wstring& error, bool& skipped) {
     // Route through a unique sibling so this fixture works on ordinary
     // case-insensitive Windows volumes as well as case-sensitive test roots.
     const fs::path caseRenameStaging = caseVariant / L"vendor-case-rename-staging";
+    const wchar_t* renameStep = L"vendor to staging";
     fs::rename(caseVariant / L"vendor", caseRenameStaging, ec);
-    if (!ec) fs::rename(caseRenameStaging, caseVariant / L"VENDOR", ec);
+    if (!ec) {
+        renameStep = L"staging to VENDOR";
+        fs::rename(caseRenameStaging, caseVariant / L"VENDOR", ec);
+    }
     if (ec || !ExpectGuardFailure(caseVariant, ZenCrop::WebAssets::GuardFailure::CaseCollision, L"case collision", error)) {
-        if (ec) error = L"could not create case-variant guard fixture";
+        if (ec) error = std::wstring(L"could not create case-variant guard fixture (") + renameStep +
+            L", error " + std::to_wstring(ec.value()) + L")";
         return finish(false);
     }
 
@@ -694,6 +699,69 @@ int wmain() {
         CoUninitialize();
         std::wcerr << L"Preview host did not become ready: " << unavailableMessage << L"\n";
         return 1;
+    }
+
+    host.Suspend();
+    if (!PumpUntil([&] { return host.IsSuspended(); }, 5000)) {
+        host.Destroy();
+        DestroyWindow(hwnd);
+        CoUninitialize();
+        std::wcerr << L"Hidden host did not suspend\n";
+        return 1;
+    }
+    host.Resume();
+    if (host.IsSuspended()) {
+        host.Destroy();
+        DestroyWindow(hwnd);
+        CoUninitialize();
+        std::wcerr << L"Host did not resume\n";
+        return 1;
+    }
+    // The same sequence used by a retained translation window: hide/suspend,
+    // then reopen before the async suspension handler has run.
+    for (int i = 0; i < 30; ++i) {
+        host.Suspend();
+        host.Resume();
+        host.Show(true);
+        // Dispatch completions between sequences and inspect native state
+        // before ExecuteScript, which can itself resume a suspended WebView.
+        PumpUntil([] { return false; }, 100);
+        if (host.IsSuspended()) {
+            host.Destroy();
+            DestroyWindow(hwnd);
+            CoUninitialize();
+            std::wcerr << L"Late suspension overrode the reopened host's resume intent\n";
+            return 1;
+        }
+    }
+    std::wstring resumedResult;
+    if (!ExecuteScriptSync(host, L"document.visibilityState === 'visible' ? 1 : 0", resumedResult) ||
+        _wtoi(resumedResult.c_str()) != 1 || readyCount != 1) {
+        host.Destroy();
+        DestroyWindow(hwnd);
+        CoUninitialize();
+        std::wcerr << L"Suspend/reopen raced page visibility or recreated the page\n";
+        return 1;
+    }
+    {
+        OcrMarkdownPreviewHost sibling;
+        bool siblingReady = false;
+        OcrMarkdownPreviewHost::Callbacks siblingCallbacks;
+        siblingCallbacks.onReady = [&] { siblingReady = true; };
+        if (!sibling.Create(hwnd, RECT{0, 0, 320, 240}, siblingCallbacks)) return 1;
+        sibling.Suspend(); // Request arrives before controller/navigation readiness.
+        if (!PumpUntil([&] { return siblingReady && sibling.IsSuspended(); }, 10000)) {
+            std::wcerr << L"Suspension intent was lost during asynchronous creation\n";
+            return 1;
+        }
+        sibling.Resume();
+        sibling.Show(true);
+        sibling.Suspend();
+        sibling.Destroy(); // Completion may still be queued; original host shares its UDF.
+        if (!ExecuteScriptSync(host, L"1", resumedResult) || _wtoi(resumedResult.c_str()) != 1) {
+            std::wcerr << L"Closing a suspended sibling affected the shared active host\n";
+            return 1;
+        }
     }
 
     std::wstring smokeResult;

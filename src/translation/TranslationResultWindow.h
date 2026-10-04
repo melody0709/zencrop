@@ -53,6 +53,8 @@ public:
     ~TranslationResultWindow();
 
     bool IsValid() const { return window_ && IsWindow(window_); }
+    bool CanReuse() const;
+    bool IsClosed() const { return hiddenRetained_; }
     HWND WindowHandle() const { return window_; }
     // Safe cross-thread delivery path used when the composition-root message
     // queue is unavailable. The actual UI mutation still happens in WndProc.
@@ -262,6 +264,11 @@ private:
     ULONGLONG resizeAnimationStartedTick_ = 0;
     bool suppressCommands_ = false;
     bool closeNotified_ = false;
+    bool presentationActive_ = false;
+    bool hiddenRetained_ = false;
+    bool reopenLayoutPending_ = false;
+    bool createdChinese_ = false;
+    ULONGLONG idleDeadline_ = 0;
     enum class PreviewSelectionHost { None, Source, Translation };
     PreviewSelectionHost recentPreviewSelectionHost_ =
         PreviewSelectionHost::None;
@@ -318,6 +325,7 @@ private:
     // 4: 1-3 are taken by the timers above; a duplicate id would compete for
     // the same WM_TIMER dispatch.
     static constexpr UINT_PTR kTranslationElapsedTimer = 4;
+    static constexpr UINT_PTR kIdleEvictionTimer = 5;
     static constexpr UINT kAsyncErrorMessage = WM_APP + 0x2A;
 
     static const wchar_t* ClassName();
@@ -380,6 +388,11 @@ private:
     void UpdatePinAccessibleState();
     void InvokeCommandSafely(Command command) noexcept;
     void NotifyClose();
+    void CloseFromUser();
+    void ResumeRetainedWindow();
+    void EvictRetainedWindow();
+    void UpdatePreviewPresentation();
+    void DestroyPreviews();
     void HandleChildKey(HWND child, WPARAM key);
     void FocusRelative(HWND current, bool previous);
     void HandleEscape();

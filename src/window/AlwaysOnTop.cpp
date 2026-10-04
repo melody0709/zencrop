@@ -146,7 +146,10 @@ void AlwaysOnTopManager::PinWindow(HWND target) {
 
     m_settings = LoadAotSettings();
 
-    SetWindowPos(target, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    // Keep the owner's Z order stable when restoring a pin on a newly created
+    // window; otherwise owner/owned-window ordering can leave TOPMOST unset.
+    SetWindowPos(target, HWND_TOPMOST, 0, 0, 0, 0,
+        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
 
     PinnedWindowInfo info = {};
     info.targetWindow = target;

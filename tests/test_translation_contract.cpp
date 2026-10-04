@@ -48,6 +48,7 @@
 #include <cstdlib>
 #include <cwchar>
 #include <fstream>
+#include <filesystem>
 #include <future>
 #include <iostream>
 #include <memory>
@@ -56,6 +57,9 @@
 #include <thread>
 #include <string>
 #include <vector>
+
+int MeasureTranslationWindowLifecycle();
+int TestTranslationWindowLifecycleContract();
 
 namespace {
 translation::TranslationCoordinator* g_coordinator = nullptr;
@@ -91,9 +95,12 @@ HWND GetAppMainHwnd() {
 }
 
 std::wstring GetOcrImageDir() {
-    wchar_t temp[MAX_PATH] = {};
-    GetTempPathW(MAX_PATH, temp);
-    return std::wstring(temp) + L"ZenCropTranslationContractOcr";
+    wchar_t root[32768] = {};
+    if (!GetEnvironmentVariableW(L"ZENCROP_TEST_OUTPUT_ROOT", root, ARRAYSIZE(root))) return {};
+    const auto path = std::filesystem::path(root) /
+        (L"translation-ocr-" + std::to_wstring(GetCurrentProcessId()));
+    std::filesystem::create_directories(path);
+    return path.wstring();
 }
 
 OcrEngineSelection SelectOcrEngineForRoute(
@@ -313,11 +320,21 @@ bool VisibleChildrenInsideClient(HWND window) {
     std::vector<HWND> children;
     EnumChildWindows(window, CollectChildWindow, reinterpret_cast<LPARAM>(&children));
     for (HWND child : children) {
+        // Chromium's internal D3D surfaces are clipped by their controller
+        // ancestor and can retain a larger allocation after a resize. The
+        // native layout owns only direct child bounds, including the controller.
+        if (GetParent(child) != window) continue;
         if (!IsWindowVisible(child)) continue;
         RECT rect = {};
         if (!GetWindowRect(child, &rect)) return false;
         if (rect.left < screenClient.left || rect.top < screenClient.top ||
             rect.right > screenClient.right || rect.bottom > screenClient.bottom) {
+            wchar_t className[128]{};
+            GetClassNameW(child, className, ARRAYSIZE(className));
+            std::wcerr << L"child outside client: " << className << L" id=" << GetDlgCtrlID(child)
+                       << L" rect=" << rect.left << L"," << rect.top << L"," << rect.right << L"," << rect.bottom
+                       << L" client=" << screenClient.left << L"," << screenClient.top << L","
+                       << screenClient.right << L"," << screenClient.bottom << L"\n";
             return false;
         }
     }
@@ -1128,7 +1145,7 @@ int TestNetworkCancelAndCloseUiResponsiveness() {
                         PumpTranslationMessages(2);
                     const ULONGLONG elapsed = g_translationProbeTick ? g_translationProbeTick - start : 1000;
                     if (elapsed > 250 || transport->callbacks.load() != 1 ||
-                        (close ? IsWindow(native) != FALSE : ControlText(native, 3105) != L"Cancelled"))
+                        (close ? IsWindowVisible(native) != FALSE : ControlText(native, 3105) != L"Cancelled"))
                         result = 5;
                     std::cout << "network UI stage=" << stage << " close=" << close << " probe_ms=" << elapsed << "\n";
                 }
@@ -1168,6 +1185,97 @@ LRESULT CALLBACK HotkeyFocusProbeProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
         }
     }
     return DefWindowProcW(hwnd, msg, wParam, lParam);
+}
+
+int TestRetainedCoordinatorReuse() {
+    using namespace translation;
+    struct OleScope {
+        HRESULT result = OleInitialize(nullptr);
+        ~OleScope() { if (SUCCEEDED(result)) OleUninitialize(); }
+    } ole;
+    if (FAILED(ole.result)) return 620;
+    const TranslationSettings saved = LoadTranslationSettings();
+    TranslationSettings settings;
+    settings.enabled = true;
+    SaveTranslationSettings(settings);
+    auto translator = std::make_shared<FakeTranslationEngine>();
+    TranslationCoordinator::Dependencies dependencies;
+    dependencies.translationEngine = translator;
+    HWND messageWindow = CreateTranslationTestMessageWindow();
+    if (!messageWindow) return 620;
+    TranslationCoordinator coordinator(dependencies);
+    g_coordinator = &coordinator;
+    g_translationTestMainWindow = messageWindow;
+    const auto ownedWindow = [] {
+        HWND hwnd = nullptr;
+        while ((hwnd = FindWindowExW(nullptr, hwnd, L"ZenCrop.TranslationResultWindow", nullptr))) {
+            DWORD pid = 0;
+            GetWindowThreadProcessId(hwnd, &pid);
+            if (pid == GetCurrentProcessId()) return hwnd;
+        }
+        return static_cast<HWND>(nullptr);
+    };
+    const auto finish = [&](int result) {
+        coordinator.Shutdown();
+        g_coordinator = nullptr;
+        g_translationTestMainWindow = nullptr;
+        DestroyWindow(messageWindow);
+        SaveTranslationSettings(saved);
+        return result;
+    };
+    HWND retained = nullptr;
+    for (int cycle = 0; cycle < 3; ++cycle) {
+        std::cout << "retained coordinator cycle=" << cycle << "\n";
+        const std::wstring text = L"Retained coordinator session " + std::to_wstring(cycle);
+        TranslationLaunchContext context{TranslationSourceMode::SelectedText,
+            RECT{100 + cycle * 150, 100, 200 + cycle * 150, 120}};
+        if (!coordinator.StartText(nullptr, context, text).started) return finish(621);
+        HWND hwnd = ownedWindow();
+        if (!hwnd || (retained && retained != hwnd)) return finish(622);
+        retained = hwnd;
+        const ULONGLONG deadline = GetTickCount64() + 2000;
+        do {
+            PumpTranslationMessages(2);
+        } while (ControlText(hwnd, 3102).find(text) == std::wstring::npos && GetTickCount64() < deadline);
+        if (ControlText(hwnd, 3101) != text || ControlText(hwnd, 3102).find(text) == std::wstring::npos)
+            return finish(623);
+        if (cycle == 0) {
+            SendMessageW(hwnd, WM_COMMAND, MAKEWPARAM(3119, BN_CLICKED),
+                reinterpret_cast<LPARAM>(GetDlgItem(hwnd, 3119)));
+        }
+        if (!LoadTranslationSettings().resultOnTop ||
+            !(GetWindowLongPtrW(hwnd, GWL_EXSTYLE) & WS_EX_TOPMOST)) return finish(626);
+        SendMessageW(hwnd, WM_CLOSE, 0, 0);
+        PumpTranslationMessages(10);
+        if (!IsWindow(hwnd) || IsWindowVisible(hwnd) || !ControlText(hwnd, 3101).empty()) return finish(624);
+    }
+    coordinator.Shutdown();
+    if (IsWindow(retained)) return finish(625);
+    if (!LoadTranslationSettings().resultOnTop) return finish(627);
+    {
+        TranslationCoordinator restarted(dependencies);
+        g_coordinator = &restarted;
+        TranslationLaunchContext context{TranslationSourceMode::SelectedText, RECT{100, 100, 200, 120}};
+        if (!restarted.StartText(nullptr, context, L"Restored pin preference").started) return finish(628);
+        const HWND restored = ownedWindow();
+        const bool pinned = restored && (GetWindowLongPtrW(restored, GWL_EXSTYLE) & WS_EX_TOPMOST);
+        if (!pinned) std::cerr << "restored pin: preference=" << LoadTranslationSettings().resultOnTop
+                              << " tracked=" << AlwaysOnTopManager::Instance().IsPinned(restored)
+                              << " style=" << GetWindowLongPtrW(restored, GWL_EXSTYLE) << "\n";
+        bool unpinned = true;
+        if (pinned) {
+            SendMessageW(restored, WM_COMMAND, MAKEWPARAM(3119, BN_CLICKED),
+                reinterpret_cast<LPARAM>(GetDlgItem(restored, 3119)));
+            unpinned = !LoadTranslationSettings().resultOnTop &&
+                !(GetWindowLongPtrW(restored, GWL_EXSTYLE) & WS_EX_TOPMOST);
+        }
+        restarted.Shutdown();
+        g_coordinator = &coordinator;
+        if (!pinned || IsWindow(restored)) return finish(629);
+        if (!unpinned || LoadTranslationSettings().resultOnTop) return finish(630);
+    }
+    std::cout << "retained coordinator: three close/reopen workflows, saved pin restoration, unpin and shutdown passed\n";
+    return finish(0);
 }
 
 int TestCoordinatorMessageChain() {
@@ -1953,7 +2061,13 @@ int TestCoordinatorMessageChain() {
             reinterpret_cast<LPARAM>(selectedShowSourceToggle));
         PumpMessagesFor(300);
         if (!VisibleChildrenInsideClient(selectedTextWindow) ||
-            ControlText(selectedTextWindow, 3120) != L"Source") {
+            // The user explicitly switched to Source above. Hiding/re-showing
+            // the card preserves that mode; the button offers Preview.
+            ControlText(selectedTextWindow, 3120) != L"Preview" ||
+            !IsWindowVisible(GetDlgItem(selectedTextWindow, 3101))) {
+            std::wcerr << L"source re-show: mode=" << ControlText(selectedTextWindow, 3120)
+                       << L" source=" << ControlText(selectedTextWindow, 3101)
+                       << L" visible=" << IsWindowVisible(GetDlgItem(selectedTextWindow, 3101)) << L"\n";
             coordinator.Shutdown();
             DestroyWindow(messageWindow);
             cleanup();
@@ -2214,7 +2328,7 @@ int TestCoordinatorMessageChain() {
         // mislabel the English production-chain window as Chinese.
         SendMessageW(selectedTextWindow, WM_CLOSE, 0, 0);
         PumpTranslationMessages(20);
-        if (FindWindowW(L"ZenCrop.TranslationResultWindow", nullptr)) {
+        if (IsWindowVisible(selectedTextWindow)) {
             coordinator.Shutdown();
             DestroyWindow(messageWindow);
             cleanup();
@@ -2259,7 +2373,7 @@ int TestCoordinatorMessageChain() {
         coordinator.Shutdown();
         DestroyWindow(messageWindow);
         cleanup();
-        return FindWindowW(L"ZenCrop.TranslationResultWindow", nullptr) ? 105 : 0;
+        return IsWindowVisible(localizedNative) ? 105 : 0;
     }
     if (OptionalReadyDisplay()) {
         RECT visualWindowRect = {};
@@ -3084,7 +3198,7 @@ int TestResultWindowLayoutContract() {
         return 578;
     }
     PumpMessagesFor(20);
-    if (selectedCloseCallbacks != 1 || selectedWindow.IsValid()) return 577;
+    if (selectedCloseCallbacks != 1 || !selectedWindow.IsValid() || IsWindowVisible(selectedNative)) return 577;
 
     // The placement is decided once, but it must still keep the translated text
     // visible: an automatic resize (content growth, and therefore preview zoom)
@@ -3120,6 +3234,10 @@ int TestResultWindowLayoutContract() {
         if (!GetWindowRect(anchoredWindow.WindowHandle(), &anchoredAfter)) return 592;
         if (anchoredAfter.bottom - anchoredAfter.top <=
             anchoredBefore.bottom - anchoredBefore.top) {
+            std::cerr << "anchored height did not grow: before=" << anchoredBefore.bottom - anchoredBefore.top
+                      << " after=" << anchoredAfter.bottom - anchoredAfter.top
+                      << " source_visible=" << IsWindowVisible(GetDlgItem(anchoredWindow.WindowHandle(), 3101))
+                      << " dpi=" << GetDpiForWindow(anchoredWindow.WindowHandle()) << "\n";
             return 593;
         }
         const int sourceGap = scaleForInitialDpi(10);
@@ -10675,6 +10793,7 @@ int TestProviderProtocolAndModelCatalogContract() {
 }
 
 int main() {
+    std::cout.setf(std::ios::unitbuf);
     wchar_t testDataDirectory[2] = {};
     if (GetEnvironmentVariableW(
             L"ZENCROP_DATA_DIR", testDataDirectory, ARRAYSIZE(testDataDirectory)) == 0) {
@@ -10694,6 +10813,16 @@ int main() {
             GetThreadDpiAwarenessContext());
         std::cout << "visual dpi process=" << processDpi
                   << " awareness=" << static_cast<int>(awareness) << "\n";
+    }
+    wchar_t lifecycleMeasurement[32] = {};
+    if (GetEnvironmentVariableW(L"ZENCROP_TRANSLATION_LIFECYCLE_MEASURE", lifecycleMeasurement,
+                                ARRAYSIZE(lifecycleMeasurement))) {
+        return MeasureTranslationWindowLifecycle();
+    }
+    const int lifecycleResult = TestTranslationWindowLifecycleContract();
+    if (lifecycleResult) {
+        std::cerr << "translation window lifecycle contract failed: " << lifecycleResult << "\n";
+        return lifecycleResult;
     }
     const int scrollResult = TestSettingsPageScrollRelayout();
     if (scrollResult != 0) {
@@ -10790,6 +10919,11 @@ int main() {
     if (networkUiResult != 0) {
         std::cerr << "network cancel/close UI contract failed: " << networkUiResult << "\n";
         return 900 + networkUiResult;
+    }
+    const int retainedCoordinatorResult = TestRetainedCoordinatorReuse();
+    if (retainedCoordinatorResult) {
+        std::cerr << "retained coordinator contract failed: " << retainedCoordinatorResult << "\n";
+        return retainedCoordinatorResult;
     }
     const int rollbackResult = TestCredentialRollbackContract();
     if (rollbackResult != 0) {
