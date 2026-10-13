@@ -32,6 +32,9 @@ const wchar_t* LangChinese();
 const wchar_t* StartWithWindows();
 const wchar_t* StartupRegistrationErrorTitle();
 const wchar_t* StartupRegistrationErrorMessage();
+const wchar_t* CompanionLabel();
+const wchar_t* CompanionOpenFolder();
+const wchar_t* CompanionHint();
 
 const wchar_t* ColorLabel();
 const wchar_t* ChooseButton();

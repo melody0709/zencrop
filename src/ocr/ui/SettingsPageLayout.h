@@ -34,6 +34,7 @@ public:
     int CtrlX() const { return m_ctrlX; }
     int CtrlW() const { return m_ctrlW; }
     int RowH() const { return m_rowH; }
+    int UsableWidth() const { return m_clientW - m_padX * 2; }
     int CurrentY() const { return m_y; }
     void AdvanceRow() { m_y += m_rowStep; }
     void AddSpace(int px = 8) { m_y += Scale(px); }

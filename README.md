@@ -1,6 +1,6 @@
 # ZenCrop v3.2.0
 
-Browser webpage selection uses the optional [Chrome/Edge companion](extensions/browser-companion/README.md); without it, browser window/manual selection remains available.
+Browser webpage selection uses the optional [Chrome/Edge companion](extensions/browser-companion/README.md) (accessible via Settings ➔ General ➔ "Open Extension Folder..."); without it, standard full-window and manual box selection remain available with zero standby overhead.
 
 [中文文档](doc/README_zh.md)
 
@@ -44,6 +44,9 @@ ZenCrop is rebuilt from scratch, runs completely standalone without PowerToys, a
 - **Customizable Hotkeys**: All hotkeys can be customized in Settings — click the input field and press your desired key combo
 - **Crop On Top**: Optionally auto-pin cropped windows on top (configurable in Settings)
 - **Smart Window Detection**: The crop overlay automatically follows the mouse, dynamically highlighting the window under the cursor — crop any window on screen
+- **Browser Webpage Smart Element Selection (Companion Extension)**: Supports sub-pixel DOM element snapping and mouse wheel hierarchical navigation for buttons, paragraphs, images, cards, and cross-origin iframes in Chrome / Edge.
+  - **Quick 3-step setup**: Navigate to `chrome://extensions` or `edge://extensions` in your browser ➔ Enable "Developer mode" ➔ Click "Load unpacked" and select the `extensions/browser-companion/` folder. You can also click **"Open Extension Folder..."** under ZenCrop **Settings ➔ General** to jump directly to it.
+  - **Graceful Fallback & Zero Overhead**: If the extension is not installed, the overlay cleanly snaps to the entire browser window, and you can still freely drag to select any region. Because Chromium accessibility tree traversal is completely avoided, there is **0% standby CPU load and zero browser slowdown**.
 - **Smart Content Detection**: High-performance MSAA smart hover detection — the overlay identifies the UI element under the cursor through the verified `IAccessible::accHitTest` hot path and cached window snapshots, using a single-rect asynchronous worker to maintain smooth animation even during fast mouse movement. Scroll the mouse wheel to move through parent/child regions; manually selected region persists while the cursor stays within it
 - **Screenshot & Annotation**: Full screenshot editor with configurable toolbar (Always Show / More Tools / Always Hide, drag-to-sort), rich annotation tools (rectangle, ellipse, line, arrow, pencil, highlighter, mosaic/blur, text with outline/background, numbering, magnifier, eraser, watermark), color palette with custom picker, post-processing (rounded corners, shadow, border), and quick actions (copy, save, pin). Supports PNG/JPEG/BMP output, auto-copy, quick-save directory, and filename templates.
 - **Long Screenshot**: Auto-scroll scrolling capture for web pages, documents, and chat history. Supports vertical and horizontal stitching, manual scroll mode, real-time cumulative preview, and export/copy.

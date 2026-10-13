@@ -4,11 +4,13 @@
 #include "JsonUtils.h"
 #include "core/WideFormatNumbers.h"
 #include "core/WideColorUtils.h"
+#include "core/WidePathUtils.h"
 #include "HotkeyEdit.h"
 #include "Strings.h"
 #include "core/AppMessages.h"
 #include "core/ResourceIds.h"
 
+#include <shellapi.h>
 #include <commctrl.h>
 #include <algorithm>
 #include <string>
@@ -72,6 +74,28 @@ void RelayoutGeneralPage(HWND hPage, UINT dpi) {
     SettingsPageLayout layout(hPage, dpi);
     layout.AddRow(IDC_GEN_LANGUAGE_LABEL, IDC_GEN_LANGUAGE);
     layout.AddCheckbox(IDC_GEN_START_WITH_WINDOWS);
+    layout.AddSpace(16);
+
+    HWND hLabel = GetDlgItem(hPage, IDC_GEN_COMPANION_LABEL);
+    HWND hBtn = GetDlgItem(hPage, IDC_GEN_COMPANION_OPEN_FOLDER);
+    HWND hHint = GetDlgItem(hPage, IDC_GEN_COMPANION_HINT);
+
+    int btnW = layout.Scale(160);
+    int labelW = layout.LabelW() + layout.Scale(20);
+    if (hLabel) MoveWindow(hLabel, layout.PadX(), layout.CurrentY() + layout.Scale(2), labelW, layout.RowH(), TRUE);
+    if (hBtn) MoveWindow(hBtn, layout.PadX() + labelW + layout.Scale(16), layout.CurrentY(), btnW, layout.RowH(), TRUE);
+    layout.AdvanceRow();
+
+    if (hHint) {
+        SetPropW(hHint, L"ZenCropHint", reinterpret_cast<HANDLE>(1));
+        auto* state = SettingsStateForPage(hPage);
+        if (state && state->hPageFont.get()) {
+            SendMessageW(hHint, WM_SETFONT, reinterpret_cast<WPARAM>(state->hPageFont.get()), TRUE);
+        }
+        int hintH = layout.Scale(18);
+        MoveWindow(hHint, layout.PadX(), layout.CurrentY(), layout.UsableWidth(), hintH, TRUE);
+        layout.AddSpace(20);
+    }
     layout.Finish();
 }
 
@@ -527,6 +551,9 @@ INT_PTR CALLBACK GeneralPageProc(HWND hPage, UINT uMsg, WPARAM wParam, LPARAM lP
 
         SetDlgItemTextW(hPage, IDC_GEN_LANGUAGE_LABEL, S::LanguageLabel());
         SetDlgItemTextW(hPage, IDC_GEN_START_WITH_WINDOWS, S::StartWithWindows());
+        SetDlgItemTextW(hPage, IDC_GEN_COMPANION_LABEL, S::CompanionLabel());
+        SetDlgItemTextW(hPage, IDC_GEN_COMPANION_HINT, S::CompanionHint());
+        SetDlgItemTextW(hPage, IDC_GEN_COMPANION_OPEN_FOLDER, S::CompanionOpenFolder());
         CheckDlgButton(hPage, IDC_GEN_START_WITH_WINDOWS,
             state ? (state->draft.startupPending ? BST_CHECKED : BST_UNCHECKED)
                   : (QueryZenCropStartupRegistration().registered ? BST_CHECKED : BST_UNCHECKED));
@@ -534,6 +561,20 @@ INT_PTR CALLBACK GeneralPageProc(HWND hPage, UINT uMsg, WPARAM wParam, LPARAM lP
         return TRUE;
     }
     case WM_COMMAND:
+        if (LOWORD(wParam) == IDC_GEN_COMPANION_OPEN_FOLDER &&
+            HIWORD(wParam) == BN_CLICKED) {
+            wchar_t exePath[MAX_PATH] = {};
+            if (GetModuleFileNameW(nullptr, exePath, MAX_PATH) > 0) {
+                std::wstring exeDir = WideExeDirFromModulePath(exePath);
+                std::wstring companionDir = WideJoinPath(exeDir, L"extensions\\browser-companion");
+                DWORD attrs = GetFileAttributesW(companionDir.c_str());
+                const wchar_t* target = (attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY))
+                    ? companionDir.c_str()
+                    : exeDir.c_str();
+                ShellExecuteW(hPage, L"open", target, nullptr, nullptr, SW_SHOWNORMAL);
+            }
+            return TRUE;
+        }
         if (LOWORD(wParam) == IDC_GEN_LANGUAGE && HIWORD(wParam) == CBN_SELCHANGE) {
             int sel = (int)SendDlgItemMessageW(hPage, IDC_GEN_LANGUAGE, CB_GETCURSEL, 0, 0);
             AppLanguage::Value newLang = AppLanguage::Auto;

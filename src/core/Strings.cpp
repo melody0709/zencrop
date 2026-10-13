@@ -60,6 +60,13 @@ const wchar_t* LangChinese() { return L"\x4E2D\x6587"; }
 const wchar_t* StartWithWindows() { return g_chinese ? L"\u767b\u5f55 Windows \u65f6\u542f\u52a8 ZenCrop" : L"Start ZenCrop when I sign in"; }
 const wchar_t* StartupRegistrationErrorTitle() { return g_chinese ? L"ZenCrop - \u5f00\u673a\u81ea\u542f" : L"ZenCrop - Startup"; }
 const wchar_t* StartupRegistrationErrorMessage() { return g_chinese ? L"\u65e0\u6cd5\u66f4\u65b0\u5f00\u673a\u81ea\u542f\u8bbe\u7f6e\u3002\u9519\u8bef\u4ee3\u7801\uff1a" : L"Windows could not update the startup setting. Error code: "; }
+const wchar_t* CompanionLabel() { return g_chinese ? L"浏览器选框扩展：" : L"Browser Companion:"; }
+const wchar_t* CompanionOpenFolder() { return g_chinese ? L"打开扩展目录..." : L"Open Extension Folder..."; }
+const wchar_t* CompanionHint() {
+    return g_chinese
+        ? L"用于 Chrome / Edge 网页元素智能吸附；未加载时默认选择整窗。"
+        : L"Enables webpage element snapping in Chrome/Edge; selects full window if not loaded.";
+}
 
 const wchar_t* ColorLabel() { return g_chinese ? L"颜色：" : L"Color:"; }
 const wchar_t* ChooseButton() { return g_chinese ? L"选择..." : L"Choose..."; }

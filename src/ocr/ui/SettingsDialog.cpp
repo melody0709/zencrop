@@ -52,6 +52,9 @@ void UpdateSettingsDialogStrings(SettingsState* state) {
     if (state->m_pages[0]) {
         SetDlgItemTextW(state->m_pages[0], IDC_GEN_LANGUAGE_LABEL, S::LanguageLabel());
         SetDlgItemTextW(state->m_pages[0], IDC_GEN_START_WITH_WINDOWS, S::StartWithWindows());
+        SetDlgItemTextW(state->m_pages[0], IDC_GEN_COMPANION_LABEL, S::CompanionLabel());
+        SetDlgItemTextW(state->m_pages[0], IDC_GEN_COMPANION_HINT, S::CompanionHint());
+        SetDlgItemTextW(state->m_pages[0], IDC_GEN_COMPANION_OPEN_FOLDER, S::CompanionOpenFolder());
     }
     if (state->hwnd) {
         SetWindowTextW(state->hwnd, S::SettingsTitle());
