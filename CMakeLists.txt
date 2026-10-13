@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(ZenCrop VERSION 3.1.9)
+project(ZenCrop VERSION 3.1.10)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -185,6 +185,7 @@ target_link_libraries(zencrop_core PUBLIC
 # ── L1 Platform static library ─────────────────────────────────────────────
 add_library(zencrop_platform STATIC
     src/detect/SmartDetector.h src/detect/SmartDetector.cpp
+    src/detect/BrowserDomDetector.h src/detect/BrowserDomDetector.cpp
     src/detect/SmartDetectorThread.h src/detect/SmartDetectorThread.cpp
     src/window/ReparentWindow.h src/window/ReparentWindow.cpp
     src/window/ThumbnailWindow.h src/window/ThumbnailWindow.cpp
@@ -195,6 +196,8 @@ add_library(zencrop_platform STATIC
     src/net/TcpHelper.h src/net/TcpHelper.cpp
     src/net/LlamaServerManager.h src/net/LlamaServerManager.cpp
     src/net/MiniHttpServer.h src/net/MiniHttpServer.cpp
+    src/net/BrowserCompanionProtocol.h src/net/BrowserCompanionProtocol.cpp
+    src/net/BrowserCompanionBridge.h src/net/BrowserCompanionBridge.cpp
 )
 target_include_directories(zencrop_platform PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src/detect

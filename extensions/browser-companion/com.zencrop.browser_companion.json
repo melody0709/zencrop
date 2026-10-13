@@ -1,0 +1,7 @@
+{
+  "name": "com.zencrop.browser_companion",
+  "description": "ZenCrop webpage rectangle companion",
+  "path": "../ZenCrop.exe",
+  "type": "stdio",
+  "allowed_origins": ["chrome-extension://halonieocgkgbdogndcipmlpklljmoja/"]
+}

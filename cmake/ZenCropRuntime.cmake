@@ -93,6 +93,19 @@ function(zencrop_install_runtime target)
         DESTINATION "webview_assets"
         COMPONENT Runtime)
     install(FILES
+        "${_src}/extensions/browser-companion/manifest.json"
+        "${_src}/extensions/browser-companion/worker.js"
+        "${_src}/extensions/browser-companion/content.js"
+        "${_src}/extensions/browser-companion/README.md"
+        DESTINATION "extensions/browser-companion"
+        COMPONENT Runtime)
+    install(FILES "${_src}/extensions/browser-companion/com.zencrop.browser_companion.json"
+        DESTINATION "native-messaging"
+        COMPONENT Runtime)
+    install(FILES "${_src}/scripts/register_browser_companion.ps1"
+        DESTINATION "scripts"
+        COMPONENT Runtime)
+    install(FILES
         "${_chat_template}"
         "${_ppocrv6_dict}"
         DESTINATION "ocr_templates"

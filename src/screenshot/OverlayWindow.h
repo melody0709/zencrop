@@ -147,8 +147,9 @@ private:
     int m_bitmapHeight = 0;
     ScreenshotOverlayRuntime m_runtime;
 
-    // Async detection thread for MSAA hit testing.
+    // Async detection for browser DOM and native application accessibility.
     std::unique_ptr<SmartDetectorThread> m_detectorThread;
+    bool m_browserWindowFallback = false;
 
     OverlaySettings m_overlaySettings;
 

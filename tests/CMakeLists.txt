@@ -650,8 +650,19 @@ zencrop_add_simple_hermetic(test_dashboard_message_route_contract
 )
 
 zencrop_add_simple_hermetic(test_screenshot_editor_state_contract
-    LIBS zencrop_build_flags zencrop_shot gdiplus gdi32 user32 shcore
+    SOURCES ${CMAKE_SOURCE_DIR}/tests/support/browser_companion_contracts.cpp
+    LIBS zencrop_build_flags zencrop_shot zencrop_platform gdiplus gdi32 user32 shcore
 )
+# This existing executable also exercises the GUI product's native-host path without a console obscuring the fixture.
+if(MSVC)
+    target_link_options(test_screenshot_editor_state_contract PRIVATE /SUBSYSTEM:WINDOWS /ENTRY:mainCRTStartup)
+endif()
+find_program(ZENCROP_NODE_EXECUTABLE NAMES node)
+if(ZENCROP_NODE_EXECUTABLE)
+    add_test(NAME test_browser_companion_worker_contract
+        COMMAND "${ZENCROP_NODE_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/browser-companion/worker_contract.cjs")
+    set_tests_properties(test_browser_companion_worker_contract PROPERTIES LABELS "hermetic")
+endif()
 
 zencrop_add_simple_hermetic(test_screenshot_toolbar_text_style_mutation_contract
     LIBS zencrop_build_flags zencrop_shot gdiplus gdi32 user32 shcore

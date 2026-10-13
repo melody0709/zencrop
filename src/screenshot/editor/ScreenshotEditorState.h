@@ -1011,6 +1011,26 @@ inline ScreenshotEditorRect ScreenshotEditorSmartRect(const ScreenshotEditorStat
     return ScreenshotEditorRect{
         state.smartRectLeft, state.smartRectTop, state.smartRectRight, state.smartRectBottom};
 }
+inline bool ScreenshotEditorShouldAcceptSmartHover(
+    const ScreenshotEditorState& state, ScreenshotEditorPoint resultPoint, ScreenshotEditorPoint currentPoint,
+    ScreenshotEditorRect rect, ScreenshotEditorRect windowRect, bool success, bool geometryInvalidated)
+{
+    // A geometry invalidation must retire the old box even after a throttled pointer move.
+    if (geometryInvalidated || (resultPoint.x == state.lastSmartPointX && resultPoint.y == state.lastSmartPointY))
+        return true;
+    const auto contains = [](ScreenshotEditorRect r, ScreenshotEditorPoint p) {
+        return p.x >= r.left && p.x < r.right && p.y >= r.top && p.y < r.bottom;
+    };
+    if (!success || !contains(rect, currentPoint))
+        return false;
+    const auto area = [](ScreenshotEditorRect r) {
+        return static_cast<long long>(r.right - r.left) * (r.bottom - r.top);
+    };
+    const auto windowArea = area(windowRect);
+    const bool fallback = windowArea > 0 && area(rect) * 100 > windowArea * 70;
+    return !fallback || !state.hasSmartRect || !contains(ScreenshotEditorSmartRect(state), currentPoint);
+}
+
 inline ScreenshotEditorPoint ScreenshotEditorAdjustAnchor(const ScreenshotEditorState& state)
 {
     return ScreenshotEditorPoint{state.adjustAnchorX, state.adjustAnchorY};

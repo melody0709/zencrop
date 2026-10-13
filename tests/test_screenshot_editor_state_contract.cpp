@@ -5,6 +5,9 @@
 
 #include <iostream>
 
+int RunBrowserCompanionHostIfRequested();
+int RunBrowserCompanionContracts();
+
 static int g_fail = 0;
 static void Expect(bool c, const char* n) {
     if (!c) { std::cerr << "FAIL " << n << "\n"; ++g_fail; }
@@ -12,6 +15,9 @@ static void Expect(bool c, const char* n) {
 }
 
 int main() {
+    const int hostResult = RunBrowserCompanionHostIfRequested();
+    if (hostResult >= 0) return hostResult;
+
     ScreenshotEditorState state;
     ScreenshotEditorSelectTool(state, ScreenshotToolbarCommand::ToolGeometry);
     Expect(state.activeTool == ScreenshotToolbarCommand::ToolGeometry, "tool");
@@ -1019,6 +1025,19 @@ int main() {
     ScreenshotEditorSyncSmartHoverFlags(path91, false, false, true);
     Expect(!ScreenshotEditorHasSmartRect(path91), "smart rect cleared");
     Expect(!ScreenshotEditorIsWheelSelectionLocked(path91), "wheel unlocked again");
+    ScreenshotEditorState staleHover;
+    ScreenshotEditorSyncSmartRect(staleHover, 20, 20, 120, 70);
+    ScreenshotEditorSetHasSmartRect(staleHover, true);
+    ScreenshotEditorSyncCropDragSession(staleHover, false, 0, 0, 0, 0, 0, 0, 0, 51, 50);
+    const ScreenshotEditorRect fallback{0, 0, 1000, 800};
+    Expect(!ScreenshotEditorShouldAcceptSmartHover(staleHover, {50, 50}, {51, 50}, fallback, fallback, true, false),
+           "stale ordinary fallback preserves a current precise box");
+    Expect(ScreenshotEditorShouldAcceptSmartHover(staleHover, {50, 50}, {51, 50}, fallback, fallback, true, true),
+           "stationary invalidation retires a precise box after throttled pointer motion");
+    Expect(ScreenshotEditorShouldAcceptSmartHover(staleHover, {50, 50}, {1500, 50}, fallback, fallback, true, true),
+           "invalidation still retires the old box when pointer leaves the old window");
+    Expect(!ScreenshotEditorShouldAcceptSmartHover(staleHover, {50, 50}, {1500, 50}, fallback, fallback, true, false),
+           "ordinary stale results outside the target stay rejected");
     Expect(ScreenshotEditorNeedsFullRedraw(path91), "full redraw set");
     ScreenshotEditorSyncCropDragSession(
         path91,
@@ -1242,7 +1261,8 @@ int main() {
         Expect(ScreenshotEditorActiveRole(st108) == AnnotationRole::Magnifier, "active role pure");
     }
 
-if (g_fail) return 1;
+    g_fail += RunBrowserCompanionContracts();
+    if (g_fail) return 1;
     std::cout << "ALL PASSED\n";
     return 0;
 }

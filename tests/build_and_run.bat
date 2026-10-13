@@ -72,6 +72,7 @@ if /I "!ARG!"=="/?" goto :usage
 
 call :build_exact_target "!ARG!"
 if errorlevel 1 exit /b !ERRORLEVEL!
+if /I "!ARG:~0,6!"=="smoke_" exit /b 0
 echo Running CTest -R "!ARG!" in !BUILD_DIR!...
 pushd "!BUILD_DIR!"
 "!CTEST_EXE!" -R "^%ARG%$" --no-tests=error --output-on-failure --output-junit "!ARTIFACT_ROOT!\!ARG!.xml"

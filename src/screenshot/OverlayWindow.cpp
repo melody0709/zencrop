@@ -320,11 +320,8 @@ OverlayWindow::OverlayWindow(HWND targetWindow, CropCallback onCropped, bool ena
         ScreenshotEditorPendingCropRectRight(m_editorState),
         ScreenshotEditorPendingCropRectBottom(m_editorState),
         targetWindow != nullptr);
-    m_runtime.CaptureFrozenFrame(m_window, ScreenshotEditorScreenRect(m_editorState), LoadScreenshotSettings().includeCursor, ScreenshotEditorIsScreenshotMode(m_editorState));
-
-    // Start async detection thread (owns its own STA + COM objects)
     m_detectorThread = std::make_unique<SmartDetectorThread>();
-    m_detectorThread->Start();
+
     // Background thread callback: marshal result to main thread via PostMessage.
     // MUST NOT access OverlayWindow members here (runs on background thread).
     m_detectorThread->OnResultReady = [this](SmartDetectorThread::Result result) {
@@ -333,6 +330,9 @@ OverlayWindow::OverlayWindow(HWND targetWindow, CropCallback onCropped, bool ena
             delete pResult;
         }
     };
+    // Capture the requested instant before waiting for the pre-overlay window snapshot.
+    m_runtime.CaptureFrozenFrame(m_window, ScreenshotEditorScreenRect(m_editorState), LoadScreenshotSettings().includeCursor, ScreenshotEditorIsScreenshotMode(m_editorState));
+    m_detectorThread->Start(ScreenshotEditorIsScreenshotMode(m_editorState));
 
     m_window = CreateWindowExW(
         WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
@@ -656,6 +656,9 @@ void OverlayWindow::ClearSmartHoverSelection(POINT suppressPoint) {
 }
 
 void OverlayWindow::ApplySmartDetectionResult(const SmartDetectorThread::Result& result) {
+    if (m_state != OverlayState::Hover || !m_detectorThread || !m_detectorThread->IsCurrent(result)) return;
+    const bool fallbackChanged = m_browserWindowFallback != (result.browser && result.browserDocument.empty());
+    const bool browserFallback = result.browser && result.browserDocument.empty();
     if (result.isHoverRect) {
         if (m_state != OverlayState::Hover) {
             return;
@@ -680,26 +683,24 @@ void OverlayWindow::ApplySmartDetectionResult(const SmartDetectorThread::Result&
             ScreenshotEditorAdjustActionOrdinal(m_editorState),
             ScreenshotEditorLastSmartPointX(m_editorState),
             ScreenshotEditorLastSmartPointY(m_editorState));
-        bool isLatestPoint = result.pt.x == ScreenshotEditorLastSmartPointX(m_editorState) &&
-            result.pt.y == ScreenshotEditorLastSmartPointY(m_editorState);
-        if (!isLatestPoint) {
-            long long rectArea = RectAreaLocal(result.rect);
-            long long windowArea = RectAreaLocal(result.windowRect);
-            bool looksLikeWindowFallback = windowArea > 0 && rectArea * 100 > windowArea * 70;
-            if (!result.rectSuccess || !PtInRect(&result.rect, currentPt)) {
-                return;
-            }
-            RECT smartRcPtIn = ScreenshotEditorSmartRect(m_editorState);
-            if (looksLikeWindowFallback && ScreenshotEditorHasSmartRect(m_editorState) && PtInRect(&smartRcPtIn, currentPt)) {
-                return;
-            }
+        const bool invalidated = result.browser && result.browserStatus == "geometry_invalidated";
+        if (!ScreenshotEditorShouldAcceptSmartHover(
+                m_editorState, {result.pt.x, result.pt.y}, {currentPt.x, currentPt.y},
+                {result.rect.left, result.rect.top, result.rect.right, result.rect.bottom},
+                {result.windowRect.left, result.windowRect.top, result.windowRect.right, result.windowRect.bottom},
+                result.rectSuccess, invalidated)) {
+            return;
         }
+        m_browserWindowFallback = browserFallback;
+        const bool hoverSuccess = result.rectSuccess && (!invalidated || PtInRect(&result.rect, currentPt));
+        if (browserFallback)
+            ScreenshotEditorSetWheelSelectionLocked(m_editorState, false);
 
         // S-B-26: smartRect sole on m_editorState.
         RECT oldSmartRect = ScreenshotEditorSmartRect(m_editorState);
         bool oldHasSmartRect = ScreenshotEditorHasSmartRect(m_editorState);
 
-        if (result.rectSuccess) {
+        if (hoverSuccess) {
             m_hoveredWindow = result.targetHwnd;
             const RECT hoveredSource =
                 (result.windowRect.right > result.windowRect.left &&
@@ -768,7 +769,7 @@ void OverlayWindow::ApplySmartDetectionResult(const SmartDetectorThread::Result&
                 ScreenshotEditorIsHoverMagnifierUserEnabled(m_editorState);
             UpdateHoverMagnifierForPoint(currentPt, newSmartRect, allowMagnifier, false);
         }
-        if (smartRectChanged) {
+        if (smartRectChanged || fallbackChanged) {
             if (ScreenshotEditorHasSmartRect(m_editorState) && oldHasSmartRect) {
                 StartRectAnimation(oldSmartRect, newSmartRect);
                 ScreenshotEditorSetNeedFullRedraw(m_editorState, false);
@@ -779,6 +780,7 @@ void OverlayWindow::ApplySmartDetectionResult(const SmartDetectorThread::Result&
         return;
     }
     if (result.isNavigation) {
+        m_browserWindowFallback = browserFallback;
         if (result.navigationSuccess) {
             // S-B-26: smartRect sole on m_editorState.
             RECT oldSmartRect = ScreenshotEditorSmartRect(m_editorState);
@@ -788,7 +790,7 @@ void OverlayWindow::ApplySmartDetectionResult(const SmartDetectorThread::Result&
                 result.navigationRect.left, result.navigationRect.top,
                 result.navigationRect.right, result.navigationRect.bottom);
             ScreenshotEditorSetHasSmartRect(m_editorState, true);
-            ScreenshotEditorSetWheelSelectionLocked(m_editorState, true);
+            ScreenshotEditorSetWheelSelectionLocked(m_editorState, !browserFallback);
 
             RECT newSmartRect = ScreenshotEditorSmartRect(m_editorState);
             if (oldHasSmartRect && !EqualRect(&oldSmartRect, &newSmartRect)) {
@@ -1015,7 +1017,7 @@ void OverlayWindow::DrawHintText() {
         if (!ScreenshotEditorHasSmartRect(m_editorState) && !ScreenshotEditorHasHoveredWindow(m_editorState)) {
             return;
         }
-        hint = S::OverlayHoverHint();
+        hint = m_browserWindowFallback ? S::OverlayBrowserFallbackHint() : S::OverlayHoverHint();
     } else if (m_state == OverlayState::Adjust) {
         hint = m_enableSilentOcrCopy ? S::OverlayOcrAdjustHint() : S::OverlayAdjustHint();
     } else {
@@ -1819,6 +1821,7 @@ LRESULT OverlayWindow::MessageHandler(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
         break;
 
     case WM_LBUTTONDOWN: {
+        if (m_state == OverlayState::Hover && m_detectorThread) m_detectorThread->EndSession();
         POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
         ClientToScreen(hwnd, &pt);
 
@@ -2649,7 +2652,7 @@ LRESULT OverlayWindow::MessageHandler(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
             }
             return 0;
         }
-        // The wheel navigates the MSAA parent/child relation.
+        // The wheel navigates the current detector candidate path.
         if (m_state == OverlayState::Hover && ScreenshotEditorHasSmartRect(m_editorState) && ScreenshotEditorHasHoveredWindow(m_editorState)) {
             POINT pt = {};
             GetCursorPos(&pt);

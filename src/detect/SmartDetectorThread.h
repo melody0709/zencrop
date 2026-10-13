@@ -11,26 +11,14 @@ class SmartDetectorThread {
 public:
     SmartDetectorThread();
     ~SmartDetectorThread();
-
-    void Start();
+    void Start(bool frozen = false);
     void Stop();
-
-    // Hover request. The worker owns window discovery/cache
-    // and returns exactly one rect for the current point.
+    void EndSession();
     void AsyncGetRectByPoint(POINT pt, HWND excludeHwnd);
-
-    // Asynchronous, task-deduplicated MSAA wheel navigation.
-    // Parent walks up through IAccessible::get_accParent.
-    // Child rebuilds the leaf-to-parent path from the window root and steps down.
     void AsyncNavigateParent(POINT pt, HWND targetHwnd, HWND excludeHwnd, RECT clientRect);
     void AsyncNavigateChild(POINT pt, HWND targetHwnd, HWND excludeHwnd, RECT clientRect);
-
-    // Cache control
     void ResetCache();
 
-    // Result callback (called from background thread!).
-    // Main thread MUST NOT access OverlayWindow members directly here;
-    // use PostMessage to marshal back to the UI thread.
     struct Result {
         RECT navigationRect = {};
         bool navigationSuccess = false;
@@ -39,37 +27,48 @@ public:
         bool rectSuccess = false;
         bool isNavigation = false;
         bool isHoverRect = false;
-        POINT pt = { 0, 0 };
+        POINT pt = {};
         HWND targetHwnd = nullptr;
+        uint64_t generation = 0;
+        uint64_t request = 0;
+        bool browser = false;
+        RECT browserViewport = {};
+        std::string browserSession;
+        std::string browserDocument;
+        std::string browserStatus;
     };
+    // Background callback: marshal to the UI thread with PostMessage.
     std::function<void(Result result)> OnResultReady;
-
+    bool IsCurrent(const Result &result) const;
     bool IsRunning() const { return m_running.load(); }
 
 private:
-    enum CommandType {
-        CMD_MOVE = 1,
-        CMD_GET_PARENT = 2,
-        CMD_GET_CHILD = 3,
-        CMD_RESET_CACHE = 8,
-    };
-
+    enum CommandType { CMD_MOVE = 1, CMD_GET_PARENT = 2, CMD_GET_CHILD = 3, CMD_RESET_CACHE = 8 };
     struct Command {
         CommandType type = CMD_MOVE;
-        POINT pt = { 0, 0 };
+        POINT pt = {};
         HWND excludeHwnd = nullptr;
         HWND targetHwnd = nullptr;
         RECT clientRect = {};
+        uint64_t generation = 0;
+        uint64_t request = 0;
+        std::stop_token stop;
     };
-
-    void ThreadProc(std::stop_token stopToken);
-    void ProcessCommand(const Command& cmd, SmartDetector& detector);
+    void ThreadProc(std::stop_token stopToken, HWND capturedForeground);
+    Result ProcessCommand(const Command &cmd, SmartDetector &detector);
     void Enqueue(Command cmd);
+    std::string Session(uint64_t generation) const;
 
     std::jthread m_thread;
-    std::mutex m_mutex;
+    mutable std::mutex m_mutex;
     std::condition_variable m_cv;
     std::deque<Command> m_queue;
-    std::atomic<bool> m_stop{ false };
-    std::atomic<bool> m_running{ false };
+    std::stop_source m_sessionStop;
+    std::string m_instance;
+    bool m_frozen = false;
+    bool m_ready = false;
+    std::atomic<uint64_t> m_generation{1};
+    std::atomic<uint64_t> m_request{0};
+    std::atomic<uint64_t> m_latestHover{0};
+    std::atomic<bool> m_running{false};
 };

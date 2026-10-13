@@ -1,5 +1,6 @@
 #pragma once
 
+#include "BrowserDomDetector.h"
 #include <windows.h>
 #include <oleacc.h>
 #include <memory>
@@ -12,6 +13,10 @@ struct SmartRectResult {
     POINT pt = { 0, 0 };
     HWND hwnd = nullptr;
     bool success = false;
+    bool browser = false;
+    std::string browserSession;
+    std::string browserDocument;
+    std::string browserStatus;
 };
 
 class SmartDetector {
@@ -31,6 +36,7 @@ private:
     ~SmartDetector();
 
     bool m_initialized = false;
+    HWND m_captureForeground = nullptr;
 
     struct AccessibleElement {
         IAccessible* acc = nullptr;
@@ -48,6 +54,8 @@ private:
     struct WindowCandidate {
         HWND hwnd = nullptr;
         RECT rect = {};
+        RECT browserViewport = {};
+        bool browser = false;
         int detectMode = 1;
         IAccessible* rootAcc = nullptr;
         std::wstring className;
@@ -65,11 +73,7 @@ private:
     };
 
     std::vector<WindowCandidate> m_windowSnapshot;
-    struct BrowserWarmupEntry {
-        HWND hwnd = nullptr;
-        DWORD pid = 0;
-    };
-    std::vector<BrowserWarmupEntry> m_warmedBrowserWindows;
+    browser_companion::DomDetector m_browserDetector;
     HWND m_excludeHwnd = nullptr;
     HWND m_activeHwnd = nullptr;
     std::shared_ptr<AccessibleElement> m_currentElement;
@@ -80,7 +84,7 @@ private:
     bool BuildWindowSnapshot(HWND excludeHwnd);
     WindowCandidate* FindWindowAtPoint(POINT pt);
     bool CheckWindowAlive(WindowCandidate& win);
-    void WarmBrowserMsaa(WindowCandidate& win, POINT pt, HWND excludeHwnd);
+    void RefreshLiveBrowserSnapshot(HWND excludeHwnd);
     bool EnsureAccessibleRoot(WindowCandidate& win, POINT pt, HWND excludeHwnd);
 
     std::shared_ptr<AccessibleElement> MakeElement(IAccessible* acc, const VARIANT& child, bool addRef);

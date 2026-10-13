@@ -94,6 +94,7 @@ const wchar_t* HotkeyConflictTitle() { return g_chinese ? L"ZenCrop - 快捷键�
 
 const wchar_t* CropLabelFormat() { return g_chinese ? L"%d, %d \x00B7 %d x %d 像素" : L"%d, %d \x00B7 %d x %d px"; }
 const wchar_t* OverlayHoverHint() { return g_chinese ? L"点击选择窗口 \x00B7 拖拽选择区域 \x00B7 ESC 取消" : L"Click to select \x00B7 Drag to select area \x00B7 ESC to cancel"; }
+const wchar_t* OverlayBrowserFallbackHint() { return g_chinese ? L"网页选框不可用：点击选择窗口，或拖拽框选 · ESC 取消" : L"Webpage selection unavailable: click for window, or drag an area · ESC to cancel"; }
 const wchar_t* OverlayAdjustHint() { return g_chinese ? L"双击或按 Enter 确认 \x00B7 ESC 取消 \x00B7 方向键微调 \x00B7 滚轮缩放" : L"Double-click or Enter to confirm \x00B7 ESC to cancel \x00B7 Arrow keys adjust \x00B7 Wheel resizes"; }
 const wchar_t* OverlayOcrAdjustHint() { return g_chinese ? L"双击/Enter 确认 \x00B7 Shift+C 复制结果 \x00B7 ESC 取消 \x00B7 方向键微调 \x00B7 滚轮缩放" : L"Double-click/Enter to confirm \x00B7 Shift+C copy result \x00B7 ESC to cancel \x00B7 Arrow keys adjust \x00B7 Wheel resizes"; }
 

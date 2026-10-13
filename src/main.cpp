@@ -20,6 +20,7 @@
 #include "DashboardFileTypes.h"
 #include "BatchOcrImageLinks.h"
 #include "MiniHttpServer.h"
+#include "BrowserCompanionBridge.h"
 #include "ScreenshotSession.h"
 #include "AppMessages.h"
 #include "image/BitmapCodec.h"
@@ -840,6 +841,7 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         SetAppMainHwnd(nullptr);
         AlwaysOnTopManager::Instance().UnpinAll();
         MiniHttpServer::Instance().Stop();
+        browser_companion::Bridge::Instance().Stop();
         LlamaServerManager::Instance().GlobalShutdown();
         PostQuitMessage(0);
         return 0;
@@ -850,6 +852,9 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
 
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
     std::vector<std::wstring> args = GetCommandLineArgs();
+    if (browser_companion::IsNativeInvocation(args)) {
+        return browser_companion::RunNativeHost(args);
+    }
     if (HasArg(args, L"--model-dry-run")) {
         return RunModelRegistryDryRun(args);
     }
@@ -865,6 +870,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
     }
 
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+    browser_companion::Bridge::Instance().Start();
     S::InitLanguage();
     g_showTitlebar = LoadGeneralSettings().showTitlebar;
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);

@@ -64,6 +64,14 @@
               Value="[INSTALLFOLDER]"
               KeyPath="yes" />
         </Component>
+        <Component Id="cmp_ZenCropChromeNativeHost" Guid="$(var.ZenCropChromeHostComponentGuid)" Bitness="always64">
+          <RegistryValue Root="HKLM" Key="Software\Google\Chrome\NativeMessagingHosts\com.zencrop.browser_companion"
+              Type="string" Value="[INSTALLFOLDER]native-messaging\com.zencrop.browser_companion.json" KeyPath="yes" />
+        </Component>
+        <Component Id="cmp_ZenCropEdgeNativeHost" Guid="$(var.ZenCropEdgeHostComponentGuid)" Bitness="always64">
+          <RegistryValue Root="HKLM" Key="Software\Microsoft\Edge\NativeMessagingHosts\com.zencrop.browser_companion"
+              Type="string" Value="[INSTALLFOLDER]native-messaging\com.zencrop.browser_companion.json" KeyPath="yes" />
+        </Component>
       </Directory>
     </StandardDirectory>
 
@@ -103,6 +111,8 @@
       <ComponentGroupRef Id="ZenCropRuntimeFiles" />
       <ComponentGroupRef Id="ZenCropLegacyCleanup" />
       <ComponentRef Id="cmp_ZenCropInstallFolderRegistry" />
+      <ComponentRef Id="cmp_ZenCropChromeNativeHost" />
+      <ComponentRef Id="cmp_ZenCropEdgeNativeHost" />
       <ComponentRef Id="cmp_ZenCropStartMenuShortcut" />
     </Feature>
   </Package>

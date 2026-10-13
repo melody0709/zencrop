@@ -66,6 +66,7 @@ const wchar_t* HotkeyConflictTitle();
 
 const wchar_t* CropLabelFormat();
 const wchar_t* OverlayHoverHint();
+const wchar_t* OverlayBrowserFallbackHint();
 const wchar_t* OverlayAdjustHint();
 const wchar_t* OverlayOcrAdjustHint();
 

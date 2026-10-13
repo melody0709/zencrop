@@ -71,17 +71,18 @@ OverlayWindow::OverlayWindow(ScreenshotCommandCallback onScreenshotCommand)
         ScreenshotEditorPendingCropRectRight(m_editorState),
         ScreenshotEditorPendingCropRectBottom(m_editorState),
         false);
-    m_runtime.CaptureFrozenFrame(m_window, ScreenshotEditorScreenRect(m_editorState), LoadScreenshotSettings().includeCursor,
-        ScreenshotEditorIsScreenshotMode(m_editorState));
-
     m_detectorThread = std::make_unique<SmartDetectorThread>();
-    m_detectorThread->Start();
+
     m_detectorThread->OnResultReady = [this](SmartDetectorThread::Result result) {
         auto* pResult = new SmartDetectorThread::Result(std::move(result));
         if (!PostMessage(m_window, kWmAppSmartResultReady, 0, (LPARAM)pResult)) {
             delete pResult;
         }
     };
+    // Capture the requested instant before waiting for the pre-overlay window snapshot.
+    m_runtime.CaptureFrozenFrame(m_window, ScreenshotEditorScreenRect(m_editorState), LoadScreenshotSettings().includeCursor,
+        ScreenshotEditorIsScreenshotMode(m_editorState));
+    m_detectorThread->Start(ScreenshotEditorIsScreenshotMode(m_editorState));
 
     m_window = CreateWindowExW(
         WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW,

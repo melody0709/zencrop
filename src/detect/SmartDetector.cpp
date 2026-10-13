@@ -1,11 +1,11 @@
 #include "SmartDetector.h"
+#include "BrowserDomDetector.h"
 #include "Utils.h"
 #include "core/WideCaseOps.h"
 #include "core/WideCompareOps.h"
 #include <dwmapi.h>
 #include <oleauto.h>
 #include <psapi.h>
-#include <uiautomation.h>
 #include <algorithm>
 #include <map>
 #include <mutex>
@@ -66,35 +66,6 @@ std::wstring GetProcessNameCached(DWORD pid) {
     return result.first->second;
 }
 
-// P5: Browser process name whitelist.
-// Keep the 55 unique names sorted for potential binary search.
-const std::vector<std::wstring>& BrowserWhitelist() {
-    static const std::vector<std::wstring> list = {
-        L"360browser.exe", L"360chrome.exe", L"360se.exe", L"7star.exe",
-        L"amigobrowser.exe", L"avastbrowser.exe", L"baidubrowser.exe",
-        L"blackhawk.exe", L"bliskbrowser.exe", L"brave.exe", L"centbrowser.exe",
-        L"chedot.exe", L"chrome.exe", L"chrome sxs.exe", L"chromeplus.exe",
-        L"chromium.exe", L"citrio.exe", L"coccbrowser.exe", L"coowon.exe",
-        L"cyberfox.exe", L"dragon.exe", L"edge.exe", L"epic privacy browser.exe",
-        L"firefox.exe", L"ghostbrowser.exe", L"icedragon.exe", L"iridium.exe",
-        L"kinza.exe", L"kometabrowser.exe", L"liebao.exe", L"liebaobrowser.exe",
-        L"maxthon.exe", L"msedge.exe", L"nichrome.exe", L"opera.exe",
-        L"orbitum.exe", L"palemoon.exe", L"qip surf.exe", L"qqbrowser.exe",
-        L"quark.exe", L"seamonkey.exe", L"sleipnir5.exe", L"slimbrowser.exe",
-        L"slimjet.exe", L"slbrowser.exe", L"sogouexplorer.exe", L"spider.exe",
-        L"sputnik.exe", L"superbird.exe", L"theworld.exe", L"torch.exe",
-        L"ucbrowser.exe", L"uran.exe", L"vivaldi.exe", L"xvast.exe",
-        L"xpombrowser.exe"
-    };
-    return list;
-}
-
-bool IsBrowserProcessName(const std::wstring& processName) {
-    if (processName.empty()) return false;
-    const auto& list = BrowserWhitelist();
-    return std::find(list.begin(), list.end(), processName) != list.end();
-}
-
 // P0: Hang check cache (HWND -> {isHung, timestamp}).
 // Avoids repeated SendMessageTimeoutW(50ms) on slow-responding windows.
 // TTL = 500ms: if the window was responsive 500ms ago, don't re-probe.
@@ -106,7 +77,6 @@ struct HangCacheEntry {
 std::map<HWND, HangCacheEntry> g_hangCheckCache;
 std::mutex g_hangCheckCacheMutex;
 constexpr DWORD kHangCacheTtlMs = 500;
-constexpr DWORD kAccessibilityWarmupTimeoutMs = 50;
 
 bool IsWindowHung(HWND hWnd) {
     // Probe window responsiveness before accessibility work:
@@ -169,64 +139,6 @@ bool RectContains(const RECT& outer, const RECT& inner) {
         outer.bottom >= inner.bottom;
 }
 
-void TouchUiaPointThroughOverlay(POINT pt, HWND excludeHwnd) {
-    if (!excludeHwnd || !IsWindow(excludeHwnd)) return;
-
-    IUIAutomation* automation = nullptr;
-    HRESULT hr = CoCreateInstance(
-        CLSID_CUIAutomation,
-        nullptr,
-        CLSCTX_INPROC_SERVER,
-        IID_IUIAutomation,
-        reinterpret_cast<void**>(&automation));
-    if (FAILED(hr) || !automation) return;
-
-    RECT overlayRect = {};
-    if (GetWindowRect(excludeHwnd, &overlayRect)) {
-        int width = overlayRect.right - overlayRect.left;
-        int height = overlayRect.bottom - overlayRect.top;
-        int relX = pt.x - overlayRect.left;
-        int relY = pt.y - overlayRect.top;
-        if (width > 0 && height > 0 && relX >= 0 && relX < width && relY >= 0 && relY < height) {
-            HRGN fullRgn = CreateRectRgn(0, 0, width, height);
-            HRGN holeRgn = CreateRectRgn(
-                (std::max)(0, relX - 3),
-                (std::max)(0, relY - 3),
-                (std::min)(width, relX + 4),
-                (std::min)(height, relY + 4));
-            CombineRgn(fullRgn, fullRgn, holeRgn, RGN_DIFF);
-            DeleteObject(holeRgn);
-
-            bool regionApplied = SetWindowRgn(excludeHwnd, fullRgn, FALSE) != 0;
-            if (!regionApplied) {
-                DeleteObject(fullRgn);
-            }
-
-            IUIAutomationElement* pointElement = nullptr;
-            automation->ElementFromPoint(pt, &pointElement);
-            if (pointElement) {
-                pointElement->Release();
-            }
-
-            if (regionApplied) {
-                SetWindowRgn(excludeHwnd, nullptr, FALSE);
-            }
-        }
-    }
-
-    automation->Release();
-}
-
-void TouchUiaPointThroughOverlayMta(POINT pt, HWND excludeHwnd) {
-    std::jthread worker([=]() {
-        HRESULT coInit = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
-        TouchUiaPointThroughOverlay(pt, excludeHwnd);
-        if (SUCCEEDED(coInit)) {
-            CoUninitialize();
-        }
-    });
-}
-
 } // namespace
 
 SmartDetector::~SmartDetector() {
@@ -255,6 +167,8 @@ SmartDetector::WindowCandidate::~WindowCandidate() {
 SmartDetector::WindowCandidate::WindowCandidate(WindowCandidate&& other) noexcept {
     hwnd = other.hwnd;
     rect = other.rect;
+    browserViewport = other.browserViewport;
+    browser = other.browser;
     detectMode = other.detectMode;
     rootAcc = other.rootAcc;
     className = std::move(other.className);
@@ -272,6 +186,8 @@ SmartDetector::WindowCandidate& SmartDetector::WindowCandidate::operator=(Window
         ReleaseRoot();
         hwnd = other.hwnd;
         rect = other.rect;
+        browserViewport = other.browserViewport;
+        browser = other.browser;
         detectMode = other.detectMode;
         rootAcc = other.rootAcc;
         className = std::move(other.className);
@@ -307,12 +223,12 @@ void SmartDetector::Shutdown() {
 void SmartDetector::ClearDetectorCache() {
     ResetRuntimeState();
     m_windowSnapshot.clear();
-    m_warmedBrowserWindows.clear();
     m_excludeHwnd = nullptr;
 }
 
 void SmartDetector::ResetRuntimeState() {
     m_currentElement.reset();
+    m_browserDetector.Clear();
     m_activeHwnd = nullptr;
     m_traversedByWheel = false;
 }
@@ -401,6 +317,8 @@ bool SmartDetector::BuildWindowSnapshot(HWND excludeHwnd) {
         win.detectMode = 1;
         win.className = classNameBuf;
         win.processName = GetProcessNameCached(pid);
+        win.browser = browser_companion::IsBrowserWindow(hwnd, win.processName);
+        if (win.browser) win.browserViewport = browser_companion::FindBrowserViewport(hwnd);
         win.flags = 0;
         // OWN-94: pure case-insensitive process name compare.
         if (WideEqualsNoCase(win.processName, L"Explorer.EXE") &&
@@ -435,6 +353,15 @@ bool SmartDetector::CheckWindowAlive(WindowCandidate& win) {
     if (FAILED(DwmGetWindowAttribute(win.hwnd, DWMWA_EXTENDED_FRAME_BOUNDS, &current, sizeof(current)))) {
         GetWindowRect(win.hwnd, &current);
     }
+    if (win.browser && !m_browserDetector.Frozen()) {
+        RECT clipped = {};
+        const RECT screen = GetVirtualScreenRect();
+        if (IntersectRect(&clipped, &current, &screen)) {
+            --clipped.right;
+            --clipped.bottom;
+        }
+        return EqualRect(&clipped, &win.rect) && IsWindowVisible(win.hwnd);
+    }
     bool containsSnapshot =
         current.left <= win.rect.left &&
         current.top <= win.rect.top &&
@@ -449,62 +376,16 @@ bool SmartDetector::CheckWindowAlive(WindowCandidate& win) {
     return false;
 }
 
-void SmartDetector::WarmBrowserMsaa(WindowCandidate& win, POINT pt, HWND excludeHwnd) {
-    if (!win.hwnd || !IsBrowserProcessName(win.processName)) return;
-
-    DWORD pid = 0;
-    GetWindowThreadProcessId(win.hwnd, &pid);
-    auto warmedIt = std::find_if(
-        m_warmedBrowserWindows.begin(),
-        m_warmedBrowserWindows.end(),
-        [&](const BrowserWarmupEntry& entry) {
-            return entry.hwnd == win.hwnd && entry.pid == pid;
-        });
-    if (warmedIt != m_warmedBrowserWindows.end()) {
-        return;
+void SmartDetector::RefreshLiveBrowserSnapshot(HWND excludeHwnd) {
+    if (!m_browserDetector.Frozen() && std::ranges::any_of(m_windowSnapshot, [&](WindowCandidate &win) {
+            return win.browser && !CheckWindowAlive(win);
+        })) {
+        BuildWindowSnapshot(excludeHwnd);
     }
-
-    if (m_warmedBrowserWindows.size() > 32) {
-        m_warmedBrowserWindows.clear();
-    }
-    m_warmedBrowserWindows.push_back({ win.hwnd, pid });
-
-    // Some Chromium accessibility providers initialize lazily, so explicitly
-    // ask the browser window for its OBJID_CLIENT object.
-    DWORD_PTR objectResult = 0;
-    SendMessageTimeoutW(
-        win.hwnd,
-        WM_GETOBJECT,
-        0,
-        static_cast<LPARAM>(OBJID_CLIENT),
-        SMTO_ABORTIFHUNG | SMTO_BLOCK,
-        kAccessibilityWarmupTimeoutMs,
-        &objectResult);
-
-    TouchUiaPointThroughOverlayMta(pt, excludeHwnd);
-
-    IAccessible* clientAcc = nullptr;
-    HRESULT hr = AccessibleObjectFromWindow(
-        win.hwnd, OBJID_CLIENT, IID_IAccessible, reinterpret_cast<void**>(&clientAcc));
-    if (FAILED(hr) || !clientAcc) {
-        return;
-    }
-
-    VARIANT self;
-    VariantInit(&self);
-    self.vt = VT_I4;
-    self.lVal = CHILDID_SELF;
-
-    BSTR name = nullptr;
-    hr = clientAcc->get_accName(self, &name);
-    if (SUCCEEDED(hr) && name) {
-        SysFreeString(name);
-    }
-    VariantClear(&self);
-    clientAcc->Release();
 }
 
 bool SmartDetector::EnsureAccessibleRoot(WindowCandidate& win, POINT pt, HWND excludeHwnd) {
+    if (browser_companion::IsBrowserWindow(win.hwnd, win.processName)) return false;
     if (win.detectMode == 2) return false;
     if (win.rootAcc) return true;
     if (win.accValidState == 1) return false;
@@ -513,8 +394,6 @@ bool SmartDetector::EnsureAccessibleRoot(WindowCandidate& win, POINT pt, HWND ex
         win.detectMode = 2;
         return false;
     }
-
-    WarmBrowserMsaa(win, pt, excludeHwnd);
 
     IAccessible* root = nullptr;
     HRESULT hr = AccessibleObjectFromWindow(win.hwnd, OBJID_WINDOW, IID_IAccessible, (void**)&root);
@@ -734,10 +613,12 @@ SmartRectResult SmartDetector::GetRectByPoint(POINT pt, HWND excludeHwnd) {
     SmartRectResult result;
     result.pt = pt;
 
+    if (!m_windowSnapshot.empty() && m_excludeHwnd == nullptr) m_excludeHwnd = excludeHwnd;
     if (m_windowSnapshot.empty() || m_excludeHwnd != excludeHwnd) {
         BuildWindowSnapshot(excludeHwnd);
     }
 
+    RefreshLiveBrowserSnapshot(excludeHwnd);
     WindowCandidate* win = FindWindowAtPoint(pt);
     if (!win) {
         BuildWindowSnapshot(excludeHwnd);
@@ -749,7 +630,8 @@ SmartRectResult SmartDetector::GetRectByPoint(POINT pt, HWND excludeHwnd) {
 
     const bool activeWindowChanged = (m_activeHwnd != win->hwnd);
     const bool needsAliveCheck = activeWindowChanged || !m_currentElement;
-    if (needsAliveCheck && !CheckWindowAlive(*win)) {
+    const bool browserWindow = browser_companion::IsBrowserWindow(win->hwnd, win->processName);
+    if (needsAliveCheck && !browserWindow && !CheckWindowAlive(*win)) {
         BuildWindowSnapshot(excludeHwnd);
         win = FindWindowAtPoint(pt);
         if (!win) {
@@ -764,6 +646,18 @@ SmartRectResult SmartDetector::GetRectByPoint(POINT pt, HWND excludeHwnd) {
         m_traversedByWheel = false;
         m_activeHwnd = win->hwnd;
     }
+
+    if (browser_companion::IsBrowserWindow(win->hwnd, win->processName)) {
+        result.browser = true;
+        result.rect = m_browserDetector.Inspect(win->hwnd, win->browserViewport, pt, 0, win->hwnd == m_captureForeground);
+        result.browserSession = m_browserDetector.Session();
+        result.browserDocument = m_browserDetector.Document();
+        result.browserStatus = m_browserDetector.Status();
+        if (RectArea(result.rect) <= 25) result.rect = ClipCandidateRect(win->rect, *win, pt);
+        result.success = RectArea(result.rect) > 25 && PtInRect(&result.rect, pt);
+        return result;
+    }
+    m_browserDetector.Clear();
 
     if (m_traversedByWheel && m_currentElement) {
         RECT traversedRect = {};
@@ -802,23 +696,7 @@ SmartRectResult SmartDetector::GetRectByPoint(POINT pt, HWND excludeHwnd) {
                 }
             }
 
-            if (msaaHit && IsBrowserProcessName(win->processName) && GetElementChildCount(first) > 0) {
-                auto second = ElementFromPoint(win->rootAcc, pt);
-                if (second && second != first) {
-                    RECT secondRect = {};
-                    if (GetElementRect(second, secondRect)) {
-                        secondRect = ClipCandidateRect(secondRect, *win, pt);
-                        bool secondValid = RectArea(secondRect) > 25 && PtInRect(&secondRect, pt);
-                        if (secondValid) {
-                            int secondChildCount = GetElementChildCount(second);
-                            if (secondChildCount == 0 || RectArea(secondRect) < RectArea(selectedRect)) {
-                                selected = second;
-                                selectedRect = secondRect;
-                            }
-                        }
-                    }
-                }
-            }
+
         }
 
         if (markWindowOnlyAfterThisHit) {
@@ -847,10 +725,12 @@ SmartRectResult SmartDetector::GetRectByPoint(POINT pt, HWND excludeHwnd) {
 
 RECT SmartDetector::GetParentRect(POINT pt, HWND targetHwnd, HWND excludeHwnd, const RECT& clientRect) {
     (void)clientRect;
+    if (!m_windowSnapshot.empty() && m_excludeHwnd == nullptr) m_excludeHwnd = excludeHwnd;
     if (m_windowSnapshot.empty() || m_excludeHwnd != excludeHwnd) {
         BuildWindowSnapshot(excludeHwnd);
     }
 
+    RefreshLiveBrowserSnapshot(excludeHwnd);
     WindowCandidate* win = FindWindowAtPoint(pt);
     if (!win && targetHwnd) {
         for (auto& snapshotWin : m_windowSnapshot) {
@@ -861,6 +741,11 @@ RECT SmartDetector::GetParentRect(POINT pt, HWND targetHwnd, HWND excludeHwnd, c
         }
     }
     if (!win) return {};
+    if (browser_companion::IsBrowserWindow(win->hwnd, win->processName)) {
+        RECT rect = m_browserDetector.Inspect(win->hwnd, win->browserViewport, pt, 1, win->hwnd == m_captureForeground);
+        return RectArea(rect) > 25 ? rect : ClipCandidateRect(win->rect, *win, pt);
+    }
+    m_browserDetector.Clear();
     if (!CheckWindowAlive(*win) || !m_currentElement) {
         return ClipCandidateRect(win->rect, *win, pt);
     }
@@ -889,10 +774,12 @@ RECT SmartDetector::GetParentRect(POINT pt, HWND targetHwnd, HWND excludeHwnd, c
 
 RECT SmartDetector::GetChildRect(POINT pt, HWND targetHwnd, HWND excludeHwnd, const RECT& clientRect) {
     (void)clientRect;
+    if (!m_windowSnapshot.empty() && m_excludeHwnd == nullptr) m_excludeHwnd = excludeHwnd;
     if (m_windowSnapshot.empty() || m_excludeHwnd != excludeHwnd) {
         BuildWindowSnapshot(excludeHwnd);
     }
 
+    RefreshLiveBrowserSnapshot(excludeHwnd);
     WindowCandidate* win = FindWindowAtPoint(pt);
     if (!win && targetHwnd) {
         for (auto& snapshotWin : m_windowSnapshot) {
@@ -904,6 +791,12 @@ RECT SmartDetector::GetChildRect(POINT pt, HWND targetHwnd, HWND excludeHwnd, co
     }
     if (!win) return {};
 
+    if (browser_companion::IsBrowserWindow(win->hwnd, win->processName)) {
+        RECT rect = m_browserDetector.Inspect(win->hwnd, win->browserViewport, pt, -1, win->hwnd == m_captureForeground);
+        return RectArea(rect) > 25 ? rect : ClipCandidateRect(win->rect, *win, pt);
+    }
+
+    m_browserDetector.Clear();
     RECT currentRect = {};
     bool hasCurrent = m_currentElement && GetElementRect(m_currentElement, currentRect);
     if (hasCurrent) {

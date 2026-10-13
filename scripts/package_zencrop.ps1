@@ -728,7 +728,9 @@ function New-WixGeneratedSources(
     }
     foreach ($name in @(
             "ZenCropInstallFolderRegistryComponentGuid",
-            "ZenCropStartMenuShortcutComponentGuid")) {
+            "ZenCropStartMenuShortcutComponentGuid",
+            "ZenCropChromeHostComponentGuid",
+            "ZenCropEdgeHostComponentGuid")) {
         if ((Read-WixDefine $currentText $name) -ne (Read-WixDefine $nextText $name)) {
             throw "Adjacent ProductVersion changed stable installer Component GUID '$name'"
         }
@@ -1185,6 +1187,24 @@ function Test-MsiStaticContract(
         }
         if (!$installFolderRegistryFound) {
             throw "MSI does not persist INSTALLFOLDER in the expected HKLM registry value"
+        }
+
+        foreach ($hostContract in @(
+                @{ Component = "cmp_ZenCropChromeNativeHost"; Define = "ZenCropChromeHostComponentGuid"; Key = "Software\Google\Chrome\NativeMessagingHosts\com.zencrop.browser_companion" },
+                @{ Component = "cmp_ZenCropEdgeNativeHost"; Define = "ZenCropEdgeHostComponentGuid"; Key = "Software\Microsoft\Edge\NativeMessagingHosts\com.zencrop.browser_companion" })) {
+            if (!$componentsById.ContainsKey($hostContract.Component)) { throw "MSI is missing native host Component" }
+            $component = $componentsById[$hostContract.Component]
+            $expectedGuid = Normalize-Guid (Read-WixDefine $productInstanceText $hostContract.Define) "Native host GUID"
+            if ((Normalize-Guid $component.Fields[1] "MSI native host GUID") -ne $expectedGuid -or
+                (([int]$component.Fields[3]) -band 256) -eq 0) { throw "Native host Component identity/bitness mismatch" }
+            $foundHost = $false
+            foreach ($row in @(Get-MsiRows $database 'SELECT `Registry`, `Root`, `Key`, `Name`, `Value`, `Component_` FROM `Registry`' 6)) {
+                if ($row.Fields[1] -eq "2" -and $row.Fields[2] -eq $hostContract.Key -and
+                    [string]::IsNullOrEmpty($row.Fields[3]) -and
+                    $row.Fields[4] -eq "[INSTALLFOLDER]native-messaging\com.zencrop.browser_companion.json" -and
+                    $row.Fields[5] -eq $hostContract.Component -and $component.Fields[5] -eq $row.Fields[0]) { $foundHost = $true }
+            }
+            if (!$foundHost) { throw "MSI native host registration does not match its exact ownership contract" }
         }
 
         $startMenuShortcutComponentGuid = Normalize-Guid (

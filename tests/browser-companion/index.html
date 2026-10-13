@@ -1,0 +1,7 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>ZenCrop companion public fixture</title>
+<style>body{margin:0;background:#fafafa;font:16px sans-serif}#panel{position:absolute;left:120px;top:90px;width:400px;height:260px;background:#ddd;padding:20px;box-sizing:border-box}#button{width:160px;height:60px}iframe{position:absolute;left:650px;top:120px;width:400px;height:220px;border:5px solid #888}#shadow{position:absolute;top:430px;left:120px;width:300px;height:100px}#cross{top:420px;transform:scale(.9) rotate(5deg)}</style>
+</head><body><section id="panel"><button id="button">Rectangle fixture</button><p id="paragraph">A public multiline paragraph<br>for rectangle selection.</p><input aria-label="Fixture input" value="fixture"></section>
+<div id="shadow"></div><iframe id="same" src="frame.html"></iframe><iframe id="cross"></iframe>
+<script>document.querySelector('#shadow').attachShadow({mode:'open'}).innerHTML='<div id="scroll" style="height:90px;overflow:auto"><button id="shadow-button" style="width:180px;height:60px">Shadow fixture</button><div style="height:300px"></div></div>'; document.querySelector('#cross').src=location.href.replace('127.0.0.1','localhost').replace('index.html','frame.html');</script>
+</body></html>
