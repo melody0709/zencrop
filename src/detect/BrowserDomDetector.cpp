@@ -203,6 +203,12 @@ RECT DomDetector::Inspect(HWND window, RECT viewport, POINT point, int direction
         return miss("outside_viewport");
     const RECT previous = m_candidates.empty() ? RECT{} : m_candidates[m_index];
     const RECT previousLeaf = m_candidates.empty() ? RECT{} : m_candidates.front();
+    // Keep an ordinary wheel-selected region even when an overlapping hit has a different DOM ancestry.
+    if (direction == 0 && m_wheelSelected && !m_pageSelected && PtInRect(&previous, point)) {
+        if (m_stop.stop_requested() || !Bridge::Instance().IsValid(m_session, m_document))
+            return unavailable("geometry_invalidated");
+        return previous;
+    }
     auto reply = Bridge::Instance().Query(window, viewport, point, m_session, std::to_string(++m_request), m_frozen,
                                           m_stop, currentViewports, foregroundAtCapture);
     m_candidates.clear();

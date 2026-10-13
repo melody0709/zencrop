@@ -178,7 +178,7 @@ async function geometry(page, selector) {
   // Native Messaging's host deliberately uses the real library and verified process identity.
   await page.evaluate(()=>document.documentElement.style.minHeight='100vh');
   const navigationFixture = await geometry(page,'#button');
-  const navigationTarget = await geometry(page,'#paragraph');
+  const navigationTarget = await geometry(page,'#overlap');
   const pageGeometry = await geometry(page,'html');
   await runProbe(page,{...navigationFixture,navigationTarget:{point:navigationTarget.point,
     expected:navigationTarget.expected,page:pageGeometry.expected}},worker);

@@ -1,4 +1,4 @@
-# ZenCrop v3.1.10
+# ZenCrop v3.2.0
 
 Browser webpage selection uses the optional [Chrome/Edge companion](extensions/browser-companion/README.md); without it, browser window/manual selection remains available.
 

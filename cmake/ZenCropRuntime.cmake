@@ -99,6 +99,13 @@ function(zencrop_install_runtime target)
         "${_src}/extensions/browser-companion/README.md"
         DESTINATION "extensions/browser-companion"
         COMPONENT Runtime)
+    install(FILES
+        "${_src}/extensions/browser-companion/icons/icon-16.png"
+        "${_src}/extensions/browser-companion/icons/icon-32.png"
+        "${_src}/extensions/browser-companion/icons/icon-48.png"
+        "${_src}/extensions/browser-companion/icons/icon-128.png"
+        DESTINATION "extensions/browser-companion/icons"
+        COMPONENT Runtime)
     install(FILES "${_src}/extensions/browser-companion/com.zencrop.browser_companion.json"
         DESTINATION "native-messaging"
         COMPONENT Runtime)

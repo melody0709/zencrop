@@ -1,4 +1,4 @@
-# ZenCrop v3.1.10
+# ZenCrop v3.2.0
 
 浏览器网页元素自动选框使用可选的 [Chrome/Edge 配套扩展](../extensions/browser-companion/README.md)；未安装或不可用时，可继续选择浏览器窗口或手动框选。
 

@@ -3,11 +3,24 @@
   "name": "ZenCrop Browser Companion",
   "description": "Provides webpage element rectangles to ZenCrop while selecting a screenshot. Requires access to sites for the desktop shortcut.",
   "version": "1.0.4",
+  "icons": {
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAwLYkX9H6Rt0yfqYDIbwiqFrPVGG8Ysb5fBGtBAiwOZ8TQ1x6TgHQNei1XbxnA5kkYRbtjL8jx6EQVX8vmlnUkfewLlbkhNe/gxr8GXkYmgOSlKfDyAsvu6f49bmgBkHgnEWGfzDVS8DSRQW9iCMIKNGTmFaoirEymE492s4z9PnvjT0nyHWZl1eQ1g76QMpXsm8NlthLXJkihindobXEZ3eAy1otnymlHhT2mONU3F3jBh3yBUesBRUiI/D0vtmFLjOFsVaOyp9TKw2RwcXqH7YuQCaiGlv4Vi9NknsEr8BPIFjoFeiJjlzx0AXgwZJ+lndQ9F+TgzqVvN82cIWsaQIDAQAB",
   "permissions": ["nativeMessaging", "webNavigation", "alarms"],
   "host_permissions": ["http://*/*", "https://*/*"],
   "background": {"service_worker": "worker.js"},
-  "action": {"default_title": "Reconnect ZenCrop webpage selection"},
+  "action": {
+    "default_title": "Reconnect ZenCrop webpage selection",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "32": "icons/icon-32.png",
+      "48": "icons/icon-48.png"
+    }
+  },
   "content_scripts": [{
     "matches": ["http://*/*", "https://*/*"],
     "js": ["content.js"],

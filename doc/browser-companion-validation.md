@@ -1,6 +1,6 @@
 # Browser companion implementation and validation
 
-Date: 2026-10-12. Product version: **3.1.10, unreleased**.
+Date: 2026-10-13. Product version: **3.2.0, unreleased**.
 
 The desktop, extension, Native Messaging/IPC bridge, browser detection split, registration assets and MSI authoring are implemented. Development geometry/lifecycle checks pass in the environments below. **Physical hardware acceptance, persistent browser performance acceptance and release acceptance are still open.** This report does not sign off the full implementation-plan matrix.
 
@@ -25,7 +25,7 @@ The desktop, extension, Native Messaging/IPC bridge, browser detection split, re
 | Independent `smoke_zencrop_platform` link | PASS | Existing smoke target built through test wrapper |
 | Development register/re-register/unregister; unknown default value rejected and preserved | PASS | Performed against the feature's exact keys, then restored runtime registration |
 | JavaScript syntax; PowerShell ASCII and syntax; existing WebView assets keep LF | PASS | Checked during implementation |
-| MSI build, registry/identity/static checks and administrative extraction | PASS | `build/packages/3.1.10/ZenCrop-v3.1.10-win-x64-unsigned.msi`, packaging report |
+| MSI build, registry/identity/static checks and administrative extraction | PASS | `build/packages/3.2.0/ZenCrop-v3.2.0-win-x64-unsigned.msi`, packaging report |
 
 The C++ contract covers valid and invalid UTF-8/JSON/version/type/identity, oversized/deep input, split headers and bodies, EOF, cancellation, outgoing invalid UTF-8, candidate count, negative screen coordinates, clipping/rounding and stale generations. It also protects Firefox while leaving Electron/unknown renamed processes outside the browser support claim. The existing test executable exercises the real native-host and detector APIs; no new production test hook or C++ executable was introduced.
 
@@ -97,6 +97,14 @@ Edge passed overlapping maximized-window binding, live movement, continuous ifra
 The final small public fixture used a 24×16 CSS-pixel leaf inside a 56×56 parent; both browsers passed nine zoom levels through the real native bridge, including 500% at DPR 7.5. Evidence: `build/artifacts/tests/browser-companion-edge-final-small-viewport-18884/matrix.json` and `build/artifacts/tests/browser-companion-chrome-final-small-viewport-9084/matrix.json`. The one-off small-fixture scaffold was removed after verification; the results remain in the generated test evidence directories. These runs verify coordinates/lifecycle, not actual OverlayWindow repaint latency.
 
 The user's profile was not refreshed for this review-fix pass. Reload companion 1.0.4 and refresh the target page once before manual acceptance. Frozen navigation/scroll/actual geometry invalidation remains intentional. MutationObserver checks were not deferred to requestAnimationFrame, and overlapped events were not pooled: both changes would alter validation timing or cancellation ownership without measured evidence.
+
+## Ordinary parent lock follow-up (2026-10-13)
+
+A public overlapping-sibling fixture reproduced loss of ordinary parent locking: after wheel-up, the pointer remained inside the selected rectangle but hit a sibling outside that parent's DOM subtree. The fresh candidate path did not contain the previous parent, so selection reset to its new leaf. Both the cross-leaf lock and return-within-parent assertions failed before the fix.
+
+The desktop detector now retains an ordinary wheel-selected path during hover inside its rectangle after viewport, cancellation and bridge-validity checks. This also retains observation of the selected path rather than replacing it with the unrelated sibling path. Whole-page selections still query new leaves, and wheel navigation still obtains fresh candidates. The permanent public fixture and existing runtime probe now cover the overlapping sibling instead of only a direct descendant.
+
+The focused Chrome and Edge runtime probes passed parent retention, wheel-down and page-to-leaf recovery. Evidence: `build/artifacts/tests/browser-companion-parent-lock-regression-fixed-26076/matrix.json` and `build/artifacts/tests/browser-companion-parent-lock-edge-fixed-23628/matrix.json`; the failing Chrome evidence is `build/artifacts/tests/browser-companion-parent-lock-regression-before-5548/probe-0.json.result.json`. The screenshot editor/state contract passed. Only desktop detection changed; companion 1.0.4 does not need reloading for this fix. These focused probes do not replace full OverlayWindow manual acceptance.
 
 ## Still required for sign-off
 
