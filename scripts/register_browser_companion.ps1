@@ -12,7 +12,8 @@ $keys = @(
     'Software\Microsoft\Edge\NativeMessagingHosts\com.zencrop.browser_companion'
 )
 $root = [Microsoft.Win32.RegistryKey]::OpenBaseKey('CurrentUser', 'Registry64')
-$statePath = Join-Path $env:LOCALAPPDATA 'ZenCrop/browser-companion-registration.json'
+$stateDirectory = if ($env:ZENCROP_DATA_DIR) { [IO.Path]::GetFullPath($env:ZENCROP_DATA_DIR) } else { Join-Path $env:LOCALAPPDATA 'ZenCrop' }
+$statePath = Join-Path $stateDirectory 'browser-companion-registration.json'
 try {
     if ($Action -eq 'Register') {
         if (!(Test-Path -LiteralPath (Join-Path $runtime 'ZenCrop.exe')) -or !(Test-Path -LiteralPath $manifest)) {
@@ -28,11 +29,11 @@ try {
             $key = $root.OpenSubKey($path)
             $value = if ($key) { $key.GetValue('') } else { $null }
             $prior = if ($saved) { @($saved.records | Where-Object { $_.key -eq $path })[0] } else { $null }
-            if ($null -ne $value -and $value -ne $manifest -and (!$prior -or $value -ne $saved.manifest)) {
+            if ($null -ne $value -and $value -ne $manifest -and (!$prior -or ($value -ne $saved.manifest -and $value -ne $prior.priorManifest))) {
                 if ($key) { $key.Dispose() }
                 throw "Refusing to replace an unknown registration: $path"
             }
-            $records += @{ key = $path; existed = if ($prior) { $prior.existed } else { $null -ne $key }; previous = if ($prior) { $prior.previous } else { $value } }
+            $records += @{ key = $path; existed = if ($prior) { $prior.existed } else { $null -ne $key }; previous = if ($prior) { $prior.previous } else { $value }; priorManifest = $value }
             if ($key) { $key.Dispose() }
         }
         [IO.Directory]::CreateDirectory((Split-Path $statePath -Parent)) | Out-Null

@@ -559,8 +559,6 @@ inline void NormalizeLoadedPPOcrV6Preset(
     DowngradePPOcrV6PresetIfDiverged(settings);
 }
 
-std::wstring GetSettingsFilePath();
-std::mutex& SettingsWriteMutex();
 std::wstring ReadFileToString(const std::wstring& path);
 // Preserve the exact on-disk bytes before replacing a damaged settings file.
 bool BackupSettingsFile(const std::wstring& path, std::wstring* error = nullptr);
@@ -568,6 +566,9 @@ bool WriteStringToFile(
     const std::wstring& path,
     const std::wstring& content,
     std::wstring* error = nullptr);
+
+std::wstring GetSettingsFilePath();
+std::mutex& SettingsWriteMutex();
 
 // The canonical settings.json layout: seven known sections in a fixed order, followed
 // by any unknown top-level fields preserved verbatim. Each non-empty field below is the

@@ -153,6 +153,20 @@ inline std::wstring WideFormatCropLabel(
     return buf;
 }
 
+// "{}" = Chrome host state, "{}" = Edge host state. Both hosts are reported separately.
+inline std::wstring WideFormatCompanionStatus(
+    const wchar_t* format, const wchar_t* chromeState, const wchar_t* edgeState)
+{
+    const wchar_t* pattern = format ? format : L"Bridge: Chrome {} / Edge {}";
+    const wchar_t* chrome = chromeState ? chromeState : L"";
+    const wchar_t* edge = edgeState ? edgeState : L"";
+    try {
+        return std::vformat(pattern, std::make_wformat_args(chrome, edge));
+    } catch (const std::format_error&) {
+        return pattern;
+    }
+}
+
 inline std::wstring WideFormatGroupsFailedSuffix(int failedGroups)
 {
     return std::format(L"{} group(s) failed.", failedGroups);

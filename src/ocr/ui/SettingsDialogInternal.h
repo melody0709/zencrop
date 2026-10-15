@@ -46,6 +46,7 @@ void HandlePageMouseWheel(HWND page, short delta);
 LRESULT CALLBACK PageScrollSubclassProc(HWND, UINT, WPARAM, LPARAM, UINT_PTR, DWORD_PTR);
 void RelayoutOcrPage(HWND page, UINT dpi);
 void RelayoutGeneralPage(HWND page, UINT dpi);
+void UpdateGeneralCompanionStatus(HWND page);
 void RelayoutZenCropPage(HWND page, UINT dpi);
 void RelayoutAotPage(HWND page, UINT dpi);
 void RelayoutScreenshotPage(HWND page, UINT dpi);

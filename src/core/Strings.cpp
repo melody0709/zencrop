@@ -62,11 +62,25 @@ const wchar_t* StartupRegistrationErrorTitle() { return g_chinese ? L"ZenCrop - 
 const wchar_t* StartupRegistrationErrorMessage() { return g_chinese ? L"\u65e0\u6cd5\u66f4\u65b0\u5f00\u673a\u81ea\u542f\u8bbe\u7f6e\u3002\u9519\u8bef\u4ee3\u7801\uff1a" : L"Windows could not update the startup setting. Error code: "; }
 const wchar_t* CompanionLabel() { return g_chinese ? L"浏览器选框扩展：" : L"Browser Companion:"; }
 const wchar_t* CompanionOpenFolder() { return g_chinese ? L"打开扩展目录..." : L"Open Extension Folder..."; }
+const wchar_t* CompanionRegister() { return g_chinese ? L"一键注册" : L"Register Bridge"; }
+const wchar_t* CompanionRegistrationSucceeded() {
+    return g_chinese
+        ? L"已为当前用户注册 Chrome / Edge 桥接。\n请在浏览器中重新加载扩展，或点击扩展图标重新连接。\n移动程序目录后，请再次注册。"
+        : L"Chrome/Edge bridge registered for the current user.\nReload the browser extension or click its icon to reconnect.\nRegister again after moving the program directory.";
+}
 const wchar_t* CompanionHint() {
     return g_chinese
-        ? L"用于 Chrome / Edge 网页元素智能吸附；未加载时默认选择整窗。"
-        : L"Enables webpage element snapping in Chrome/Edge; selects full window if not loaded.";
+        ? L"用于 Chrome / Edge 元素吸附（未加载时选择整窗）。"
+        : L"Enables Chrome/Edge element snapping (full-window fallback).";
 }
+// "{}" = Chrome state, "{}" = Edge state. Both hosts are reported separately.
+const wchar_t* CompanionStatusFormat() {
+    return g_chinese ? L"桥接：Chrome {} · Edge {}" : L"Bridge: Chrome {} / Edge {}";
+}
+const wchar_t* CompanionHostStateNotRegistered() { return g_chinese ? L"未注册" : L"not registered"; }
+const wchar_t* CompanionHostStateReady() { return g_chinese ? L"已注册" : L"registered"; }
+const wchar_t* CompanionHostStatePathMismatch() { return g_chinese ? L"其他路径" : L"other path"; }
+const wchar_t* CompanionHostStateTargetMissing() { return g_chinese ? L"清单缺失" : L"manifest missing"; }
 
 const wchar_t* ColorLabel() { return g_chinese ? L"颜色：" : L"Color:"; }
 const wchar_t* ChooseButton() { return g_chinese ? L"选择..." : L"Choose..."; }

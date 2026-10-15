@@ -1,8 +1,10 @@
 #include "SettingsDialogInternal.h"
 #include "SettingsPageLayout.h"
 #include "StartupRegistration.h"
+#include "core/BrowserCompanionRegistration.h"
 #include "JsonUtils.h"
 #include "core/WideFormatNumbers.h"
+#include "core/WideFormatLabels.h"
 #include "core/WideColorUtils.h"
 #include "core/WidePathUtils.h"
 #include "HotkeyEdit.h"
@@ -69,6 +71,29 @@ UINT GetPageDpi(HWND hwnd) {
     return dpi;
 }
 
+void UpdateGeneralCompanionStatus(HWND hPage) {
+    HWND hStatus = GetDlgItem(hPage, IDC_GEN_COMPANION_STATUS);
+    if (!hStatus) return;
+
+    const auto hostStateText = [](zencrop::BrowserCompanionHostState host) {
+        switch (host) {
+        case zencrop::BrowserCompanionHostState::Ready: return S::CompanionHostStateReady();
+        case zencrop::BrowserCompanionHostState::PathMismatch: return S::CompanionHostStatePathMismatch();
+        case zencrop::BrowserCompanionHostState::TargetMissing: return S::CompanionHostStateTargetMissing();
+        case zencrop::BrowserCompanionHostState::NotRegistered:
+        default: return S::CompanionHostStateNotRegistered();
+        }
+    };
+
+    const auto info = zencrop::QueryBrowserCompanionBridge();
+    const std::wstring text = WideFormatCompanionStatus(
+        S::CompanionStatusFormat(), hostStateText(info.chrome), hostStateText(info.edge));
+    SetWindowTextW(hStatus, text.c_str());
+    EnableWindow(GetDlgItem(hPage, IDC_GEN_COMPANION_REGISTER),
+        info.chrome != zencrop::BrowserCompanionHostState::Ready ||
+        info.edge != zencrop::BrowserCompanionHostState::Ready);
+}
+
 void RelayoutGeneralPage(HWND hPage, UINT dpi) {
     if (!hPage) return;
     SettingsPageLayout layout(hPage, dpi);
@@ -77,24 +102,45 @@ void RelayoutGeneralPage(HWND hPage, UINT dpi) {
     layout.AddSpace(16);
 
     HWND hLabel = GetDlgItem(hPage, IDC_GEN_COMPANION_LABEL);
-    HWND hBtn = GetDlgItem(hPage, IDC_GEN_COMPANION_OPEN_FOLDER);
+    HWND hFolderBtn = GetDlgItem(hPage, IDC_GEN_COMPANION_OPEN_FOLDER);
+    HWND hRegisterBtn = GetDlgItem(hPage, IDC_GEN_COMPANION_REGISTER);
+    HWND hStatus = GetDlgItem(hPage, IDC_GEN_COMPANION_STATUS);
     HWND hHint = GetDlgItem(hPage, IDC_GEN_COMPANION_HINT);
 
-    int btnW = layout.Scale(160);
     int labelW = layout.LabelW() + layout.Scale(20);
+    int folderBtnW = layout.Scale(160);
     if (hLabel) MoveWindow(hLabel, layout.PadX(), layout.CurrentY() + layout.Scale(2), labelW, layout.RowH(), TRUE);
-    if (hBtn) MoveWindow(hBtn, layout.PadX() + labelW + layout.Scale(16), layout.CurrentY(), btnW, layout.RowH(), TRUE);
+    if (hFolderBtn) MoveWindow(hFolderBtn, layout.PadX() + labelW + layout.Scale(16), layout.CurrentY(), folderBtnW, layout.RowH(), TRUE);
+    if (hRegisterBtn) MoveWindow(hRegisterBtn, layout.PadX() + labelW + layout.Scale(24) + folderBtnW,
+        layout.CurrentY(), layout.Scale(112), layout.RowH(), TRUE);
     layout.AdvanceRow();
+
+    auto* state = SettingsStateForPage(hPage);
+
+    // Both status and hint are single-line LTEXT. 18 design px provides clean line headroom
+    // without bottom clipping. AddSpace() takes DESIGN pixels and scales internally.
+    constexpr int kCompanionTextRowDesignH = 18;
+    constexpr int kCompanionRowGapDesign = 8;
+    const int companionTextRowH = layout.Scale(kCompanionTextRowDesignH);
+
+    if (hStatus) {
+        SetPropW(hStatus, L"ZenCropHint", reinterpret_cast<HANDLE>(1));
+        if (state && state->hPageFont.get()) {
+            SendMessageW(hStatus, WM_SETFONT, reinterpret_cast<WPARAM>(state->hPageFont.get()), TRUE);
+        }
+        MoveWindow(hStatus, layout.PadX(), layout.CurrentY() + layout.Scale(2),
+            layout.UsableWidth(), companionTextRowH, TRUE);
+        layout.AddSpace(kCompanionTextRowDesignH + kCompanionRowGapDesign);
+    }
 
     if (hHint) {
         SetPropW(hHint, L"ZenCropHint", reinterpret_cast<HANDLE>(1));
-        auto* state = SettingsStateForPage(hPage);
         if (state && state->hPageFont.get()) {
             SendMessageW(hHint, WM_SETFONT, reinterpret_cast<WPARAM>(state->hPageFont.get()), TRUE);
         }
-        int hintH = layout.Scale(18);
-        MoveWindow(hHint, layout.PadX(), layout.CurrentY(), layout.UsableWidth(), hintH, TRUE);
-        layout.AddSpace(20);
+        MoveWindow(hHint, layout.PadX(), layout.CurrentY(),
+            layout.UsableWidth(), companionTextRowH, TRUE);
+        layout.AddSpace(kCompanionTextRowDesignH + kCompanionRowGapDesign);
     }
     layout.Finish();
 }
@@ -554,6 +600,8 @@ INT_PTR CALLBACK GeneralPageProc(HWND hPage, UINT uMsg, WPARAM wParam, LPARAM lP
         SetDlgItemTextW(hPage, IDC_GEN_COMPANION_LABEL, S::CompanionLabel());
         SetDlgItemTextW(hPage, IDC_GEN_COMPANION_HINT, S::CompanionHint());
         SetDlgItemTextW(hPage, IDC_GEN_COMPANION_OPEN_FOLDER, S::CompanionOpenFolder());
+        SetDlgItemTextW(hPage, IDC_GEN_COMPANION_REGISTER, S::CompanionRegister());
+        UpdateGeneralCompanionStatus(hPage);
         CheckDlgButton(hPage, IDC_GEN_START_WITH_WINDOWS,
             state ? (state->draft.startupPending ? BST_CHECKED : BST_UNCHECKED)
                   : (QueryZenCropStartupRegistration().registered ? BST_CHECKED : BST_UNCHECKED));
@@ -561,6 +609,13 @@ INT_PTR CALLBACK GeneralPageProc(HWND hPage, UINT uMsg, WPARAM wParam, LPARAM lP
         return TRUE;
     }
     case WM_COMMAND:
+        if (LOWORD(wParam) == IDC_GEN_COMPANION_REGISTER && HIWORD(wParam) == BN_CLICKED) {
+            const auto result = zencrop::RegisterBrowserCompanionBridge(zencrop::GetBrowserCompanionManifestPath());
+            UpdateGeneralCompanionStatus(hPage);
+            MessageBoxW(hPage, result ? S::CompanionRegistrationSucceeded() : result.error().c_str(),
+                S::CompanionLabel(), MB_OK | (result ? MB_ICONINFORMATION : MB_ICONERROR));
+            return TRUE;
+        }
         if (LOWORD(wParam) == IDC_GEN_COMPANION_OPEN_FOLDER &&
             HIWORD(wParam) == BN_CLICKED) {
             wchar_t exePath[MAX_PATH] = {};
@@ -601,6 +656,9 @@ INT_PTR CALLBACK GeneralPageProc(HWND hPage, UINT uMsg, WPARAM wParam, LPARAM lP
             return TRUE;
         }
         return TRUE;
+    case WM_SHOWWINDOW:
+        if (wParam) UpdateGeneralCompanionStatus(hPage);
+        return FALSE;
     }
     return FALSE;
 }

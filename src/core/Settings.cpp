@@ -1,4 +1,5 @@
 #include "Settings.h"
+#include "SettingsFileIo.h"
 #include "AppDataPaths.h"
 #include "Strings.h"
 #include "JsonUtils.h"

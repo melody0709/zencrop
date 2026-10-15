@@ -1,13 +1,19 @@
 #include "detect/BrowserDomDetector.h"
 #include "detect/SmartDetectorThread.h"
 #include "net/BrowserCompanionBridge.h"
+#include "core/BrowserCompanionRegistration.h"
+#include "core/WideFormatLabels.h"
+#include "core/SettingsFileIo.h"
 
 #include <shellapi.h>
 #include <dwmapi.h>
+#include <aclapi.h>
+#include <sddl.h>
 #include <algorithm>
 #include <array>
 #include <chrono>
 #include <condition_variable>
+#include <cwctype>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -15,12 +21,14 @@
 #include <mutex>
 #include <optional>
 #include <stdexcept>
+#include <string>
 #include <thread>
 #include <vector>
 
 namespace {
 using namespace browser_companion;
 using namespace std::chrono_literals;
+int RunIsolatedCompanionRegistrationContracts();
 
 struct Pipe {
     HANDLE read = nullptr;
@@ -370,7 +378,327 @@ int RunBrowserCompanionHostIfRequested() {
         return -1;
     std::vector<std::wstring> args(argv, argv + count);
     LocalFree(argv);
+    if (args.size() == 2 && args[1] == L"--test-companion-registration")
+        return RunIsolatedCompanionRegistrationContracts();
     return browser_companion::IsNativeInvocation(args) ? browser_companion::RunNativeHost(args) : -1;
+}
+
+namespace {
+int RunIsolatedCompanionRegistrationContracts() {
+    using zencrop::BrowserCompanionHostState;
+    int failures = 0;
+    const auto check = [&](bool passed, const char* name) {
+        if (!passed) { ++failures; std::cerr << "FAIL companion registry " << name << '\n'; }
+    };
+    const std::wstring rootPath = L"Software\\ZenCrop\\Tests\\Companion-" + std::to_wstring(GetCurrentProcessId());
+    struct RegistryIsolation {
+        std::wstring path;
+        HKEY root = nullptr, user = nullptr, machine = nullptr;
+        bool ownsRoot = false, userOverridden = false, machineOverridden = false;
+        ~RegistryIsolation() {
+            if (userOverridden) RegOverridePredefKey(HKEY_CURRENT_USER, nullptr);
+            if (machineOverridden) RegOverridePredefKey(HKEY_LOCAL_MACHINE, nullptr);
+            if (user) RegCloseKey(user);
+            if (machine) RegCloseKey(machine);
+            if (root) RegCloseKey(root);
+            if (ownsRoot) RegDeleteTreeW(HKEY_CURRENT_USER, path.c_str());
+        }
+    } isolation{rootPath};
+    DWORD disposition = 0;
+    if (RegCreateKeyExW(HKEY_CURRENT_USER, rootPath.c_str(), 0, nullptr, 0, KEY_ALL_ACCESS,
+            nullptr, &isolation.root, &disposition) != ERROR_SUCCESS || disposition != REG_CREATED_NEW_KEY) {
+        check(false, "unique registry fixture"); return failures;
+    }
+    isolation.ownsRoot = true;
+    if (RegCreateKeyExW(isolation.root, L"User", 0, nullptr, 0, KEY_ALL_ACCESS, nullptr, &isolation.user, nullptr) ||
+        RegCreateKeyExW(isolation.root, L"Machine", 0, nullptr, 0, KEY_ALL_ACCESS, nullptr, &isolation.machine, nullptr)) {
+        check(false, "registry fixture roots"); return failures;
+    }
+    isolation.userOverridden = RegOverridePredefKey(HKEY_CURRENT_USER, isolation.user) == ERROR_SUCCESS;
+    isolation.machineOverridden = RegOverridePredefKey(HKEY_LOCAL_MACHINE, isolation.machine) == ERROR_SUCCESS;
+    if (!isolation.userOverridden || !isolation.machineOverridden) {
+        check(false, "registry isolation enabled before testing"); return failures;
+    }
+
+    wchar_t outputRoot[32768]{};
+    const DWORD length = GetEnvironmentVariableW(L"ZENCROP_TEST_OUTPUT_ROOT", outputRoot, 32768);
+    if (!length || length >= 32768) { check(false, "test output root"); return failures; }
+    const auto directory = std::filesystem::path(outputRoot) /
+        (L"companion-registration-" + std::to_wstring(GetCurrentProcessId()));
+    if (!std::filesystem::create_directory(directory)) { check(false, "unique file fixture"); return failures; }
+    struct Files {
+        std::filesystem::path directory;
+        ~Files() { std::error_code error; std::filesystem::remove_all(directory, error); }
+    } files{directory};
+    const auto dataDirectory = directory / L"data";
+    SetEnvironmentVariableW(L"ZENCROP_DATA_DIR", dataDirectory.c_str());
+    const auto statePath = dataDirectory / L"browser-companion-registration.json";
+    const auto runtime = [&](const wchar_t* name) {
+        const auto path = directory / name;
+        std::filesystem::create_directories(path / L"native-messaging");
+        std::ofstream(path / L"ZenCrop.exe") << "fixture";
+        const auto manifest = path / L"native-messaging/com.zencrop.browser_companion.json";
+        std::ofstream(manifest) << R"({"name":"com.zencrop.browser_companion","path":"../ZenCrop.exe","type":"stdio","allowed_origins":["chrome-extension://halonieocgkgbdogndcipmlpklljmoja/"]})";
+        return manifest.wstring();
+    };
+    const auto manifest = runtime(L"runtime one \u4e2d\u6587");
+    const auto moved = runtime(L"runtime two");
+    constexpr const wchar_t* chrome = L"Software\\Google\\Chrome\\NativeMessagingHosts\\com.zencrop.browser_companion";
+    constexpr const wchar_t* edge = L"Software\\Microsoft\\Edge\\NativeMessagingHosts\\com.zencrop.browser_companion";
+    constexpr const wchar_t* chromium = L"Software\\Chromium\\NativeMessagingHosts\\com.zencrop.browser_companion";
+    const auto set = [&](HKEY root, const wchar_t* path, const std::wstring& value,
+                         DWORD type = REG_SZ, REGSAM view = KEY_WOW64_64KEY) {
+        HKEY key = nullptr;
+        const auto opened = RegCreateKeyExW(root, path, 0, nullptr, 0, KEY_ALL_ACCESS | view,
+            nullptr, &key, nullptr);
+        check(opened == ERROR_SUCCESS, "open fixture host key");
+        if (opened != ERROR_SUCCESS) return;
+        check(RegSetValueExW(key, nullptr, 0, type, reinterpret_cast<const BYTE*>(value.c_str()),
+            static_cast<DWORD>((value.size() + 1) * sizeof(wchar_t))) == ERROR_SUCCESS, "set fixture host value");
+        RegCloseKey(key);
+    };
+    const auto read = [&](HKEY root, const wchar_t* path, const wchar_t* name = nullptr) {
+        wchar_t value[32768]{};
+        DWORD size = sizeof(value);
+        RegGetValueW(root, path, name, RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ | RRF_NOEXPAND | RRF_SUBKEY_WOW6464KEY,
+            nullptr, value, &size);
+        return std::wstring(value);
+    };
+    const auto erase = [&](const wchar_t* path, REGSAM view = KEY_WOW64_64KEY) {
+        HKEY key = nullptr;
+        if (RegOpenKeyExW(HKEY_CURRENT_USER, path, 0, KEY_SET_VALUE | view, &key) == ERROR_SUCCESS) {
+            RegDeleteValueW(key, nullptr); RegCloseKey(key);
+        }
+    };
+    zencrop::BrowserCompanionBridgeInfo query;
+    check(zencrop::QueryBrowserCompanionBridge().edge == BrowserCompanionHostState::NotRegistered, "empty roots");
+    set(HKEY_LOCAL_MACHINE, chrome, manifest);
+    query = zencrop::QueryBrowserCompanionBridge();
+    check(query.chrome == BrowserCompanionHostState::PathMismatch && query.edge == BrowserCompanionHostState::PathMismatch,
+        "Edge uses machine Chrome fallback");
+    set(HKEY_CURRENT_USER, chromium, L"C:\\absent-companion-test.json");
+    check(zencrop::QueryBrowserCompanionBridge().edge == BrowserCompanionHostState::TargetMissing,
+        "user Chromium fallback precedes machine Chrome");
+    erase(chromium);
+    set(HKEY_CURRENT_USER, chrome, L"");
+    query = zencrop::QueryBrowserCompanionBridge();
+    check(query.chrome == BrowserCompanionHostState::TargetMissing && query.edge == BrowserCompanionHostState::TargetMissing,
+        "empty user value blocks machine fallback");
+    check(!zencrop::RegisterBrowserCompanionBridge(manifest), "unowned empty value is refused");
+    erase(chrome);
+    set(HKEY_CURRENT_USER, edge, L"C:\\absent-companion-test.json");
+    check(zencrop::QueryBrowserCompanionBridge().edge == BrowserCompanionHostState::TargetMissing,
+        "Edge-specific value blocks Chrome fallback");
+    check(!zencrop::RegisterBrowserCompanionBridge(manifest) && read(HKEY_CURRENT_USER, chrome).empty() &&
+        !std::filesystem::exists(statePath), "unknown second key prevents all changes");
+    erase(edge);
+
+    check(zencrop::RegisterBrowserCompanionBridge(manifest).has_value(), "first registration");
+    check(read(HKEY_CURRENT_USER, chrome) == manifest && read(HKEY_CURRENT_USER, edge) == manifest &&
+        read(HKEY_LOCAL_MACHINE, chrome) == manifest, "both user values written; machine value preserved");
+    const auto savedText = ReadFileToString(statePath.wstring());
+    const auto saved = Json::parse(savedText);
+    check(saved.at("records").size() == 2 && saved["records"][0]["existed"] == true &&
+        saved["records"][0]["previous"].is_null(), "script-compatible original ownership recorded");
+    HKEY sentinelKey = nullptr;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, chrome, 0, KEY_SET_VALUE | KEY_WOW64_64KEY, &sentinelKey) == ERROR_SUCCESS) {
+        const wchar_t sentinel[] = L"leave me alone";
+        RegSetValueExW(sentinelKey, L"unrelated", 0, REG_SZ,
+            reinterpret_cast<const BYTE*>(sentinel), sizeof(sentinel));
+        RegCloseKey(sentinelKey);
+    }
+    check(zencrop::RegisterBrowserCompanionBridge(manifest).has_value(), "repeat registration");
+    check(zencrop::RegisterBrowserCompanionBridge(moved).has_value(), "owned portable move");
+    check(read(HKEY_CURRENT_USER, chrome) == moved && read(HKEY_CURRENT_USER, edge) == moved &&
+        read(HKEY_CURRENT_USER, chrome, L"unrelated") == L"leave me alone", "move preserves unrelated data");
+    const auto afterMove = Json::parse(ReadFileToString(statePath.wstring()));
+    check(afterMove["records"][0]["previous"].is_null() && afterMove["records"][0]["existed"] == true,
+        "repeat and move retain original undo state");
+
+    // A durable record can precede one or both registry writes if the process is interrupted.
+    set(HKEY_CURRENT_USER, chrome, manifest);
+    check(zencrop::RegisterBrowserCompanionBridge(moved).has_value(), "interrupted move resumes from priorManifest");
+    std::filesystem::create_directory(statePath.wstring() + L".tmp");
+    check(!zencrop::RegisterBrowserCompanionBridge(manifest) && read(HKEY_CURRENT_USER, chrome) == moved &&
+        read(HKEY_CURRENT_USER, edge) == moved, "record-write failure leaves both keys untouched");
+    std::filesystem::remove(statePath.wstring() + L".tmp");
+
+    // Deny writes only to the private Edge fixture: a second-write failure must restore Chrome.
+    set(HKEY_CURRENT_USER, chrome, moved, REG_EXPAND_SZ);
+    HKEY protectedKey = nullptr;
+    PSECURITY_DESCRIPTOR oldSecurity = nullptr, deniedSecurity = nullptr;
+    PACL oldAcl = nullptr, deniedAcl = nullptr;
+    bool present = false;
+    BOOL aclPresent = FALSE, aclDefaulted = FALSE;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, edge, 0, READ_CONTROL | WRITE_DAC | KEY_WOW64_64KEY, &protectedKey) == ERROR_SUCCESS &&
+        GetSecurityInfo(protectedKey, SE_REGISTRY_KEY, DACL_SECURITY_INFORMATION, nullptr, nullptr, &oldAcl,
+            nullptr, &oldSecurity) == ERROR_SUCCESS &&
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(L"D:P(D;;0x2;;;WD)(A;;KA;;;WD)", SDDL_REVISION_1,
+            &deniedSecurity, nullptr) && GetSecurityDescriptorDacl(deniedSecurity, &aclPresent, &deniedAcl, &aclDefaulted)) {
+        present = SetSecurityInfo(protectedKey, SE_REGISTRY_KEY, DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+            nullptr, nullptr, deniedAcl, nullptr) == ERROR_SUCCESS;
+    }
+    check(present, "write-denial fixture");
+    if (present) {
+        const auto beforeFailure = ReadFileToString(statePath.wstring());
+        check(!zencrop::RegisterBrowserCompanionBridge(manifest) && read(HKEY_CURRENT_USER, chrome) == moved &&
+            read(HKEY_CURRENT_USER, edge) == moved && ReadFileToString(statePath.wstring()) == beforeFailure,
+            "second-key failure restores first value and ownership record");
+        DWORD type = 0, size = 0;
+        RegGetValueW(HKEY_CURRENT_USER, chrome, nullptr, RRF_RT_ANY | RRF_NOEXPAND | RRF_SUBKEY_WOW6464KEY,
+            &type, nullptr, &size);
+        check(type == REG_EXPAND_SZ, "rollback preserves value type");
+        SetSecurityInfo(protectedKey, SE_REGISTRY_KEY, DACL_SECURITY_INFORMATION | UNPROTECTED_DACL_SECURITY_INFORMATION,
+            nullptr, nullptr, oldAcl, nullptr);
+    }
+    if (oldSecurity) LocalFree(oldSecurity);
+    if (deniedSecurity) LocalFree(deniedSecurity);
+    if (protectedKey) RegCloseKey(protectedKey);
+    std::ofstream(statePath, std::ios::trunc) << "{broken";
+    check(!zencrop::RegisterBrowserCompanionBridge(manifest) && read(HKEY_CURRENT_USER, chrome) == moved,
+        "corrupt record is preserved without registration changes");
+    check(!zencrop::RegisterBrowserCompanionBridge((directory / L"missing.json").wstring()), "missing manifest refused");
+    std::ofstream(std::filesystem::path(manifest), std::ios::trunc) << R"({"name":"foreign","path":"../ZenCrop.exe"})";
+    check(!zencrop::RegisterBrowserCompanionBridge(manifest), "foreign manifest refused");
+    if (!failures) std::cout << "PASS isolated companion registry lookup, ownership, move and failure contracts\n";
+    return failures;
+}
+}
+
+int RunCompanionRegistrationSubprocess() {
+    wchar_t exe[32768]{};
+    if (!GetModuleFileNameW(nullptr, exe, 32768)) return 1;
+    std::wstring command = L"\"" + std::wstring(exe) + L"\" --test-companion-registration";
+    STARTUPINFOW startup{sizeof(startup)};
+    PROCESS_INFORMATION process{};
+    if (!CreateProcessW(exe, command.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr, nullptr, &startup, &process)) {
+        std::cerr << "FAIL companion registry test subprocess\n"; return 1;
+    }
+    const auto wait = WaitForSingleObject(process.hProcess, 15000);
+    DWORD code = 1;
+    if (wait == WAIT_OBJECT_0) GetExitCodeProcess(process.hProcess, &code);
+    else { TerminateProcess(process.hProcess, 1); std::cerr << "FAIL companion registry subprocess timed out\n"; }
+    CloseHandle(process.hThread);
+    CloseHandle(process.hProcess);
+    return static_cast<int>(code);
+}
+
+// Covers the pure classifier only: it never opens or writes a real browser host key, so the
+// developer's own HKCU/HKLM registration stays untouched. Counts its own failures and reports
+// them once, so the caller does not double-count.
+int RunBrowserCompanionHostRegistrationContracts() {
+    using zencrop::BrowserCompanionHostState;
+    int failures = 0;
+    const auto check = [&](bool passed, const char *name) {
+        if (!passed) {
+            ++failures;
+            std::cerr << "FAIL companion host registration " << name << '\n';
+        }
+    };
+
+    // A real, existing file stands in for the installed manifest, so the "exists" branch is
+    // exercised against the filesystem instead of a mocked answer. The names are PID-scoped so
+    // a concurrent run of this fixture cannot collide.
+    wchar_t tempDir[MAX_PATH]{};
+    if (!GetTempPathW(MAX_PATH, tempDir))
+        return 0;
+    const std::wstring unique = L"zencrop-companion-classify-" + std::to_wstring(GetCurrentProcessId());
+    const std::wstring manifest = std::wstring(tempDir) + unique + L"-json";
+    const std::wstring otherManifest = std::wstring(tempDir) + unique + L"-other-json";
+    const std::wstring missing = std::wstring(tempDir) + unique + L"-absent-json";
+    const auto writeFile = [](const std::wstring &path) {
+        HANDLE handle = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                                    FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (handle == INVALID_HANDLE_VALUE)
+            return false;
+        DWORD written = 0;
+        const char payload[] = "{}";
+        const bool ok = WriteFile(handle, payload, 2, &written, nullptr) != FALSE;
+        CloseHandle(handle);
+        return ok;
+    };
+    struct Cleanup {
+        const std::wstring &a;
+        const std::wstring &b;
+        const std::wstring &c;
+        ~Cleanup() {
+            DeleteFileW(a.c_str());
+            DeleteFileW(b.c_str());
+            DeleteFileW(c.c_str());
+        }
+    } cleanup{manifest, otherManifest, missing};
+
+    if (!writeFile(manifest) || !writeFile(otherManifest)) {
+        check(false, "host registration classifier fixture created");
+        return failures;
+    }
+
+    const auto classify = [&](const std::wstring &registered, const std::wstring &local) {
+        return zencrop::ClassifyBrowserCompanionHost(registered, local);
+    };
+
+    check(classify(L"", manifest) == BrowserCompanionHostState::NotRegistered,
+          "absent host key is not registered");
+    check(classify(manifest, manifest) == BrowserCompanionHostState::Ready,
+          "host key naming this instance's manifest is ready");
+    check(classify(otherManifest, manifest) == BrowserCompanionHostState::PathMismatch,
+          "host key naming another existing manifest is a mismatch");
+    check(classify(missing, manifest) == BrowserCompanionHostState::TargetMissing,
+          "host key naming a missing manifest is reported as missing");
+
+    // Ready must additionally require the registered manifest to exist on disk: a stale
+    // registration to a deleted directory is not ready, even though the paths agree.
+    check(classify(missing, missing) == BrowserCompanionHostState::TargetMissing,
+          "missing manifest is never ready even when the paths agree");
+
+    // Spelling differences must not read as a different instance.
+    std::wstring upper = manifest;
+    for (wchar_t &ch : upper)
+        ch = static_cast<wchar_t>(towupper(ch));
+    check(classify(upper, manifest) == BrowserCompanionHostState::Ready,
+          "case difference does not read as a mismatch");
+    const std::wstring parent = std::filesystem::path(manifest).parent_path().wstring() + L"\\";
+    check(classify(parent + L".\\" + unique + L"-json", manifest) == BrowserCompanionHostState::Ready,
+          "redundant path segment does not read as a mismatch");
+    std::wstring slashed = manifest;
+    for (wchar_t &ch : slashed)
+        if (ch == L'\\')
+            ch = L'/';
+    check(classify(slashed, manifest) == BrowserCompanionHostState::Ready,
+          "forward slashes do not read as a mismatch");
+
+    // 8.3 short-name spelling. GetFullPathNameW is purely syntactic, so equality here depends
+    // on the long-name resolution; the assertion only applies where the volume generates short
+    // names at all (many modern volumes have 8.3 disabled).
+    {
+        std::vector<wchar_t> shortBuffer(MAX_PATH);
+        const DWORD shortLength =
+            GetShortPathNameW(manifest.c_str(), shortBuffer.data(), static_cast<DWORD>(shortBuffer.size()));
+        if (shortLength > 0 && shortLength < shortBuffer.size()) {
+            const std::wstring shortName(shortBuffer.data(), shortLength);
+            if (shortName != manifest)
+                check(classify(shortName, manifest) == BrowserCompanionHostState::Ready,
+                      "8.3 short name does not read as a mismatch");
+        }
+    }
+
+    // The status line composes a translated pattern at runtime, so a bad translation must not
+    // throw out of the dialog proc.
+    check(WideFormatCompanionStatus(L"Bridge: Chrome {} / Edge {}", L"ready", L"not registered") ==
+              L"Bridge: Chrome ready / Edge not registered",
+          "english status pattern composes both hosts");
+    check(WideFormatCompanionStatus(
+              L"\u6865\u63a5\uff1aChrome {} \u00b7 Edge {}", L"\u5c31\u7eea", L"\u672a\u6ce8\u518c") ==
+              L"\u6865\u63a5\uff1aChrome \u5c31\u7eea \u00b7 Edge \u672a\u6ce8\u518c",
+          "chinese status pattern composes both hosts");
+    check(WideFormatCompanionStatus(L"no placeholders", L"ready", L"ready") == L"no placeholders",
+          "pattern without placeholders is passed through");
+    check(WideFormatCompanionStatus(L"bad {", L"ready", L"ready") == L"bad {",
+          "malformed pattern falls back instead of throwing");
+    check(WideFormatCompanionStatus(nullptr, L"ready", L"ready") == L"Bridge: Chrome ready / Edge ready",
+          "missing pattern uses the built-in fallback");
+
+    return failures;
 }
 
 int RunBrowserCompanionContracts() {
@@ -695,6 +1023,8 @@ int RunBrowserCompanionContracts() {
         failures += RunRuntimeProbe(std::filesystem::path(probePath));
     else if (pathSize)
         expect(false, "runtime probe path exceeds capacity");
+    failures += RunBrowserCompanionHostRegistrationContracts();
+    failures += RunCompanionRegistrationSubprocess();
     if (!failures)
         std::cout << "PASS browser companion protocol, geometry and session contracts\n";
     return failures;

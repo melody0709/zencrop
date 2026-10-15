@@ -1,5 +1,6 @@
 #include "core/Settings.h"
 #include "TranslationSettingsCodec.h"
+#include "core/SettingsFileIo.h"
 #include "TranslationTextUtils.h"
 #include "core/WideJsonUtils.h"
 #include "translation/TranslationProviderCatalog.h"

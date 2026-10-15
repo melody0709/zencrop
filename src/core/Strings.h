@@ -34,7 +34,14 @@ const wchar_t* StartupRegistrationErrorTitle();
 const wchar_t* StartupRegistrationErrorMessage();
 const wchar_t* CompanionLabel();
 const wchar_t* CompanionOpenFolder();
+const wchar_t* CompanionRegister();
+const wchar_t* CompanionRegistrationSucceeded();
 const wchar_t* CompanionHint();
+const wchar_t* CompanionStatusFormat();
+const wchar_t* CompanionHostStateNotRegistered();
+const wchar_t* CompanionHostStateReady();
+const wchar_t* CompanionHostStatePathMismatch();
+const wchar_t* CompanionHostStateTargetMissing();
 
 const wchar_t* ColorLabel();
 const wchar_t* ChooseButton();

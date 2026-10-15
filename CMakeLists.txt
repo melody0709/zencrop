@@ -126,7 +126,9 @@ add_library(zencrop_core STATIC
     src/core/HotkeyEdit.h src/core/HotkeyEdit.cpp
     src/core/AppDataPaths.h src/core/AppDataPaths.cpp
     src/core/StartupRegistration.h src/core/StartupRegistration.cpp
+    src/core/BrowserCompanionRegistration.h src/core/BrowserCompanionRegistration.cpp
     src/core/Settings.h src/core/Settings.cpp
+    src/core/SettingsFileIo.h
     src/core/ResourceIds.h
     src/core/SettingsHotkeyDraft.h
     src/core/SettingsPageInit.h

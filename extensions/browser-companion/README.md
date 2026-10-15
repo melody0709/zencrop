@@ -5,7 +5,7 @@ The companion supplies webpage element rectangles to ZenCrop's existing desktop 
 ## Development and portable installation
 
 1. Build ZenCrop with `cmd.exe /d /c build.bat`. Use the CMake-installed `build/run/x64-release/` directory.
-2. Run PowerShell 7:
+2. Start ZenCrop and click **Settings > General > Register Bridge**. This registers the current runtime for Chrome and Edge without administrator rights or PowerShell. MSI installations register automatically; if both browsers already point at this runtime, the button is disabled. The displayed state describes registration, not a live extension connection. Command-line registration remains available with PowerShell 7:
 
    ```powershell
    pwsh -NoProfile -File build/run/x64-release/scripts/register_browser_companion.ps1 -RuntimeRoot "$PWD/build/run/x64-release"
@@ -17,13 +17,15 @@ The companion supplies webpage element rectangles to ZenCrop's existing desktop 
 
 The stable unpacked extension ID is `halonieocgkgbdogndcipmlpklljmoja`. Its generated public key is included in the manifest; no private signing key is stored in this repository. Store IDs are separate identities and must be registered explicitly before store publication. No store release has been performed.
 
-The registration script owns only the two Chrome/Edge native-host default values under HKCU. It records their previous state under LocalAppData/ZenCrop, refuses unknown registrations, and preserves unrelated values. After moving a portable directory, register its new runtime path explicitly. To remove the development registration:
+The settings button and registration script own only the two Chrome/Edge native-host default values under HKCU. They share the previous-state record under LocalAppData/ZenCrop (or an explicit `ZENCROP_DATA_DIR`), refuse unknown registrations, and preserve unrelated values. After moving a portable directory, click **Register Bridge** again, then reload the extension or click its icon to reconnect. To remove either a settings or command-line registration:
 
 ```powershell
 pwsh -NoProfile -File build/run/x64-release/scripts/register_browser_companion.ps1 -Action Unregister
 ```
 
 This does not create `portable.flag`. MSI packages install the same assets and own exact HKLM native-host registration components. The native manifest uses `../ZenCrop.exe`, so nondefault installation roots and spaces work without an installation custom action. Development HKCU registrations take precedence over MSI HKLM registrations; unregister the development bridge before relying on an MSI installation.
+
+The settings query follows browser lookup order: HKCU before HKLM, 32-bit before 64-bit views; Edge also checks Chromium and Chrome fallback keys. An earlier stale or empty value blocks later registrations and is reported as a missing manifest.
 
 ## Scope and behavior
 

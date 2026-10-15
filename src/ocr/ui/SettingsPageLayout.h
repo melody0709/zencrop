@@ -37,6 +37,8 @@ public:
     int UsableWidth() const { return m_clientW - m_padX * 2; }
     int CurrentY() const { return m_y; }
     void AdvanceRow() { m_y += m_rowStep; }
+    // All layout helpers below take DESIGN pixels (96 DPI) and scale internally.
+    // Never pass an already-scaled value: AddSpace(Scale(x)) double-scales.
     void AddSpace(int px = 8) { m_y += Scale(px); }
 
     void AddRow(int labelId, int ctrlId, int width = 0) {
