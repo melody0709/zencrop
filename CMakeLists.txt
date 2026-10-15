@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(ZenCrop VERSION 3.2.0)
+project(ZenCrop VERSION 3.3.0)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -127,6 +127,7 @@ add_library(zencrop_core STATIC
     src/core/AppDataPaths.h src/core/AppDataPaths.cpp
     src/core/StartupRegistration.h src/core/StartupRegistration.cpp
     src/core/BrowserCompanionRegistration.h src/core/BrowserCompanionRegistration.cpp
+    src/core/BrowserCompanionPairing.h src/core/BrowserCompanionPairing.cpp
     src/core/Settings.h src/core/Settings.cpp
     src/core/SettingsFileIo.h
     src/core/ResourceIds.h
@@ -199,6 +200,7 @@ add_library(zencrop_platform STATIC
     src/net/LlamaServerManager.h src/net/LlamaServerManager.cpp
     src/net/MiniHttpServer.h src/net/MiniHttpServer.cpp
     src/net/BrowserCompanionProtocol.h src/net/BrowserCompanionProtocol.cpp
+    src/net/BrowserCompanionWebSocket.h src/net/BrowserCompanionWebSocket.cpp
     src/net/BrowserCompanionBridge.h src/net/BrowserCompanionBridge.cpp
 )
 target_include_directories(zencrop_platform PUBLIC
@@ -211,6 +213,11 @@ target_link_libraries(zencrop_platform PUBLIC
     zencrop_core
     winhttp
     ws2_32
+    # Windows WebSocket protocol component (handshake, framing, masking) and the
+    # kernel TCP table used to resolve the loopback peer. Both are system libraries:
+    # no third-party WebSocket dependency is introduced.
+    websocket
+    iphlpapi
     uxtheme
     oleacc
     uiautomationcore

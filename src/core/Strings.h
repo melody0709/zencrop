@@ -42,6 +42,13 @@ const wchar_t* CompanionHostStateNotRegistered();
 const wchar_t* CompanionHostStateReady();
 const wchar_t* CompanionHostStatePathMismatch();
 const wchar_t* CompanionHostStateTargetMissing();
+const wchar_t* CompanionPairingFormat();
+const wchar_t* CompanionStateNotPaired();
+const wchar_t* CompanionStatePaired();
+const wchar_t* CompanionStateConnected();
+const wchar_t* CompanionUnpair();
+const wchar_t* CompanionUnpairSucceeded();
+const wchar_t* CompanionUnpairUnavailable();
 
 const wchar_t* ColorLabel();
 const wchar_t* ChooseButton();

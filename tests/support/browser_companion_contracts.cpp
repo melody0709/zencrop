@@ -1,9 +1,14 @@
 #include "detect/BrowserDomDetector.h"
 #include "detect/SmartDetectorThread.h"
 #include "net/BrowserCompanionBridge.h"
+#include "net/BrowserCompanionWebSocket.h"
+#include "core/BrowserCompanionPairing.h"
 #include "core/BrowserCompanionRegistration.h"
 #include "core/WideFormatLabels.h"
 #include "core/SettingsFileIo.h"
+
+#include <winsock2.h>
+#include <ws2tcpip.h>
 
 #include <shellapi.h>
 #include <dwmapi.h>
@@ -16,6 +21,7 @@
 #include <cwctype>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <iostream>
 #include <limits>
 #include <mutex>
@@ -124,6 +130,20 @@ int RunRuntimeProbe(const std::filesystem::path &inputPath) {
         auto &bridge = Bridge::Instance();
         if (!bridge.Start())
             throw std::runtime_error("bridge start failed");
+        if (fixture.value("direct", false)) {
+            const auto readyBy = std::chrono::steady_clock::now() + 10s;
+            while (std::chrono::steady_clock::now() < readyBy) {
+                const auto status = bridge.QueryStatus();
+                if (!status.error.empty())
+                    throw std::runtime_error("direct listener or pairing store unavailable");
+                if (status.readyChrome + status.readyEdge > 0)
+                    break;
+                std::this_thread::sleep_for(10ms);
+            }
+            const auto status = bridge.QueryStatus();
+            if (status.readyChrome + status.readyEdge == 0)
+                throw std::runtime_error("fixture did not authenticate");
+        }
         std::mutex mutex;
         std::condition_variable cv;
         std::optional<SmartDetectorThread::Result> received;
@@ -583,9 +603,867 @@ int RunCompanionRegistrationSubprocess() {
     return static_cast<int>(code);
 }
 
-// Covers the pure classifier only: it never opens or writes a real browser host key, so the
-// developer's own HKCU/HKLM registration stays untouched. Counts its own failures and reports
-// them once, so the caller does not double-count.
+// ---------------------------------------------------------------------------
+// Direct connection contracts (WebSocket transport, pairing store, bootstrap).
+//
+// Everything here runs offline against loopback sockets and temporary files: no
+// browser is opened and no user window is touched. The identity binding that needs a
+// real Chromium tree (BrowserRootPid on a live browser, and a query answered through an
+// authenticated peer) is covered by the live acceptance run instead, and this file
+// states that boundary rather than mocking it away.
+// ---------------------------------------------------------------------------
+namespace {
+
+int g_directFailures = 0;
+void Check(bool passed, const char *description) {
+    if (passed)
+        return;
+    ++g_directFailures;
+    std::cerr << "FAIL companion direct " << description << '\n';
+}
+
+DWORD CurrentHandleCount() {
+    DWORD count = 0;
+    GetProcessHandleCount(GetCurrentProcess(), &count);
+    return count;
+}
+
+using browser_companion::websocket::Listener;
+using zencrop::browser_pairing::Store;
+
+bool WriteSocket(SOCKET socket, std::string_view data) {
+    while (!data.empty()) {
+        const int count = send(socket, data.data(), static_cast<int>(data.size()), 0);
+        if (count <= 0)
+            return false;
+        data.remove_prefix(count);
+    }
+    return true;
+}
+
+// Server-to-client frames are unmasked text frames; this reads exactly one message.
+std::string ReadServerMessage(SOCKET socket) {
+    const auto read = [&](std::span<char> bytes) {
+        while (!bytes.empty()) {
+            const int count = recv(socket, bytes.data(), static_cast<int>(bytes.size()), 0);
+            if (count <= 0)
+                return false;
+            bytes = bytes.subspan(count);
+        }
+        return true;
+    };
+    unsigned char header[2]{};
+    if (!read(std::span(reinterpret_cast<char *>(header), 2)) || header[0] != 0x81 || (header[1] & 0x80))
+        return {};
+    uint64_t length = header[1] & 0x7f;
+    if (length >= 126) {
+        const size_t count = length == 126 ? 2 : 8;
+        unsigned char extended[8]{};
+        if (!read(std::span(reinterpret_cast<char *>(extended), count)))
+            return {};
+        length = 0;
+        for (size_t i = 0; i < count; ++i)
+            length = (length << 8) | extended[i];
+    }
+    if (length == 0 || length > 65536)
+        return {};
+    std::string message(static_cast<size_t>(length), '\0');
+    return read(std::span(message.data(), message.size())) ? message : std::string{};
+}
+
+// Reads exactly one server frame and reports its opcode: a protocol-level control frame
+// has to be told apart from a message, and decoding it as text would hide it.
+bool ReadServerFrame(SOCKET socket, unsigned char &opcode, std::string &payload) {
+    const auto read = [&](std::span<char> bytes) {
+        while (!bytes.empty()) {
+            const int count = recv(socket, bytes.data(), static_cast<int>(bytes.size()), 0);
+            if (count <= 0)
+                return false;
+            bytes = bytes.subspan(count);
+        }
+        return true;
+    };
+    unsigned char header[2]{};
+    if (!read(std::span(reinterpret_cast<char *>(header), 2)))
+        return false;
+    opcode = header[0] & 0x0f;
+    if ((header[0] & 0x80) == 0 || (header[1] & 0x80))
+        return false;
+    uint64_t length = header[1] & 0x7f;
+    if (length >= 126) {
+        const size_t count = length == 126 ? 2 : 8;
+        unsigned char extended[8]{};
+        if (!read(std::span(reinterpret_cast<char *>(extended), count)))
+            return false;
+        length = 0;
+        for (size_t i = 0; i < count; ++i)
+            length = (length << 8) | extended[i];
+    }
+    if (length > 65536)
+        return false;
+    payload.assign(static_cast<size_t>(length), '\0');
+    return payload.empty() || read(std::span(payload.data(), payload.size()));
+}
+
+std::string ClientFrame(std::string_view text, unsigned char opcode = 1, bool masked = true, bool final = true) {
+    std::string frame;
+    frame += static_cast<char>((final ? 0x80 : 0) | opcode);
+    const unsigned char mask = masked ? 0x80 : 0;
+    if (text.size() < 126)
+        frame += static_cast<char>(mask | text.size());
+    else if (text.size() <= 65535) {
+        frame += static_cast<char>(mask | 126);
+        frame += static_cast<char>(text.size() >> 8);
+        frame += static_cast<char>(text.size());
+    } else {
+        frame += static_cast<char>(mask | 127);
+        for (int shift = 56; shift >= 0; shift -= 8)
+            frame += static_cast<char>(static_cast<uint64_t>(text.size()) >> shift);
+    }
+    const unsigned char key[]{1, 2, 3, 4};
+    if (masked)
+        frame.append(reinterpret_cast<const char *>(key), sizeof(key));
+    for (size_t i = 0; i < text.size(); ++i)
+        frame += static_cast<char>(static_cast<unsigned char>(text[i]) ^ (masked ? key[i % 4] : 0));
+    return frame;
+}
+
+enum class AuthAttack { None, WrongSecret, WrongVersion, UnknownProfile, WrongInstance, Reflected, Replay };
+
+struct AuthFixture {
+    Store *store = nullptr;
+    std::string profile;
+    std::string secret;
+    std::string instance;
+    std::string savedProof;
+    AuthAttack attack = AuthAttack::None;
+    bool dropAck = false;
+};
+
+// Client half of the mutual authentication, mirroring the extension exactly.
+void AuthenticateClient(SOCKET client, AuthFixture &fixture) {
+    using namespace browser_companion;
+    const auto challenge = ReadServerMessage(client);
+    if (challenge.empty())
+        return;
+    auto challengeFields = ParseChallenge(challenge);
+    if (!challengeFields) {
+        Check(false, "server challenge matches the v2 control schema");
+        return;
+    }
+    if (fixture.attack == AuthAttack::WrongInstance)
+        challengeFields->instance = std::string(32, '1');
+    const auto clientNonce = zencrop::browser_pairing::RandomHex(32);
+    const auto profile = fixture.attack == AuthAttack::UnknownProfile ? std::string(32, '0') : fixture.profile;
+    if (fixture.attack == AuthAttack::WrongVersion) {
+        // A stale extension speaking the old control version must not be accepted.
+        WriteSocket(client, ClientFrame(std::format(R"({{"version":3,"type":"auth_start","profile":"{}","nonce":"{}"}})",
+                                                 profile, clientNonce)));
+    } else {
+        WriteSocket(client, ClientFrame(BuildAuthStart(profile, clientNonce)));
+    }
+    const auto serverProof = ReadServerMessage(client);
+    if (serverProof.empty())
+        return;
+    const auto proof = ParseAuthProof(serverProof, kAuthServerType);
+    const auto transcript = challengeFields->instance + ":" + clientNonce + ":" + challengeFields->nonce;
+    if (fixture.attack == AuthAttack::WrongInstance) {
+        // The client believes it is talking to another installation, so the desktop
+        // proof must not verify against its own transcript.
+        Check(!proof || !zencrop::browser_pairing::EqualProof(
+                            *proof, zencrop::browser_pairing::Hmac(fixture.secret, "server:" + transcript)),
+              "a challenge from another installation does not verify");
+    } else {
+        Check(proof && zencrop::browser_pairing::EqualProof(
+                            *proof, zencrop::browser_pairing::Hmac(fixture.secret, "server:" + transcript)),
+              "the desktop proves its identity before accepting the client");
+    }
+    std::string answer;
+    if (fixture.attack == AuthAttack::Replay)
+        answer = fixture.savedProof;
+    else {
+        const auto secret = fixture.attack == AuthAttack::WrongSecret ? std::string(64, '0') : fixture.secret;
+        answer = zencrop::browser_pairing::Hmac(secret,
+            (fixture.attack == AuthAttack::Reflected ? "server:" : "client:") + transcript);
+        if (fixture.attack == AuthAttack::None)
+            fixture.savedProof = answer;
+    }
+    WriteSocket(client, ClientFrame(BuildAuthProof(kAuthClientType, answer)));
+    const auto accepted = ReadServerMessage(client);
+    if (fixture.attack == AuthAttack::None && !fixture.dropAck)
+        Check(ParseControlAck(accepted, kAuthOkType), "a valid client receives the authenticated acknowledgement");
+    else
+        Check(accepted.empty() || !ParseControlAck(accepted, kAuthOkType),
+              "an invalid client never receives an authenticated acknowledgement");
+    if (!accepted.empty())
+        WriteSocket(client, ClientFrame("{\"ack\":true}"));
+}
+
+struct ExchangeResult {
+    bool upgraded = false;
+    DWORD pid = 0;
+    std::string reason;
+    std::expected<std::string, std::string> received = std::unexpected("not_received");
+    ULONGLONG cancelledMs = 0;
+    bool authenticated = false;
+};
+
+ExchangeResult Exchange(const std::string &headers, const std::string &frames, bool cancel = false,
+                        AuthFixture *auth = nullptr, DWORD closeDelayMs = 20) {
+    using namespace browser_companion;
+    Listener listener;
+    if (!listener.Start(0)) {
+        Check(false, "test listener binds loopback without elevation");
+        return {};
+    }
+    Listener collision;
+    Check(!collision.Start(listener.Port()), "a listener cannot share or steal an occupied port");
+    HANDLE stop = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    std::promise<ExchangeResult> promise;
+    auto result = promise.get_future();
+    std::jthread server([&] {
+        ExchangeResult output;
+        auto channel = listener.Accept(stop);
+        if (channel) {
+            output.pid = channel->ProcessId();
+            const auto upgrade = channel->Upgrade(kExtensionHandshakeOrigin);
+            output.reason = upgrade ? std::string{} : upgrade.error();
+            output.upgraded = upgrade.has_value();
+            if (output.upgraded) {
+                if (auth) {
+                    output.authenticated =
+                        AuthenticateChannel(*channel, *auth->store, L"C:\\Browser\\chrome.exe").has_value();
+                    if (output.authenticated)
+                        (void)channel->Receive(500);
+                } else if (cancel) {
+                    const auto start = GetTickCount64();
+                    std::jthread closer([&] {
+                        Sleep(closeDelayMs);
+                        channel->Close();
+                    });
+                    output.received = channel->Receive(closeDelayMs == 20 ? INFINITE : 1000);
+                    closer.join();
+                    output.cancelledMs = GetTickCount64() - start;
+                    Check(!channel->Receive(0), "a receive started after closure cannot wait or return a message");
+                } else {
+                    output.received = channel->Receive(1500);
+                }
+            }
+        }
+        promise.set_value(std::move(output));
+    });
+    SOCKET client = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    sockaddr_in address{};
+    address.sin_family = AF_INET;
+    address.sin_port = htons(listener.Port());
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    DWORD timeout = 2500;
+    setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<char *>(&timeout), sizeof(timeout));
+    setsockopt(client, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<char *>(&timeout), sizeof(timeout));
+    const bool connected = connect(client, reinterpret_cast<sockaddr *>(&address), sizeof(address)) == 0;
+    Check(connected, "loopback test client connects");
+    if (connected) {
+        const auto request = std::format("GET {} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n"
+                                         "Upgrade: websocket\r\nConnection: Upgrade\r\n"
+                                         "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+                                         "Sec-WebSocket-Version: 13\r\n{}\r\n",
+                                         websocket::kDirectPath, listener.Port(), headers);
+        WriteSocket(client, request);
+        std::string response;
+        char byte{};
+        while (response.size() < 8192 && !response.ends_with("\r\n\r\n") && recv(client, &byte, 1, 0) == 1)
+            response += byte;
+        if (response.starts_with("HTTP/1.1 101")) {
+            Check(response.find("Sec-WebSocket-Accept") != std::string::npos,
+                  "the Windows component constructs the server accept proof");
+            if (!frames.empty())
+                WriteSocket(client, frames);
+            if (auth)
+                AuthenticateClient(client, *auth);
+        }
+    }
+    const bool finished = result.wait_for(std::chrono::seconds(4)) == std::future_status::ready;
+    Check(finished, "handshake, receive and cancellation stay bounded");
+    if (!finished)
+        shutdown(client, SD_BOTH);
+    SetEvent(stop);
+    closesocket(client);
+    server.join();
+    CloseHandle(stop);
+    return result.get();
+}
+
+int RunDirectConnectionContracts() {
+    using namespace browser_companion;
+    int failures = 0;
+    const auto expect = [&](bool passed, const char *name) {
+        if (!passed) {
+            ++failures;
+            Check(false, name);
+        }
+    };
+
+    // --- T01: the v1 message set is unchanged, and the control plane is not part of it.
+    {
+        const auto v1 = Hello().dump();
+        expect(ParseMessage(v1).has_value(), "v1 hello still accepted");
+        for (const std::string control : {BuildPairRequest(kExtensionIdUtf8, std::string(32, 'a')),
+                                          BuildChallenge(std::string(32, 'a'), std::string(64, 'b')),
+                                          BuildControlAck(kPingType)}) {
+            expect(!ParseMessage(control), "control messages never enter the v1 message set");
+            expect(ParseVersionEnvelope(control).has_value(), "control messages are structurally parsable");
+        }
+        auto large = Hello();
+        large["padding"] = "";
+        large["padding"] = std::string(kMaxMessageBytes - large.dump().size(), 'x');
+        expect(ParseMessage(large.dump()).has_value(), "maximum v1 message accepted");
+        large["padding"].get_ref<std::string &>().push_back('x');
+        expect(!ParseMessage(large.dump()), "oversized v1 message rejected");
+    }
+
+    // --- T02: the pairing bootstrap travels over real framed bytes, in both directions.
+    {
+        Pipe pipe;
+        const auto request = BuildPairRequest(kExtensionIdUtf8, std::string(32, 'b'));
+        expect(WriteFrameBytes(pipe.write, request), "bootstrap request framed onto stdio");
+        const auto read = ReadFrameBytes(pipe.read);
+        expect(read && *read == request, "bootstrap request survives the round trip");
+        const auto parsed = read ? ParsePairRequest(*read) : std::unexpected(std::string("unreadable"));
+        expect(parsed && parsed->profile == std::string(32, 'b'), "bootstrap request matches its schema");
+        const auto grant = BuildPairedReply(websocket::kDirectPort, std::string(32, 'c'), parsed->profile,
+                                            std::string(64, 'd'));
+        expect(WriteFrameBytes(pipe.write, grant), "paired reply framed onto stdio");
+        const auto grantBytes = ReadFrameBytes(pipe.read);
+        const auto grantFields = grantBytes ? ParsePairedReply(*grantBytes) : std::unexpected(std::string("unreadable"));
+        expect(grantFields && grantFields->port == websocket::kDirectPort && grantFields->secret == std::string(64, 'd'),
+              "paired reply matches its schema");
+        expect(ParsePairingError(BuildPairingError("desktop_unavailable")).has_value(), "pairing error is parsable");
+        auto wrapped = Json::parse(request);
+        wrapped["version"] = 4294967297ULL;
+        expect(!ParsePairRequest(wrapped.dump()), "bootstrap version cannot wrap to v1");
+        auto wrappedAuth = Json::parse(BuildAuthStart(std::string(32, 'a'), std::string(64, 'b')));
+        wrappedAuth["version"] = 4294967298ULL;
+        expect(!ParseAuthStart(wrappedAuth.dump()), "authentication version cannot wrap to v2");
+        auto wrappedGrant = Json::parse(grant);
+        wrappedGrant["wsVersion"] = 4294967298ULL;
+        expect(!ParsePairedReply(wrappedGrant.dump()), "negotiated version cannot wrap to v2");
+        wrappedGrant["wsVersion"] = kPairingWsVersion;
+        wrappedGrant["port"] = std::numeric_limits<uint64_t>::max();
+        expect(!ParsePairedReply(wrappedGrant.dump()), "negotiated port is range-checked before conversion");
+        for (const std::string bad : {BuildPairRequest("someone-else", std::string(32, 'b')),
+                                      BuildPairRequest(kExtensionIdUtf8, "NOT-HEX"),
+                                      BuildPairRequest(kExtensionIdUtf8, std::string(31, 'b')),
+                                      std::string(R"({"version":2,"type":"pair","ext":"x","profile":"y"})"),
+                                      std::string(R"({"version":1,"type":"pair","ext":"halonieocgkgbdogndcipmlpklljmoja","profile":"y","extra":1})"),
+                                      std::string(R"({"version":1,"type":"pair","ext":"halonieocgkgbdogndcipmlpklljmoja","ext":"halonieocgkgbdogndcipmlpklljmoja","profile":"y"})")}) {
+            expect(!ParsePairRequest(bad), "wrong extension, wrong hex, wrong version, extra or duplicate keys rejected");
+        }
+        std::string oversized = BuildPairRequest(kExtensionIdUtf8, std::string(32, 'b'));
+        oversized += std::string(1024, ' ');
+        expect(!ParsePairRequest(oversized), "an oversized bootstrap frame is rejected");
+    }
+
+    // --- T03: handshake field validation, including the two Origin spellings.
+    {
+        const std::string valid = "Origin: chrome-extension://halonieocgkgbdogndcipmlpklljmoja\r\n"
+                                  "Sec-WebSocket-Protocol: zencrop-companion-v2\r\n";
+        const auto normal = Exchange(valid, ClientFrame(R"({"ok":true})"));
+        expect(normal.upgraded && normal.received && *normal.received == R"({"ok":true})",
+              "a masked text frame reaches the bounded message queue");
+        expect(normal.pid == GetCurrentProcessId(), "the TCP peer PID comes from the kernel table, not from JSON");
+        expect(websocket::kDirectPath == "/zencrop/browser/v2" &&
+                   websocket::kDirectSubprotocol == "zencrop-companion-v2" && websocket::kDirectPort == 19227,
+              "transport constants are pinned");
+        for (const std::string bad : {
+                 std::string("Origin: https://example.test\r\nSec-WebSocket-Protocol: zencrop-companion-v2\r\n"),
+                 std::string("Origin: chrome-extension://anotherextension\r\nSec-WebSocket-Protocol: zencrop-companion-v2\r\n"),
+                 // The native argv/manifest form carries a trailing slash; HTTP Origin does not.
+                 std::string("Origin: chrome-extension://halonieocgkgbdogndcipmlpklljmoja/\r\nSec-WebSocket-Protocol: zencrop-companion-v2\r\n"),
+                 std::string("Origin: chrome-extension://halonieocgkgbdogndcipmlpklljmp\r\nSec-WebSocket-Protocol: zencrop-companion-v2\r\n"),
+                 std::string("Origin: chrome-extension://halonieocgkgbdogndcipmlpklljmoja\r\nSec-WebSocket-Protocol: wrong\r\n"),
+                 valid + "Origin: chrome-extension://halonieocgkgbdogndcipmlpklljmoja\r\n",
+                 valid + "Content-Length: 2\r\n",
+                 std::string("Sec-WebSocket-Protocol: zencrop-companion-v2\r\n")}) {
+            expect(!Exchange(bad, {}).upgraded,
+                  "pages, other extensions, slash spellings, prefixes, wrong protocol and ambiguous headers rejected");
+        }
+    }
+
+    // --- T04: framing limits, malformed frames and the phase deadlines.
+    {
+        const std::string headers = "Origin: chrome-extension://halonieocgkgbdogndcipmlpklljmoja\r\n"
+                                    "Sec-WebSocket-Protocol: zencrop-companion-v2\r\n";
+        const auto fragmented = Exchange(headers, ClientFrame(R"({"ok":)", 1, true, false) + ClientFrame(R"(true})", 0));
+        expect(fragmented.received && *fragmented.received == R"({"ok":true})",
+              "the Windows component reassembles a fragmented UTF-8 message");
+        const std::string oversized = R"({"v":")" + std::string(65536, 'a') + R"("})";
+        std::string deep(66, '[');
+        deep += '0';
+        deep.append(66, ']');
+        // Two layers, two properties. The transport refuses what it can see (opcode,
+        // size, UTF-8); structural validity is the protocol layer's job, and a frame it
+        // would reject must never reach a peer loop as a usable message.
+        struct Hostile {
+            const char *name;
+            std::string frame;
+            bool transportMustRefuse;
+        };
+        for (const auto &hostile : std::vector<Hostile>{
+                 {"binary opcode", ClientFrame(R"({"ok":true})", 2), true},
+                 {"unmasked client frame", ClientFrame(R"({"ok":true})", 1, false), true},
+                 {"stray continuation frame", ClientFrame(R"({"ok":true})", 0), true},
+                 {"oversized frame", ClientFrame(oversized), true},
+                 {"invalid UTF-8", ClientFrame("{\"v\":\"\xff\"}"), true},
+                 {"non-JSON payload", ClientFrame("not json"), false},
+                 {"over-deep nesting", ClientFrame(deep), false}}) {
+            const auto result = Exchange(headers, hostile.frame);
+            expect(result.upgraded, (std::string("hostile frame still completed the handshake: ") + hostile.name).c_str());
+            if (hostile.transportMustRefuse) {
+                expect(!result.received, (std::string("transport never delivers: ") + hostile.name).c_str());
+            } else {
+                // Delivered as bytes, refused as a message: both validators must reject.
+                const auto delivered = result.received ? *result.received : std::string{};
+                expect(!delivered.empty() ? !ParseVersionEnvelope(delivered).has_value() : true,
+                      (std::string("envelope validation refuses: ") + hostile.name).c_str());
+                expect(!delivered.empty() ? !ParseMessage(delivered).has_value() : true,
+                      (std::string("v1 validation refuses: ") + hostile.name).c_str());
+            }
+        }
+        // A handshake that stops half way must fail on its own deadline, not by luck.
+        Listener listener;
+        expect(listener.Start(0).has_value(), "half-handshake fixture listener started");
+        if (listener.Port() != 0) {
+            HANDLE stop = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+            std::jthread server([&] {
+                auto channel = listener.Accept(stop);
+                if (channel) {
+                    const auto start = GetTickCount64();
+                    const auto upgrade = channel->Upgrade(kExtensionHandshakeOrigin);
+                    Check(!upgrade.has_value() && GetTickCount64() - start <= 3000,
+                          "a half-finished handshake fails on its bounded deadline");
+                    channel->Close();
+                }
+            });
+            SOCKET client = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+            sockaddr_in address{};
+            address.sin_family = AF_INET;
+            address.sin_port = htons(listener.Port());
+            address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+            DWORD timeout = 4000;
+            setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<char *>(&timeout), sizeof(timeout));
+            if (connect(client, reinterpret_cast<sockaddr *>(&address), sizeof(address)) == 0) {
+                // Request line only: no terminating CRLFCRLF.
+                WriteSocket(client, "GET /zencrop/browser/v2 HTTP/1.1\r\nHost: 127.0.0.1\r\n");
+                server.join();
+            } else {
+                Check(false, "half-handshake fixture connected");
+                SetEvent(stop);
+                server.join();
+            }
+            closesocket(client);
+            CloseHandle(stop);
+        }
+        // Cancellation must not wait for a natural timeout (T07/T09).
+        const auto cancelled = Exchange(headers, {}, true);
+        expect(cancelled.upgraded && !cancelled.received && cancelled.cancelledMs < 1000,
+              "shutdown interrupts an idle receive and joins its I/O worker promptly");
+        for (int attempt = 0; attempt < 64; ++attempt) {
+            const auto raced = Exchange(headers, {}, true, nullptr, attempt % 2);
+            expect(raced.upgraded && !raced.received && raced.cancelledMs < 500,
+                  "closure racing with receive entry cannot lose the wakeup");
+        }
+    }
+
+    // --- T05: mutual authentication, and the refusal of every wrong variant.
+    {
+        const std::string headers = "Origin: chrome-extension://halonieocgkgbdogndcipmlpklljmoja\r\n"
+                                    "Sec-WebSocket-Protocol: zencrop-companion-v2\r\n";
+        const auto directory = std::filesystem::temp_directory_path() /
+                               std::format(L"ZenCropPairingTest-{}", GetCurrentProcessId());
+        std::error_code ignored;
+        std::filesystem::create_directories(directory, ignored);
+        const auto path = (directory / L"pairing.dat").wstring();
+        Store store(path);
+        expect(store.Load().has_value() && store.Count() == 0, "a fresh credential store begins unpaired");
+        const auto instance = store.InstanceId();
+        const auto profile = zencrop::browser_pairing::RandomHex(16);
+        const auto paired = store.Pair(profile, L"C:\\Browser\\chrome.exe");
+        expect(paired && zencrop::browser_pairing::IsLowerHex(paired->secret, 32),
+              "pairing issues a per-profile strong credential");
+        if (!paired)
+            return failures;
+        const auto encrypted = [&] {
+            std::ifstream file(path, std::ios::binary);
+            return std::string(std::istreambuf_iterator<char>(file), {});
+        }();
+        expect(!encrypted.empty() && encrypted.find(paired->secret) == std::string::npos,
+              "credentials are DPAPI-encrypted on disk rather than stored as plaintext");
+        Store restarted(path);
+        expect(restarted.Load().has_value() && restarted.InstanceId() == instance &&
+                   restarted.Find(profile, L"C:\\Browser\\chrome.exe").has_value(),
+              "pairing survives a desktop restart");
+        expect(!restarted.Find(profile, L"C:\\Browser\\msedge.exe"),
+              "a Chrome pairing cannot authenticate another browser image");
+        expect(restarted.CountForBrowser(L"chrome.exe") == 1 && restarted.CountForBrowser(L"msedge.exe") == 0,
+              "paired browser states stay independent");
+        const auto rotated = restarted.Pair(profile, L"C:\\Browser\\chrome.exe");
+        expect(rotated && rotated->secret != paired->secret && restarted.Count() == 1,
+              "re-pairing rotates only that profile's credential");
+
+        AuthFixture fixture{&restarted, rotated->profile, rotated->secret, restarted.InstanceId()};
+        expect(Exchange(headers, {}, false, &fixture).authenticated,
+              "a real WebSocket mutual authentication accepts the paired profile");
+        for (const auto attack : {AuthAttack::WrongSecret, AuthAttack::WrongVersion, AuthAttack::UnknownProfile,
+                                  AuthAttack::WrongInstance, AuthAttack::Reflected, AuthAttack::Replay}) {
+            fixture.attack = attack;
+            expect(!Exchange(headers, {}, false, &fixture).authenticated,
+                  "wrong key, version, profile, instance, reflected and replayed proofs fail authentication");
+        }
+        fixture.attack = AuthAttack::None;
+        expect(!BrowserRootPid(GetCurrentProcessId()),
+              "an ordinary local process cannot impersonate the TCP browser owner");
+
+        // --- T20: revocation fences every previously authenticated peer.
+        expect(restarted.RevokeAll().has_value() && restarted.Count() == 0 &&
+                   restarted.InstanceId() != instance && !restarted.Find(profile, L"C:\\Browser\\chrome.exe"),
+              "explicit revocation invalidates every credential and rotates the instance identity");
+        fixture.store = &restarted;
+        expect(!Exchange(headers, {}, false, &fixture).authenticated,
+              "a credential revoked after pairing no longer authenticates");
+        // A damaged store refuses pairing and reports nothing countable, so the only
+        // way out is an explicit revocation - which is what the settings page offers.
+        expect(restarted.Pair(profile, L"C:\\Browser\\chrome.exe").has_value(), "re-pairing after revocation works");
+        {
+            std::ofstream corrupt(path, std::ios::binary | std::ios::trunc);
+            corrupt << "{\"instance\":\"" << std::string(32, 'b') << "\",\"credentials\":[{\"profile\":\"zz\"}]}";
+        }
+        Store damaged(path);
+        expect(!damaged.Load().has_value() && !damaged.Error().empty() && damaged.Count() == 0,
+              "a damaged store fails closed, reports a named error and counts nothing");
+        expect(!damaged.Pair(profile, L"C:\\Browser\\chrome.exe"),
+              "a damaged store refuses to issue new credentials");
+        expect(!damaged.Find(profile, L"C:\\Browser\\chrome.exe"), "a damaged store hands out no credential");
+        expect(damaged.RevokeAll().has_value() && damaged.Error().empty() && damaged.Count() == 0,
+              "explicit revocation is the only way out of a damaged store, and it recovers it");
+        Store recovered(path);
+        expect(recovered.Load().has_value() && recovered.Error().empty() && recovered.Count() == 0,
+              "the recovered store loads cleanly with no credentials");
+        std::filesystem::remove_all(directory, ignored);
+    }
+
+    // --- T10/T11: listener lifecycle stays leak-free and bounded.
+    {
+        Listener listener;
+        expect(listener.Port() == 0, "an unstarted listener reports no port");
+        // A failure must not poison the object: the reference it took is released on the
+        // failing path, so the same listener can still start once the port is free.
+        {
+            Listener blocker;
+            expect(blocker.Start(0).has_value(), "a blocker listener takes a port");
+            Listener unlucky;
+            expect(!unlucky.Start(blocker.Port()), "a listener cannot take an occupied port");
+            expect(unlucky.Port() == 0, "a failed start leaves the listener unusable but consistent");
+            blocker.Close();
+            expect(unlucky.Start(blocker.Port()).has_value(),
+                  "the same listener starts after a failed start once the port is free");
+            unlucky.Close();
+        }
+        const auto started = listener.Start(0);
+        expect(started.has_value() && listener.Port() != 0, "listener starts on an ephemeral loopback port");
+        expect(listener.Start(0).has_value(), "starting an already started listener is idempotent");
+        listener.Close();
+        listener.Close();
+        expect(listener.Port() == 0, "a closed listener releases its port");
+        for (int attempt = 0; attempt < 16; ++attempt) {
+            Listener churned;
+            if (!churned.Start(0))
+                continue;
+            HANDLE stop = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+            std::jthread server([&] {
+                for (int i = 0; i < 4; ++i) {
+                    auto channel = churned.Accept(stop);
+                    if (!channel)
+                        break;
+                    channel->Close();
+                }
+            });
+            for (int i = 0; i < 4; ++i) {
+                SOCKET client = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+                sockaddr_in address{};
+                address.sin_family = AF_INET;
+                address.sin_port = htons(churned.Port());
+                address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+                if (connect(client, reinterpret_cast<sockaddr *>(&address), sizeof(address)) == 0)
+                    WriteSocket(client, "GET /zencrop/browser/v2 HTTP/1.1\r\n\r\n");
+                closesocket(client);
+            }
+            SetEvent(stop);
+            server.join();
+            CloseHandle(stop);
+            churned.Close();
+        }
+        // Repeated failed connections must not accumulate threads or handles.
+        const auto handles = CurrentHandleCount();
+        for (int attempt = 0; attempt < 32; ++attempt) {
+            (void)Exchange("Origin: https://example.test\r\nSec-WebSocket-Protocol: zencrop-companion-v2\r\n", {});
+        }
+        expect(CurrentHandleCount() <= handles + 32,
+              "repeated rejected connections release their sockets and threads");
+    }
+
+    // --- T09: stopping the bridge with no peers is bounded, and repeatable.
+    {
+        auto &bridge = Bridge::Instance();
+        const auto start = GetTickCount64();
+        expect(bridge.Start(), "bridge starts for lifecycle contracts");
+        const auto status = bridge.QueryStatus();
+        expect(status.pairedChrome + status.pairedEdge == 0 && status.legacy == 0,
+              "a fresh bridge reports no paired and no legacy peers");
+        bridge.Stop();
+        const auto elapsed = GetTickCount64() - start;
+        expect(elapsed <= 500, "start and stop without peers stay bounded");
+        const auto second = GetTickCount64();
+        bridge.Stop();
+        expect(GetTickCount64() - second <= 250, "a repeated stop is safe and immediate");
+        expect(bridge.IsValid("session", "document") == false && bridge.IsConnectedBrowser(0) == false,
+              "a stopped bridge authorizes nothing");
+    }
+
+    // --- A control frame whose fields have the wrong type must be refused by the one
+    //     gate every caller relies on, rather than throwing out of a peer thread and
+    //     taking the product down with it.
+    {
+        for (const char *hostile : {R"({"version":"2","type":"ping"})",
+                                    R"({"version":2,"type":123})",
+                                    R"({"version":2})",
+                                    R"({"type":"ping"})",
+                                    R"({"version":-2,"type":"ping"})",
+                                    R"({"version":18446744073709551615,"type":"ping"})"}) {
+            expect(!ParseVersionEnvelope(hostile), "a control envelope with a wrong field type or range is refused");
+        }
+        expect(ParseVersionEnvelope(BuildControlAck(kPingType)).has_value(),
+              "the real heartbeat envelope still passes the gate");
+        expect(ParseVersionEnvelope(BuildChallenge(std::string(32, 'a'), std::string(64, 'b'))).has_value(),
+              "the real challenge envelope still passes the gate");
+        // The same refusal, on a real authenticated socket: what the peer thread sees is
+        // bytes the gate already rejected, so no typed accessor can ever run on it.
+        const auto directory = std::filesystem::temp_directory_path() /
+                               ("zencrop-direct-" + std::to_string(GetCurrentProcessId()) + "-hostile");
+        std::error_code ignored;
+        std::filesystem::remove_all(directory, ignored);
+        std::filesystem::create_directories(directory);
+        Store store(directory / L"pairing.dat");
+        expect(store.Load().has_value(), "a store is available for the wire-level refusal");
+        const auto paired = store.Pair(std::string(32, 'a'), L"C:\\Browser\\chrome.exe");
+        expect(paired.has_value(), "a credential exists for the wire-level refusal");
+        Listener listener;
+        expect(listener.Start(0).has_value(), "listener binds for the wire-level refusal");
+        HANDLE stop = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        std::promise<bool> refused;
+        auto refusedFuture = refused.get_future();
+        std::jthread server([&] {
+            bool outcome = false;
+            if (auto channel = listener.Accept(stop)) {
+                if (channel->Upgrade(kExtensionHandshakeOrigin) &&
+                    AuthenticateChannel(*channel, store, L"C:\\Browser\\chrome.exe")) {
+                    if (const auto frame = channel->Receive(1500))
+                        outcome = !ParseVersionEnvelope(*frame).has_value();
+                    channel->Close();
+                }
+            }
+            refused.set_value(outcome);
+        });
+        SOCKET client = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+        sockaddr_in address{};
+        address.sin_family = AF_INET;
+        address.sin_port = htons(listener.Port());
+        address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        DWORD timeout = 2500;
+        setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<char *>(&timeout), sizeof(timeout));
+        const bool connected = connect(client, reinterpret_cast<sockaddr *>(&address), sizeof(address)) == 0;
+        expect(connected, "the wire-level refusal client connects");
+        WriteSocket(client, std::format("GET {} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nUpgrade: websocket\r\n"
+                                        "Connection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+                                        "Sec-WebSocket-Version: 13\r\nOrigin: {}\r\n"
+                                        "Sec-WebSocket-Protocol: zencrop-companion-v2\r\n\r\n",
+                                        websocket::kDirectPath, listener.Port(), kExtensionHandshakeOrigin));
+
+        std::string response;
+        {
+            char byte{};
+            while (response.size() < 8192 && !response.ends_with("\r\n\r\n") && recv(client, &byte, 1, 0) == 1)
+                response += byte;
+        }
+        expect(response.starts_with("HTTP/1.1 101"), "the wire-level refusal client upgraded");
+        AuthFixture fixture{&store, paired->profile, paired->secret, store.InstanceId()};
+        AuthenticateClient(client, fixture);
+        WriteSocket(client, ClientFrame(R"({"version":"2","type":"ping"})"));
+        expect(refusedFuture.wait_for(std::chrono::seconds(4)) == std::future_status::ready &&
+                   refusedFuture.get(),
+              "a type-confused control frame is refused at the shared gate on a real socket");
+        SetEvent(stop);
+        closesocket(client);
+        server.join();
+        CloseHandle(stop);
+        std::filesystem::remove_all(directory, ignored);
+    }
+
+    // --- T21: a protocol-level ping is answered by the component, payload and all.
+    //     The application heartbeat is JSON over the same socket, so nothing else in
+    //     this suite reaches the control-frame path.
+    {
+        Listener listener;
+        expect(listener.Start(0).has_value(), "listener binds for the control-frame contract");
+        HANDLE stop = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        std::promise<bool> answered;
+        auto answeredFuture = answered.get_future();
+        std::jthread server([&] {
+            bool outcome = false;
+            if (auto channel = listener.Accept(stop)) {
+                if (channel->Upgrade(kExtensionHandshakeOrigin)) {
+                    // The component answers the protocol-level ping itself, so the first
+                    // frame the transport ever delivers here is the JSON heartbeat - and
+                    // it arrives as bytes the peer loop classifies as v2 control.
+                    const auto frame = channel->Receive(1500);
+                    const auto envelope = frame ? ParseVersionEnvelope(*frame) : std::expected<Json, std::string>{};
+                    outcome = envelope.has_value() &&
+                              (*envelope)["version"].get<int>() == kControlVersion &&
+                              (*envelope)["type"].get<std::string>() == std::string(kPingType);
+                    channel->Close();
+                }
+            }
+            answered.set_value(outcome);
+        });
+        SOCKET client = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+        sockaddr_in address{};
+        address.sin_family = AF_INET;
+        address.sin_port = htons(listener.Port());
+        address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        DWORD timeout = 2500;
+        setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<char *>(&timeout), sizeof(timeout));
+        expect(connect(client, reinterpret_cast<sockaddr *>(&address), sizeof(address)) == 0,
+              "the control-frame client connects");
+        WriteSocket(client, std::format("GET {} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nUpgrade: websocket\r\n"
+                                        "Connection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+                                        "Sec-WebSocket-Version: 13\r\nOrigin: {}\r\n"
+                                        "Sec-WebSocket-Protocol: zencrop-companion-v2\r\n\r\n",
+                                        websocket::kDirectPath, listener.Port(), kExtensionHandshakeOrigin));
+        std::string response;
+        {
+            char byte{};
+            while (response.size() < 8192 && !response.ends_with("\r\n\r\n") && recv(client, &byte, 1, 0) == 1)
+                response += byte;
+        }
+        expect(response.starts_with("HTTP/1.1 101"), "the control-frame client upgraded");
+        const std::string payload = "zencrop-ping-payload";
+        WriteSocket(client, ClientFrame(payload, 0x9));
+        unsigned char opcode = 0;
+        std::string echoed;
+        expect(ReadServerFrame(client, opcode, echoed) && opcode == 0xA && echoed == payload,
+              "a protocol-level ping with a payload is answered with a pong carrying that payload");
+        // The application heartbeat travels the same socket and reaches the peer loop as
+        // v2 control, which is what routes it away from the business dispatch.
+        WriteSocket(client, ClientFrame(BuildControlAck(kPingType)));
+        expect(answeredFuture.wait_for(std::chrono::seconds(4)) == std::future_status::ready && answeredFuture.get(),
+              "a JSON heartbeat reaches the peer loop classified as v2 control, not as a business message");
+        SetEvent(stop);
+        closesocket(client);
+        server.join();
+        CloseHandle(stop);
+    }
+
+    // --- T22: re-pairing one profile must leave every other connection alone.
+    {
+        const auto directory = std::filesystem::temp_directory_path() /
+                               ("zencrop-direct-" + std::to_string(GetCurrentProcessId()) + "-profiles");
+        std::error_code ignored;
+        std::filesystem::remove_all(directory, ignored);
+        std::filesystem::create_directories(directory);
+        Store store(directory / L"pairing.dat");
+        expect(store.Load().has_value(), "a store is available for the profile isolation contract");
+        const std::string chrome = std::string(32, 'c');
+        const std::string edge = std::string(32, 'e');
+        const auto first = store.Pair(chrome, L"C:\\Browser\\chrome.exe");
+        const auto second = store.Pair(edge, L"C:\\Browser\\msedge.exe");
+        expect(first.has_value() && second.has_value(), "two profiles pair independently");
+        expect(store.Matches(chrome, L"C:\\Browser\\chrome.exe", first->secret) &&
+                   store.Matches(edge, L"C:\\Browser\\msedge.exe", second->secret),
+              "both authenticated connections are current");
+        // This is the regression: a second profile pairing used to invalidate the first.
+        expect(store.Matches(chrome, L"C:\\Browser\\chrome.exe", first->secret),
+              "pairing another profile leaves an established connection authenticated");
+        const auto rotated = store.Pair(chrome, L"C:\\Browser\\chrome.exe");
+        expect(rotated.has_value() && !store.Matches(chrome, L"C:\\Browser\\chrome.exe", first->secret) &&
+                   store.Matches(chrome, L"C:\\Browser\\chrome.exe", rotated->secret),
+              "re-pairing one profile rotates only that profile's credential");
+        expect(store.Matches(edge, L"C:\\Browser\\msedge.exe", second->secret),
+              "a re-pairing of one profile leaves the other connection authenticated");
+        expect(!store.Matches(chrome, L"C:\\Browser\\msedge.exe", rotated->secret),
+              "a credential never matches across browser images");
+        auto wrongSecret = rotated->secret;
+        wrongSecret.back() = wrongSecret.back() == '0' ? '1' : '0';
+        expect(!store.Matches(chrome, L"C:\\Browser\\chrome.exe", wrongSecret) &&
+                   !store.Matches(chrome, L"C:\\Browser\\chrome.exe", "invalid"),
+               "credential matching rejects a changed final byte and malformed secrets");
+        expect(store.RevokeAll().has_value() &&
+                   !store.Matches(chrome, L"C:\\Browser\\chrome.exe", rotated->secret) &&
+                   !store.Matches(edge, L"C:\\Browser\\msedge.exe", second->secret),
+              "revocation invalidates every connection, not just one profile");
+        std::array<bool, 2> paired{};
+        {
+            std::jthread chromeWriter([&] { paired[0] = store.Pair(chrome, L"C:\\Browser\\chrome.exe").has_value(); });
+            std::jthread edgeWriter([&] { paired[1] = store.Pair(edge, L"C:\\Browser\\msedge.exe").has_value(); });
+        }
+        Store reloaded(directory / L"pairing.dat");
+        expect(paired[0] && paired[1] && reloaded.Load() && reloaded.Count() == 2,
+               "concurrent commits preserve both profiles on disk");
+        const auto committed = store.Find(chrome, L"C:\\Browser\\chrome.exe");
+        std::filesystem::remove(directory / L"pairing.dat");
+        std::filesystem::create_directory(directory / L"pairing.dat");
+        expect(committed && !store.Pair(chrome, L"C:\\Browser\\chrome.exe") &&
+                   store.Matches(chrome, L"C:\\Browser\\chrome.exe", committed->secret) && store.Count() == 2,
+               "a failed disk commit leaves the published credentials intact");
+        std::filesystem::remove_all(directory, ignored);
+    }
+
+    // --- T23: the native host's first-frame deadline is real on a synchronous handle.
+    //     A pipe with no complete frame must end the wait, not hold a host process open.
+    {
+        Pipe pipe;
+        const auto start = GetTickCount64();
+        const auto silent = ReadFrameBytes(pipe.read, 300, {}, PipeIo::Synchronous);
+        const auto elapsed = GetTickCount64() - start;
+        expect(!silent && elapsed < 2000,
+              "a silent synchronous pipe read is bounded by its deadline instead of blocking forever");
+        Pipe partial;
+        const char header[] = {0x09, 0x00};
+        DWORD written = 0;
+        WriteFile(partial.write, header, sizeof(header), &written, nullptr);
+        const auto half = GetTickCount64();
+        const auto incomplete = ReadFrameBytes(partial.read, 300, {}, PipeIo::Synchronous);
+        expect(!incomplete && GetTickCount64() - half < 2000,
+              "a half-written header is bounded by the same deadline");
+        for (int attempt = 0; attempt < 32; ++attempt) {
+            Pipe raced;
+            std::stop_source cancel;
+            std::jthread closer([&] {
+                if (attempt % 2)
+                    std::this_thread::yield();
+                cancel.request_stop();
+            });
+            const auto begin = GetTickCount64();
+            expect(!ReadFrameBytes(raced.read, 1000, cancel.get_token(), PipeIo::Synchronous) &&
+                       GetTickCount64() - begin < 500,
+                   "cancellation racing synchronous read submission drains its worker");
+        }
+    }
+
+    if (!failures)
+        std::cout << "PASS companion direct connection framing, authentication and store contracts\n";
+    return failures;
+}
+}
+
 int RunBrowserCompanionHostRegistrationContracts() {
     using zencrop::BrowserCompanionHostState;
     int failures = 0;
@@ -1025,6 +1903,9 @@ int RunBrowserCompanionContracts() {
         expect(false, "runtime probe path exceeds capacity");
     failures += RunBrowserCompanionHostRegistrationContracts();
     failures += RunCompanionRegistrationSubprocess();
+    // Direct connection contracts run before the live probe: they need the wire free
+    // and no browser-owned window, and the probe drives a real browser afterwards.
+    failures += RunDirectConnectionContracts();
     if (!failures)
         std::cout << "PASS browser companion protocol, geometry and session contracts\n";
     return failures;

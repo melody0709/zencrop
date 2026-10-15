@@ -2,6 +2,7 @@
 #include "SettingsPageLayout.h"
 #include "StartupRegistration.h"
 #include "core/BrowserCompanionRegistration.h"
+#include "net/BrowserCompanionBridge.h"
 #include "JsonUtils.h"
 #include "core/WideFormatNumbers.h"
 #include "core/WideFormatLabels.h"
@@ -92,6 +93,33 @@ void UpdateGeneralCompanionStatus(HWND hPage) {
     EnableWindow(GetDlgItem(hPage, IDC_GEN_COMPANION_REGISTER),
         info.chrome != zencrop::BrowserCompanionHostState::Ready ||
         info.edge != zencrop::BrowserCompanionHostState::Ready);
+
+    // Pairing and a live authenticated connection are separate facts from
+    // registration, so they get their own line and never share a state string. The
+    // status is read once: it consults the credential store.
+    HWND hPairStatus = GetDlgItem(hPage, IDC_GEN_COMPANION_PAIR_STATUS);
+    HWND hUnpair = GetDlgItem(hPage, IDC_GEN_COMPANION_UNPAIR);
+    if (hPairStatus || hUnpair) {
+        const auto connection = browser_companion::Bridge::Instance().QueryStatus();
+        if (hPairStatus) {
+            const auto pairedText = [](size_t paired, size_t ready) {
+                if (ready > 0)
+                    return S::CompanionStateConnected();
+                return paired > 0 ? S::CompanionStatePaired() : S::CompanionStateNotPaired();
+            };
+            std::wstring pairing = WideFormatCompanionStatus(S::CompanionPairingFormat(),
+                pairedText(connection.pairedChrome, connection.readyChrome),
+                pairedText(connection.pairedEdge, connection.readyEdge));
+            if (!connection.error.empty())
+                pairing += L"  [" + connection.error + L"]";
+            SetWindowTextW(hPairStatus, pairing.c_str());
+        }
+        // A damaged credential store has nothing to count, and explicit revocation is
+        // the only way out of it: the action stays available exactly when it is needed.
+        if (hUnpair)
+            EnableWindow(hUnpair, connection.pairedChrome + connection.pairedEdge > 0 ||
+                                          !connection.storeError.empty());
+    }
 }
 
 void RelayoutGeneralPage(HWND hPage, UINT dpi) {
@@ -104,7 +132,9 @@ void RelayoutGeneralPage(HWND hPage, UINT dpi) {
     HWND hLabel = GetDlgItem(hPage, IDC_GEN_COMPANION_LABEL);
     HWND hFolderBtn = GetDlgItem(hPage, IDC_GEN_COMPANION_OPEN_FOLDER);
     HWND hRegisterBtn = GetDlgItem(hPage, IDC_GEN_COMPANION_REGISTER);
+    HWND hUnpairBtn = GetDlgItem(hPage, IDC_GEN_COMPANION_UNPAIR);
     HWND hStatus = GetDlgItem(hPage, IDC_GEN_COMPANION_STATUS);
+    HWND hPairStatus = GetDlgItem(hPage, IDC_GEN_COMPANION_PAIR_STATUS);
     HWND hHint = GetDlgItem(hPage, IDC_GEN_COMPANION_HINT);
 
     int labelW = layout.LabelW() + layout.Scale(20);
@@ -115,10 +145,17 @@ void RelayoutGeneralPage(HWND hPage, UINT dpi) {
         layout.CurrentY(), layout.Scale(112), layout.RowH(), TRUE);
     layout.AdvanceRow();
 
+    // Unpair sits in the register button's column on its own row, so revoking access
+    // is reachable without scrolling and cannot be confused with registering it.
+    if (hUnpairBtn) MoveWindow(hUnpairBtn, layout.PadX() + labelW + layout.Scale(24) + folderBtnW,
+        layout.CurrentY(), layout.Scale(112), layout.RowH(), TRUE);
+    layout.AdvanceRow();
+
     auto* state = SettingsStateForPage(hPage);
 
-    // Both status and hint are single-line LTEXT. 18 design px provides clean line headroom
-    // without bottom clipping. AddSpace() takes DESIGN pixels and scales internally.
+    // Status, pairing and hint are single-line LTEXTs. 18 design px provides clean line
+    // headroom without bottom clipping. AddSpace() takes DESIGN pixels and scales
+    // internally.
     constexpr int kCompanionTextRowDesignH = 18;
     constexpr int kCompanionRowGapDesign = 8;
     const int companionTextRowH = layout.Scale(kCompanionTextRowDesignH);
@@ -129,6 +166,16 @@ void RelayoutGeneralPage(HWND hPage, UINT dpi) {
             SendMessageW(hStatus, WM_SETFONT, reinterpret_cast<WPARAM>(state->hPageFont.get()), TRUE);
         }
         MoveWindow(hStatus, layout.PadX(), layout.CurrentY() + layout.Scale(2),
+            layout.UsableWidth(), companionTextRowH, TRUE);
+        layout.AddSpace(kCompanionTextRowDesignH + kCompanionRowGapDesign);
+    }
+
+    if (hPairStatus) {
+        SetPropW(hPairStatus, L"ZenCropHint", reinterpret_cast<HANDLE>(1));
+        if (state && state->hPageFont.get()) {
+            SendMessageW(hPairStatus, WM_SETFONT, reinterpret_cast<WPARAM>(state->hPageFont.get()), TRUE);
+        }
+        MoveWindow(hPairStatus, layout.PadX(), layout.CurrentY() + layout.Scale(2),
             layout.UsableWidth(), companionTextRowH, TRUE);
         layout.AddSpace(kCompanionTextRowDesignH + kCompanionRowGapDesign);
     }
@@ -601,6 +648,7 @@ INT_PTR CALLBACK GeneralPageProc(HWND hPage, UINT uMsg, WPARAM wParam, LPARAM lP
         SetDlgItemTextW(hPage, IDC_GEN_COMPANION_HINT, S::CompanionHint());
         SetDlgItemTextW(hPage, IDC_GEN_COMPANION_OPEN_FOLDER, S::CompanionOpenFolder());
         SetDlgItemTextW(hPage, IDC_GEN_COMPANION_REGISTER, S::CompanionRegister());
+        SetDlgItemTextW(hPage, IDC_GEN_COMPANION_UNPAIR, S::CompanionUnpair());
         UpdateGeneralCompanionStatus(hPage);
         CheckDlgButton(hPage, IDC_GEN_START_WITH_WINDOWS,
             state ? (state->draft.startupPending ? BST_CHECKED : BST_UNCHECKED)
@@ -614,6 +662,17 @@ INT_PTR CALLBACK GeneralPageProc(HWND hPage, UINT uMsg, WPARAM wParam, LPARAM lP
             UpdateGeneralCompanionStatus(hPage);
             MessageBoxW(hPage, result ? S::CompanionRegistrationSucceeded() : result.error().c_str(),
                 S::CompanionLabel(), MB_OK | (result ? MB_ICONINFORMATION : MB_ICONERROR));
+            return TRUE;
+        }
+        if (LOWORD(wParam) == IDC_GEN_COMPANION_UNPAIR && HIWORD(wParam) == BN_CLICKED) {
+            // Revocation touches the DPAPI store and closes sockets, so it runs here
+            // rather than on a path the 100 ms selection budget depends on. A failure is
+            // reported as a failure: nothing is half-revoked behind a success dialog.
+            const auto revoked = browser_companion::Bridge::Instance().RevokePairings();
+            UpdateGeneralCompanionStatus(hPage);
+            MessageBoxW(hPage, revoked ? S::CompanionUnpairSucceeded() : revoked.error().c_str(),
+                revoked ? S::CompanionLabel() : S::CompanionUnpairUnavailable(),
+                MB_OK | (revoked ? MB_ICONINFORMATION : MB_ICONERROR));
             return TRUE;
         }
         if (LOWORD(wParam) == IDC_GEN_COMPANION_OPEN_FOLDER &&

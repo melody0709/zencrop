@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ZenCrop browser connection</title>
+  <style>
+    body { font: 14px/1.5 system-ui, sans-serif; margin: 24px; min-width: 290px; max-width: 460px; color: #202124; }
+    h1 { font-size: 19px; }
+    button { font: inherit; padding: 8px 16px; cursor: pointer; }
+    #status { font-weight: 600; overflow-wrap: anywhere; }
+    @media (prefers-color-scheme: dark) { body { background: #202124; color: #e8eaed; } }
+  </style>
+  <script src="connection.js" defer></script>
+</head>
+<body>
+  <h1>ZenCrop browser connection</h1>
+  <p id="status" role="status" aria-live="polite">Checking connection...</p>
+  <button id="pair" type="button">Pair with ZenCrop</button>
+  <p>Keep ZenCrop running. Pair once in each browser profile; it reconnects on its own afterwards.</p>
+  <p>To revoke access, use ZenCrop &rarr; Settings &rarr; General &rarr; Unpair all.</p>
+</body>
+</html>

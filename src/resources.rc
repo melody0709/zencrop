@@ -15,7 +15,7 @@ IDR_CURSOR_ROTATE_270 RCDATA "assets/cursors/RotateAngle270.png"
 IDR_CURSOR_ROTATE_315 RCDATA "assets/cursors/RotateAngle315.png"
 IDR_CURSOR_RECT_ROUND RCDATA "assets/cursors/RectRound.png"
 
-IDD_SETTINGS_GENERAL DIALOGEX 0, 0, 260, 120
+IDD_SETTINGS_GENERAL DIALOGEX 0, 0, 260, 148
 STYLE DS_SHELLFONT | WS_CHILD | WS_VISIBLE | WS_CAPTION
 CAPTION "General"
 FONT 10, "Segoe UI"
@@ -26,8 +26,10 @@ BEGIN
     LTEXT         "Browser Companion:", IDC_GEN_COMPANION_LABEL, 14, 68, 96, 12
     PUSHBUTTON    "Open Extension Folder...", IDC_GEN_COMPANION_OPEN_FOLDER, 114, 66, 124, 16
     PUSHBUTTON    "Register Bridge", IDC_GEN_COMPANION_REGISTER, 114, 66, 72, 16
+    PUSHBUTTON    "Unpair all", IDC_GEN_COMPANION_UNPAIR, 114, 84, 72, 16
     LTEXT         "Bridge: Chrome not registered / Edge not registered", IDC_GEN_COMPANION_STATUS, 14, 86, 232, 12
-    LTEXT         "Enables Chrome/Edge element snapping (full-window fallback).", IDC_GEN_COMPANION_HINT, 14, 100, 232, 12
+    LTEXT         "Pairing: Chrome not paired / Edge not paired", IDC_GEN_COMPANION_PAIR_STATUS, 14, 102, 232, 12
+    LTEXT         "Enables Chrome/Edge element snapping (full-window fallback).", IDC_GEN_COMPANION_HINT, 14, 116, 232, 12
 END
 
 IDD_SETTINGS_ZENCROP DIALOGEX 0, 0, 260, 210

@@ -1,8 +1,44 @@
 # Browser companion implementation and validation
 
-Date: 2026-10-13. Product version: **3.2.0, unreleased**.
+Date: 2026-10-14. Product version: **3.3.0, unreleased**.
 
 The desktop, extension, Native Messaging/IPC bridge, browser detection split, registration assets and MSI authoring are implemented. Development geometry/lifecycle checks pass in the environments below. **Physical hardware acceptance, persistent browser performance acceptance and release acceptance are still open.** This report does not sign off the full implementation-plan matrix.
+
+## WebSocket 2.0 direct connection (v3.3.0)
+
+The resident native messaging host is gone from the daily path. The extension 2.0.0 connects to `ws://127.0.0.1:19227/zencrop/browser/v2`, authenticates with a per-profile HMAC-SHA256 challenge in both directions, and only then exchanges the unchanged v1 messages. Native messaging survives exclusively as an explicit, bounded, one-shot pairing bootstrap started from the extension's connection page.
+
+What the automated suite proves offline, in `test_screenshot_editor_state_contract` and `tests/browser-companion/worker_contract.cjs`:
+
+| Case | Coverage | Result |
+| --- | --- | --- |
+| Framing split | v1 fixtures round-trip unchanged; control and pairing frames are refused by `ParseMessage` and accepted by the v2 envelope | PASS |
+| Bootstrap wire contract | framed request/reply over real pipes, wrong extension, wrong hex length, wrong version, extra key, duplicate key, oversized frame | PASS |
+| Handshake validation | exact origin, both origin spellings rejected, prefix look-alike, other extension, web page, wrong protocol, duplicate header, content-length, missing origin | PASS |
+| Framing limits and deadlines | fragmentation reassembly, binary opcode, unmasked client frame, stray continuation, oversized, over-deep, invalid UTF-8, half-finished handshake deadline | PASS |
+| Mutual authentication | real handshake plus wrong key, wrong version, unknown profile, foreign instance, reflected proof, replayed proof, forged server proof | PASS |
+| Control-plane field types | a wrong-typed or out-of-range `version`/`type` is refused by the shared envelope gate, both directly and on a real authenticated socket; a genuinely absent field is refused too. This covers the frame that previously threw out of a peer thread | PASS |
+| Credential lifetime | re-pairing one profile rotates only that profile's secret and leaves the other connection authenticated; revocation invalidates every profile; a credential never matches across browser images | PASS |
+| Control frames | a protocol-level ping carrying a payload is answered with a pong carrying that payload, and the JSON heartbeat that follows is classified as v2 control. The completion byte count is not discriminated by this test: the documented zero is used, and both values answered the ping on this build | PASS |
+| Synchronous deadlines | a native-host first frame read is bounded on a real synchronous pipe for a silent reader and for a half-written header | PASS |
+| Identity binding | the kernel TCP table reports the real peer PID; an ordinary local process cannot impersonate a browser | PASS |
+| Cancellation and reaping | closure racing receive entry 64 times, idle receive interrupted, repeated rejected connections do not accumulate handles, listener start/stop/idempotence/failed restart, unstarted destruction | PASS |
+| Credential store | DPAPI encryption at rest, restart persistence, per-browser-image binding, re-pairing rotation, revocation fencing, profile generation isolation | PASS |
+| Bridge lifecycle | start/stop without peers bounded, repeated stop safe, stopped bridge authorizes nothing | PASS |
+| Extension transport | every query in this table is delivered through the real WebSocket receive entry rather than by calling the worker's internals; unpaired and half-authenticated workers stay silent and read no page, trusted-context storage lock, single `connectNative` call site, one prompt retry then alarm backoff, heartbeat only on an open socket, connection-page-only pairing, storage failure stops connecting | PASS |
+| Connection isolation | the connection is really re-established (the worker's own retry timer runs, a second socket authenticates, its identity differs) before isolation is asserted; frames stamped with the superseded identity produce nothing and create no session; a query interrupted by a disconnect adopts no session; the closed connection receives nothing further | PASS |
+| Business regressions | lease renewal, nested frame fallback, viewport identity and ambiguity, shadow roots, frozen geometry, mutation geometry, top-document page marker | PASS |
+| Architecture guard | `ARC-COMPANIONWS` fires on a synthetic violating repository; self-test 16/16 | PASS |
+
+**Not covered offline, and therefore not claimed:** `BrowserRootPid` against a live Chromium tree, a query answered through an authenticated peer (so the peer loop's own validity re-check and stale-peer closing are covered by the credential-lifetime contract above, not end to end), the pairing bootstrap driven by a real native host process, Edge, multiple browser profiles, the process-count and memory comparison, mixed-DPI/negative-coordinate screens, and the MSI upgrade matrix. The Winsock reference ownership on a failed listener start is a structural fix verified by the failing path staying usable, not by an observable reference count. Those stay in the live acceptance list and must not be replaced by this table.
+
+Each of these cases was checked against the pre-fix behaviour: reverting the envelope validation fails six unit assertions plus the on-socket one, reintroducing the undefined dispatch identifier fails the socket-entry contract, and the credential-matching contract fails if per-profile isolation is removed. The ping/pong payload case is the exception and is labelled as such above.
+
+The maintenance pass adds integer-wrap rejection to the actual bootstrap/authentication parsers, cancellation racing synchronous read submission, concurrent profile commits and failed-commit preservation. Store writers serialize persistence separately from the short lock that publishes committed credentials; selection reads do not hold a disk-I/O lock. Peer credentials use the same mutex for authentication publication and stale-peer inspection. Worker contracts associate each answer with its socket/session/request and cover late HMAC signing and credential reads racing explicit pairing.
+
+The extension minimum is Chromium 140: the [139 implementation](https://chromium.googlesource.com/chromium/src/+/139.0.7258.66/extensions/browser/api/storage/storage_api.cc) rejects `setAccessLevel` outside session storage; the [140 implementation](https://chromium.googlesource.com/chromium/src/+/140.0.7339.80/extensions/browser/api/storage/storage_api.cc) supports local storage. The worker contract enforces this minimum and asserts that storage is locked before credential reads and writes. This is source verification, not a live Chrome/Edge 140 acceptance run. Changed or malformed secrets are also rejected by the existing native credential-lifetime contract.
+
+`scripts/test_browser_companion.cjs` now drives the current worker's pairing bootstrap, authenticated WebSocket connection, session and renewal timer. It uses isolated browser state and test host registration, with the same test data directory inherited by the native host and the desktop probe. A live ZenCrop listener must be stopped before using this fixed-port fixture. The migrated full browser matrix still requires a fresh run; syntax checks and offline contracts do not establish live acceptance. Tabs already open when the extension was installed or reloaded must be refreshed before they can answer content-script queries.
 
 ## Delivered behavior
 

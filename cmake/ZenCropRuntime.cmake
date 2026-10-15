@@ -96,6 +96,8 @@ function(zencrop_install_runtime target)
         "${_src}/extensions/browser-companion/manifest.json"
         "${_src}/extensions/browser-companion/worker.js"
         "${_src}/extensions/browser-companion/content.js"
+        "${_src}/extensions/browser-companion/connection.html"
+        "${_src}/extensions/browser-companion/connection.js"
         "${_src}/extensions/browser-companion/README.md"
         DESTINATION "extensions/browser-companion"
         COMPONENT Runtime)

@@ -81,6 +81,21 @@ const wchar_t* CompanionHostStateNotRegistered() { return g_chinese ? L"未注�
 const wchar_t* CompanionHostStateReady() { return g_chinese ? L"已注册" : L"registered"; }
 const wchar_t* CompanionHostStatePathMismatch() { return g_chinese ? L"其他路径" : L"other path"; }
 const wchar_t* CompanionHostStateTargetMissing() { return g_chinese ? L"清单缺失" : L"manifest missing"; }
+// "{}" = Chrome pairing state, "{}" = Edge pairing state. Registration, pairing and a
+// live authenticated connection are three different facts and are never merged.
+const wchar_t* CompanionPairingFormat() {
+    return g_chinese ? L"配对：Chrome {} · Edge {}" : L"Pairing: Chrome {} / Edge {}";
+}
+const wchar_t* CompanionStateNotPaired() { return g_chinese ? L"未配对" : L"not paired"; }
+const wchar_t* CompanionStatePaired() { return g_chinese ? L"已配对，未连接" : L"paired, offline"; }
+const wchar_t* CompanionStateConnected() { return g_chinese ? L"已连接" : L"connected"; }
+const wchar_t* CompanionUnpair() { return g_chinese ? L"取消全部配对" : L"Unpair all"; }
+const wchar_t* CompanionUnpairSucceeded() {
+    return g_chinese
+        ? L"已撤销全部浏览器配对并断开直连。\n请在每个浏览器配置的扩展页面重新配对。\n此操作不影响旧版浏览器桥接。"
+        : L"All browser pairings were revoked and direct connections were closed.\nPair each browser profile again from its extension page.\nLegacy browser bridge registrations are untouched.";
+}
+const wchar_t* CompanionUnpairUnavailable() { return g_chinese ? L"撤销失败" : L"Revocation failed"; }
 
 const wchar_t* ColorLabel() { return g_chinese ? L"颜色：" : L"Color:"; }
 const wchar_t* ChooseButton() { return g_chinese ? L"选择..." : L"Choose..."; }

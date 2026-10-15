@@ -490,6 +490,59 @@ function Get-GuardWiring([string]$RepoRoot) {
     return $problems
 }
 
+function Get-CompanionDirectWiring([string]$RepoRoot) {
+    # The browser companion's direct connection is a security boundary, and every part
+    # of it is invisible in a diff review: an unauthenticated peer, a shared port, a
+    # half-handshaken connection that is still selectable, or an extension that quietly
+    # falls back to spawning a resident native host. The gate therefore asserts the
+    # wiring itself - loopback and exclusive binding, exact origin comparison, kernel
+    # peer identity, mutual authentication, DPAPI storage, bounded queues, credential
+    # fencing, and exactly one connectNative call site in the extension.
+    $needles = @(
+        @{ File = 'src\net\BrowserCompanionWebSocket.cpp'; Text = 'SO_EXCLUSIVEADDRUSE' },
+        @{ File = 'src\net\BrowserCompanionWebSocket.cpp'; Text = 'htonl(INADDR_LOOPBACK)' },
+        @{ File = 'src\net\BrowserCompanionWebSocket.cpp'; Text = 'WebSocketBeginServerHandshake' },
+        @{ File = 'src\net\BrowserCompanionWebSocket.cpp'; Text = 'GetExtendedTcpTable' },
+        @{ File = 'src\net\BrowserCompanionWebSocket.cpp'; Text = 'kMaxQueuedFrames' },
+        @{ File = 'src\net\BrowserCompanionWebSocket.cpp'; Text = 'AcquireWinsock' },
+        @{ File = 'src\net\BrowserCompanionBridge.cpp'; Text = 'BrowserRootPid' },
+        @{ File = 'src\net\BrowserCompanionBridge.cpp'; Text = 'AuthenticateChannel' },
+        @{ File = 'src\net\BrowserCompanionBridge.cpp'; Text = 'kExtensionHandshakeOrigin' },
+        @{ File = 'src\net\BrowserCompanionBridge.cpp'; Text = 'CloseStalePeers' },
+        @{ File = 'src\net\BrowserCompanionBridge.cpp'; Text = 'pairings.Matches' },
+        @{ File = 'src\net\BrowserCompanionBridge.cpp'; Text = 'AnswerPairing' },
+        @{ File = 'src\core\BrowserCompanionPairing.cpp'; Text = 'CryptProtectData' },
+        @{ File = 'src\core\BrowserCompanionPairing.cpp'; Text = 'CryptUnprotectData' },
+        @{ File = 'src\core\BrowserCompanionPairing.cpp'; Text = 'OwnerOnlySddl' },
+        @{ File = 'extensions\browser-companion\worker.js'; Text = 'runtime.connectNative' },
+        @{ File = 'extensions\browser-companion\worker.js'; Text = 'setAccessLevel' },
+        @{ File = 'extensions\browser-companion\worker.js'; Text = 'auth_ok' },
+        @{ File = 'extensions\browser-companion\manifest.json'; Text = 'minimum_chrome_version' }
+    )
+    $problems = New-Object System.Collections.Generic.List[string]
+    foreach ($n in $needles) {
+        $path = Join-Path $RepoRoot $n.File
+        if (![System.IO.File]::Exists($path)) {
+            [void]$problems.Add($n.File + ' is missing')
+            continue
+        }
+        if ((Read-Text $path) -notmatch [regex]::Escape($n.Text)) {
+            [void]$problems.Add($n.File + ' lost the ' + $n.Text + ' wiring')
+        }
+    }
+    # The extension must keep exactly one native messaging call site: that is the
+    # pairing bootstrap, and a second one would reintroduce a resident host process.
+    # The call is counted with its parenthesis so prose about it does not count.
+    $worker = Join-Path $RepoRoot 'extensions\browser-companion\worker.js'
+    if ([System.IO.File]::Exists($worker)) {
+        $calls = [regex]::Matches((Read-Text $worker), 'connectNative\s*\(').Count
+        if ($calls -ne 1) {
+            [void]$problems.Add('worker.js has ' + [string]$calls + ' connectNative call sites; exactly one pairing bootstrap is allowed')
+        }
+    }
+    return $problems
+}
+
 function Get-DeclaredCxxStandard([string]$RepoRoot) {
     $text = Read-Text (Join-Path $RepoRoot 'CMakeLists.txt')
     $m = [regex]::Match($text, 'set\s*\(\s*CMAKE_CXX_STANDARD\s+(\d+)\s*\)')
@@ -595,6 +648,7 @@ function Invoke-Measure([string]$RepoRoot) {
     $stdViolations = Get-StdSwitchViolations $RepoRoot
     $smoke = Get-SmokeTargetState $RepoRoot $targets
     $wiring = Get-GuardWiring $RepoRoot
+    $companion = Get-CompanionDirectWiring $RepoRoot
     $cxxStandard = Get-DeclaredCxxStandard $RepoRoot
 
     return @{
@@ -615,6 +669,7 @@ function Invoke-Measure([string]$RepoRoot) {
             targetsMissingUtf8               = $targets.MissingUtf8.Count
             stdCxx23Occurrences              = $stdViolations.Count
             guardWiringProblems              = $wiring.Count
+            companionDirectWiringProblems    = $companion.Count
             cxxStandardDeclared              = $cxxStandard
             inlFileCount                     = $inlCount
             staticLibsWithSmokeTarget        = $smoke.Count
@@ -641,6 +696,7 @@ function Invoke-Measure([string]$RepoRoot) {
             smokeTargets        = @($smoke)
             realTargets         = @($targets.RealTargets.Keys)
             guardWiring         = @($wiring)
+            companionWiring     = @($companion)
             msvcToolchain       = Get-MsvcToolchainVersion $RepoRoot
         }
     }
@@ -656,7 +712,7 @@ $script:RatchetKeys = @(
 $script:HardZeroKeys = @(
     'includeCycles', 'forbiddenEdges', 'targetsMissingUtf8',
     'stdCxx23Occurrences', 'inlFileCount', 'cmakeGlobProductSources',
-    'undeclaredSourceDirs', 'guardWiringProblems'
+    'undeclaredSourceDirs', 'guardWiringProblems', 'companionDirectWiringProblems'
 )
 # Stage expectations that are a FLOOR (value must reach at least the target)
 # rather than a ceiling.
@@ -666,9 +722,9 @@ $script:StageFloorKeys = @(
 $script:RuleIds = @(
     'ARC-CYCLE', 'ARC-FORBIDDEN', 'ARC-RATCHET', 'ARC-SMOKE', 'ARC-UTF8',
     'ARC-STD23', 'ARC-INL', 'ARC-GLOB', 'ARC-NEWDIR', 'ARC-WIRING',
-    'ARC-RULESET', 'ARC-STD', 'ARC-RAISE', 'ARC-SELFTEST', 'ARC-STAGE'
+    'ARC-COMPANIONWS', 'ARC-RULESET', 'ARC-STD', 'ARC-RAISE', 'ARC-SELFTEST', 'ARC-STAGE'
 )
-$script:ExpectedRuleCount = 15
+$script:ExpectedRuleCount = 16
 
 function Get-DefaultBaseline {
     return @{
@@ -697,6 +753,7 @@ function Get-DefaultBaseline {
             undeclaredSourceDirs      = 0
             cxxStandardDeclared       = 23
             guardWiringProblems       = 0
+            companionDirectWiringProblems = 0
         }
         stages        = @{
             P0 = @{ productStaticLibraryCount = 0; staticLibsWithSmokeTarget = 0; testsCompilingProductCpp = 92; cxxStandardDeclared = 23 }
@@ -774,6 +831,9 @@ function Invoke-Policy($Measured, $Baseline, [string]$Stage, [bool]$AllowRaise) 
     }
     if ($m.guardWiringProblems -gt 0) {
         [void]$findings.Add(@{ Rule = 'ARC-WIRING'; Metric = 'guardWiringProblems'; Value = $m.guardWiringProblems; Baseline = 0; Severity = 'FAIL'; Hint = (($Measured.Detail.guardWiring -join '; ') + ' (the gate must stay wired into build.bat)') })
+    }
+    if ($m.companionDirectWiringProblems -gt 0) {
+        [void]$findings.Add(@{ Rule = 'ARC-COMPANIONWS'; Metric = 'companionDirectWiringProblems'; Value = $m.companionDirectWiringProblems; Baseline = 0; Severity = 'FAIL'; Hint = (($Measured.Detail.companionWiring -join '; ') + ' (the direct browser connection must stay loopback-only, exclusively bound, mutually authenticated, DPAPI-stored and paired only from the connection page)') })
     }
     if ($script:RuleIds.Count -ne $script:ExpectedRuleCount) {
         [void]$findings.Add(@{ Rule = 'ARC-RULESET'; Metric = 'ruleIds'; Value = $script:RuleIds.Count; Baseline = $script:ExpectedRuleCount; Severity = 'FAIL'; Hint = 'a rule id was added or removed; update ExpectedRuleCount and the plan deliberately' })
@@ -897,6 +957,7 @@ function Invoke-RuleFiringProbe([string]$RepoRoot) {
             cmakeGlobProductSources   = 0
             undeclaredSourceDirs      = 0
             guardWiringProblems       = 0
+            companionDirectWiringProblems = 0
             cxxStandardDeclared       = 0
         }
         stages = @{}
@@ -921,6 +982,7 @@ function Invoke-RuleFiringProbe([string]$RepoRoot) {
         @{ Name = 'ARC-NEWDIR'; Metric = 'undeclaredSourceDirs' }
         @{ Name = 'ARC-STD23'; Metric = 'stdCxx23Occurrences' }
         @{ Name = 'ARC-WIRING'; Metric = 'guardWiringProblems' }
+        @{ Name = 'ARC-COMPANIONWS'; Metric = 'companionDirectWiringProblems' }
     )
 
     $firedMetrics = @{}

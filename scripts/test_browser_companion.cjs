@@ -58,14 +58,23 @@ async function runProbe(page, fixture, worker, mutation) {
   child.stdout.on('data', chunk => output += chunk);
   child.stderr.on('data', chunk => output += chunk);
   const completion = new Promise(resolve => child.on('exit', resolve));
-  const timeout = setTimeout(() => child.kill(), fixture.leaseLoss || fixture.continuousLease ? 45000 : 12000);
+  const timeout = setTimeout(() => child.kill(), fixture.leaseLoss || fixture.continuousLease ? 55000 : 22000);
   try {
-    await worker.evaluate(async () => { connect(); await hello(); });
+    await worker.evaluate(async () => { await pair(); });
+    await worker.evaluate(() => new Promise((resolve, reject) => {
+      const started = Date.now();
+      const check = () => {
+        if (live(current)) resolve();
+        else if (Date.now() - started > 7000) reject(Error("Fixture did not authenticate: " + connectionStatus.state));
+        else setTimeout(check, 10);
+      };
+      check();
+    }));
     if (mutation) {
       await worker.evaluate(() => new Promise((resolve, reject) => {
         const started = Date.now();
         const timer = setInterval(() => {
-          if (active?.frames?.size && Number(active.requestId) >= 3) { clearInterval(timer); resolve(); }
+          if (current?.session?.frames?.size && Number(current.session.requestId) >= 3) { clearInterval(timer); resolve(); }
           else if (Date.now() - started > 4000) { clearInterval(timer); reject(Error('No active query')); }
         }, 10);
       }));
@@ -88,7 +97,7 @@ async function runProbe(page, fixture, worker, mutation) {
     const clean = await worker.evaluate(() => new Promise(resolve => {
       const started = performance.now();
       const check = () => {
-        if (active === null) resolve(true);
+        if (!current?.session) resolve(true);
         else if (performance.now()-started >= 250) resolve(false);
         else setTimeout(check,5);
       };
@@ -137,7 +146,7 @@ async function geometry(page, selector) {
   expected[2] = Math.min(v[2],expected[2]); expected[3] = Math.min(v[3],expected[3]);
   return {hwnd:target[0].hwnd, expected, point:[Math.round((expected[0]+expected[2])/2),Math.round((expected[1]+expected[3])/2)],
     browserChromePoint:[v[0]+20,target[0].physical[1]+20],
-    frozen:true,tolerance:1};
+    frozen:true,tolerance:1,direct:true};
 }
 
 (async () => {
@@ -146,8 +155,8 @@ async function geometry(page, selector) {
   await fs.cp(installedExtension,extension,{recursive:true});
   const workerPath = path.join(extension,'worker.js');
   const workerSource = await fs.readFile(workerPath,'utf8');
-  assert(workerSource.includes('const host = "com.zencrop.browser_companion";'));
-  await fs.writeFile(workerPath,workerSource.replace('const host = "com.zencrop.browser_companion";',`const host = "${testHost}";`));
+  assert(workerSource.includes('const HOST_NAME = "com.zencrop.browser_companion";'));
+  await fs.writeFile(workerPath,workerSource.replace('const HOST_NAME = "com.zencrop.browser_companion";',`const HOST_NAME = "${testHost}";`));
   hostManifest = path.join(out, 'host.json');
   await fs.writeFile(hostManifest, JSON.stringify({name:testHost,description:'Public fixture contract host',
     path:testExe,type:'stdio',allowed_origins:['chrome-extension://halonieocgkgbdogndcipmlpklljmoja/']}));
@@ -165,7 +174,8 @@ async function geometry(page, selector) {
   await new Promise(resolve=>server.listen(0,'::',resolve));
   const profile = await fs.mkdtemp(path.join(os.tmpdir(),'zencrop-browser-contract-'));
   context = await chromium.launchPersistentContext(profile,{executablePath:browserExe,headless:false,viewport:null,
-    env:{...process.env,COMSPEC:process.env.COMSPEC || 'C:\\Windows\\System32\\cmd.exe'},
+    env:{...process.env,COMSPEC:process.env.COMSPEC || 'C:\\Windows\\System32\\cmd.exe',
+      ZENCROP_DATA_DIR:path.join(out,'app-data')},
     args:['--disable-extensions-except='+extension,'--load-extension='+extension,'--window-size=1200,850','--window-position=80,80',
       ...(browserScale ? ['--force-device-scale-factor='+browserScale] : [])]});
   const page = await context.newPage();
@@ -174,8 +184,8 @@ async function geometry(page, selector) {
   const worker = context.serviceWorkers()[0] || await context.waitForEvent('serviceworker');
   await page.bringToFront(); await page.keyboard.press('Escape');
   await page.waitForTimeout(2000);
-  await sampleIdle('connected_before_selection');
-  // Native Messaging's host deliberately uses the real library and verified process identity.
+  await sampleIdle('unpaired_before_selection');
+  // Pairing uses the real native host; each probe then queries over authenticated WebSocket.
   await page.evaluate(()=>document.documentElement.style.minHeight='100vh');
   const navigationFixture = await geometry(page,'#button');
   const navigationTarget = await geometry(page,'#overlap');
@@ -242,20 +252,15 @@ async function geometry(page, selector) {
   });
   const fixture = await geometry(page,'#button');
   await runProbe(page,{...fixture,invalidate:true},worker,()=>page.evaluate(()=>document.querySelector('#button').style.width='170px'));
-  await sampleIdle('after_repeated_selection');
+  await sampleIdle('disconnected_after_repeated_selection');
   const shadowFixture = await geometry(page,'shadow');
   await runProbe(page,{...shadowFixture,invalidate:true},worker,()=>page.evaluate(()=>document.querySelector('#shadow').shadowRoot.querySelector('#scroll').scrollTop=10));
   await page.evaluate(()=>document.querySelector('#shadow').shadowRoot.querySelector('#scroll').scrollTop=0);
   const disconnectFixture = await geometry(page,'#button');
-  await runProbe(page,{...disconnectFixture,invalidate:true},worker,async()=> {
-    const target = JSON.parse(execFileSync('pwsh',['-NoProfile','-File',path.join(root,'scripts/measure_browser_viewport.ps1'),
-      '-Title',`ZenCrop companion public fixture ${process.pid}`],{encoding:'utf8',windowsHide:true}));
-    const browserPid = (Array.isArray(target) ? target[0] : target).pid;
-    ps(`$all=Get-CimInstance Win32_Process;$ids=[Collections.Generic.HashSet[int]]::new();$ids.Add(${browserPid})|Out-Null;do{$changed=$false;foreach($p in $all){if($ids.Contains([int]$p.ParentProcessId)-and $ids.Add([int]$p.ProcessId)){$changed=$true}}}while($changed);foreach($p in $all){if($ids.Contains([int]$p.ProcessId)-and $p.ExecutablePath -eq ${quote(testExe)} -and $p.CommandLine -like '*chrome-extension://halonieocgkgbdogndcipmlpklljmoja/*'){Stop-Process -Id $p.ProcessId}}`);
-  });
+  await runProbe(page,{...disconnectFixture,invalidate:true},worker,()=>worker.evaluate(()=>current.socket.close()));
   await page.evaluate(()=>document.querySelector('#button').style.width='160px');
   const leaseFixture = await geometry(page,'#button');
-  await runProbe(page,{...leaseFixture,invalidate:true,leaseLoss:true},worker,()=>worker.evaluate(()=>clearInterval(renewal)));
+  await runProbe(page,{...leaseFixture,invalidate:true,leaseLoss:true},worker,()=>worker.evaluate(()=>clearInterval(current.renewal)));
   await fs.writeFile(path.join(out,'matrix.json'),JSON.stringify({browser:browserName,version:context.browser().version(),browserScale:browserScale || 'system',reports,idleSamples},null,2));
   console.log(`PASS: ${reports.length} browser geometry/lifecycle cases; evidence: ${out}`);
 })().catch(error=>{console.error(error);process.exitCode=1;}).finally(async()=>{
